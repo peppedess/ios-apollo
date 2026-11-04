@@ -126,5 +126,7 @@ Fixed on the way (all redfin values that differ on kona):
 - 1104: backlight DCS packet / MDP test / scanout carve-out moved inside kona's splash (0x9c000000+0x2300000).
 - 1105: flamecpufreq=0 no longer reads lito's cpufreq-hw (kona: cpufreq-hw-epss 0x18591000/2000/3000).
 
-Still to do before userland: SMP (cpus=8), kona cpufreq, brightness test (sweetbl_dcs=1 with 1104), RTC via
+k1l (cpus=8, same kernel): all 8 CPUs come alive (SweetCPU panics otherwise), boot again ends at cannot mount root.
+
+Still to do before userland: kona cpufreq, brightness test (sweetbl_dcs=1 with 1104), RTC via
 another route, then phase 4 (iOS root on userdata: wipes Android, only after explicit confirmation).
