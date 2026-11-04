@@ -6,9 +6,7 @@ name: metal2
 
 on:
   workflow_dispatch:
-  push:
-    branches: [sunfish, redfin]
-    paths: [.github/workflows/metal2.yml, "phone/metal2/**", "phone/turnip/**"]
+  # apollo: manual only until the apollo kernel patches exist (push triggers removed)
 
 permissions:
   contents: write

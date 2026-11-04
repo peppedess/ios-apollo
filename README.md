@@ -1,5 +1,10 @@
 # ios-flame
 
+> **Branch `apollo`: port to the Xiaomi 10T Pro (apollo, SM8250).** Plan, hardware differences and test
+> steps in [docs/apollo/port-plan.md](docs/apollo/port-plan.md). Shim images come from the `shim` workflow
+> (artifact `apollo-shim`). The redfin (Pixel 5) work this starts from is in `docs/redfin/`; the rest of
+> this README is the original ios-flame one.
+
 **Apple's iOS 16 running on a Google Pixel 4.**
 
 A port of [ios-sweet](https://github.com/dipa-studio/ios-sweet) to the Pixel 4 (`flame`, Qualcomm SM8150 /

@@ -1,18 +1,19 @@
 #!/bin/bash
-# Build the redfin (Pixel 5) shim and wrap it in a boot image v3 (redbull BoardConfig:
-# BOARD_BOOT_HEADER_VERSION 3, page 4096, boot partition 0x06000000).
-# v3 has no load offsets and no DTB: ABL takes the DTB (and a vendor ramdisk) from
-# vendor_boot on flash and places our ramdisk AFTER the vendor ramdisk, so the
-# shim searches the initrd for the payload (loader.c find_payload).
+# Build the apollo (Xiaomi 10T Pro, SM8250) shim and wrap it in a boot image v2
+# (LineageOS sm8250-common BoardConfigCommon.mk, non-virtual-A/B: BOARD_BOOT_HEADER_VERSION 2,
+# base 0x00000000, page 4096, DTB inside boot.img, boot partition 0x08000000).
+# v2 carries its own DTB: ABL picks the entry matching the board (msm-id/board-id) from the
+# concatenated kona DTBs, applies the dtbo partition and passes it in x0. The stock DTB
+# comes from a LineageOS apollon boot.img (tools/apollo-dtb.sh): set DTB=path.
 #
-#   shim/build.sh [PAYLOAD] [OUT]   PAYLOAD: tools/mkpayload.py output (ramdisk);
-#                                   none -> probe-only image
-#   SHIM_CFLAGS=-DSHIM_SHOWLOG shim/build.sh "" OUT
-#                                   show the logs on UFS on screen (showlog.c)
-#   SHIM_CFLAGS="-DSHIM_NO_UFS_WRITE -DSHIM_HOLDLOG" shim/build.sh "" OUT
-#                                   redfin first probe: never write UFS (Android data still
-#                                   in userdata), hold the log on screen for 60 s, then reset
-# Needs llvm + lld + lz4 + mkbootimg (AOSP) + avbtool. No stock DTB is needed (v3).
+#   DTB=dtb shim/build.sh [PAYLOAD] [OUT]   PAYLOAD: tools/mkpayload.py output (ramdisk);
+#                                           none -> probe-only image
+#   SHIM_CFLAGS="-DSHIM_NO_UFS_WRITE -DSHIM_HOLDLOG" DTB=dtb shim/build.sh "" OUT
+#                                           first probe: never write UFS (Android data still
+#                                           in userdata), show the log on screen page by page, reset
+#   SHIM_KERNEL=raw|lz4|gz                  kernel format in the image (default raw: LineageOS
+#                                           apollon ships an uncompressed Image)
+# Needs llvm + lld + lz4 + gzip + mkbootimg (AOSP) + avbtool.
 set -euo pipefail
 cd "$(dirname "$0")"
 ROOT=$(cd .. && pwd)
@@ -44,9 +45,12 @@ $LLVM/llvm-objcopy -O binary out/shim.elf out/Image
 # ABL copies the file; pad to image_size so .bss/stacks exist as zeroed bytes.
 size=$($LLVM/llvm-nm out/shim.elf | awk '$3=="_end"{print $1}')
 truncate -s $((16#$size)) out/Image
-# Google's ABL only takes compressed kernels (stock and TWRP are LZ4 frames);
-# an uncompressed Image is "Unsupported".
-lz4 -q -9 -B7 -f out/Image out/Image.lz4
+case "${SHIM_KERNEL:-raw}" in
+	raw) cp out/Image out/kernel ;;
+	lz4) lz4 -q -9 -B7 -f out/Image out/kernel ;;
+	gz) gzip -9 -n -c out/Image > out/kernel ;;
+	*) echo "error: SHIM_KERNEL must be raw, lz4 or gz" >&2; exit 1 ;;
+esac
 if [ -n "${1:-}" ]; then
 	cp "$1" out/ramdisk.bin
 else
@@ -71,15 +75,16 @@ PY
 fi
 OUT=${2:-out/shim-boot.img}
 MKBOOTIMG=${MKBOOTIMG:-$(command -v mkbootimg || echo "python3 $ROOT/downloads/mkbootimg/mkbootimg.py")}
+[ -n "${DTB:-}" ] && [ -s "$DTB" ] || { echo "error: set DTB to the stock apollon DTB (tools/apollo-dtb.sh)" >&2; exit 1; }
 $MKBOOTIMG \
-	--header_version 3 --kernel out/Image.lz4 --ramdisk out/ramdisk.bin \
+	--header_version 2 --base 0x00000000 --pagesize 4096 \
+	--kernel out/kernel --ramdisk out/ramdisk.bin --dtb "$DTB" \
 	--os_version 14.0.0 --os_patch_level 2023-11 \
 	--cmdline "console=null" -o "$OUT"
-# Google's ABL refuses "fastboot boot" of an image without an AVB footer
-# ("Error verifying the received boot.img: Unsupported"), even unlocked: add
-# an unsigned hash footer (algorithm NONE) like TWRP's, padding to the boot
-# partition size.
+# Unsigned hash footer (algorithm NONE), padded to the boot partition size like a
+# LineageOS boot.img. Xiaomi's ABL does not need it when unlocked; it keeps
+# "fastboot boot" and "fastboot flash boot" behaving the same.
 AVBTOOL=${AVBTOOL:-$(command -v avbtool || echo "python3 $ROOT/downloads/avb/avbtool.py")}
 $AVBTOOL add_hash_footer --image "$OUT" \
-	--partition_size 100663296 --partition_name boot	# 0x06000000 (redbull)
+	--partition_size 134217728 --partition_name boot	# 0x08000000 (sm8250-common)
 ls -l out/Image "$OUT"

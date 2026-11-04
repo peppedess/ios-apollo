@@ -7,9 +7,7 @@ name: userland
 
 on:
   workflow_dispatch:
-  push:
-    branches: [sunfish, redfin]
-    paths: [.github/workflows/userland.yml, "phone/**"]
+  # apollo: manual only until the apollo kernel patches exist (push triggers removed)
 
 env:
   DROPBEAR_VER: "2022.83"

@@ -5,10 +5,12 @@
  * Text console on the splash framebuffer ABL scans out. Geometry comes from
  * the display pipe at runtime (con_init); 32 bpp, little-endian a8r8g8b8.
  */
-#define FB_SPLASH_BASE	0xa0000000UL	/* redfin (lito) cont_splash_region: 0xa0000000 + 0x2300000 */
-#define FB_SPLASH_SIZE	0x02300000UL
+/* apollo (kona): cont_splash_region 0x9c000000 + 0x2300000, disp_rdump_region 0x9c000000 + 0x2400000 */
+#define FB_SPLASH_BASE	0x9c000000UL
+#define FB_SPLASH_SIZE	0x02400000UL
+/* j3s 37 02 0a: video mode, DSC 2x540, 1080x2400 @144 Hz */
 #define FB_W		1080
-#define FB_H		2340
+#define FB_H		2400
 
 #define RED	0xffff0000U
 #define BLUE	0xff0000a0U

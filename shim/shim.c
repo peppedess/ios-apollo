@@ -1,5 +1,5 @@
 /*
- * flame (Pixel 4, SM8150) boot shim.
+ * apollo (Xiaomi 10T Pro, SM8250) boot shim, from ios-redfin / ios-flame.
  *
  * ABL enters here at EL1 with the MMU and caches off and x0 = DTB. With an
  * XNU payload in the ramdisk (tools/mkpayload.py) the shim boots it;
@@ -24,9 +24,9 @@
 #include "ufs.h"
 #include "util.h"
 
-#define IMEM_RESTART_REASON	0x146ab65cUL	/* redfin (lito) qcom,msm-imem@146ab000 restart_reason@65c */
+#define IMEM_RESTART_REASON	0x146bf65cUL	/* apollo (kona) qcom,msm-imem@146bf000 restart_reason@65c */
 #define RESTART_BOOTLOADER	0x77665500U
-#define PON_SOFT_RB_SPARE	0x88f		/* redfin: PM8150 (SID 0) PON, reason in [7:1] (as flame) */
+#define PON_SOFT_RB_SPARE	0x88f		/* apollo: PM8150 (SID 0) PON, reason in [7:1] (as flame/redfin) */
 #define PON_REASON_BOOTLOADER	0x02
 #define PON_PS_HOLD_RESET_CTL	0x85a		/* [3:0] type */
 #define PON_PS_HOLD_RESET_CTL2	0x85b		/* [7] enable */
@@ -201,12 +201,12 @@ static void log_gic(void)
 }
 
 /*
- * redfin PMIC GPIOs (LV/MV subtype): Linux pinctrl sets these, ABL doesn't.
- *  - PM8150L (SID 4) GPIO5 = volume_up (lito-redbull-common.dtsi gpio_keys): input,
+ * apollo PMIC GPIOs (LV/MV subtype): Linux pinctrl sets these, ABL doesn't.
+ *  - PM8150 (SID 0) GPIO6 = volume_up (xiaomi-sm8250-common.dtsi gpio_keys): input,
  *    30 uA pull-up, VIN 0. GPIOn regs at 0xc000 + (n-1)*0x100.
- *  - No PMIC GPIO for touch power: the sec_ts panel runs from pm8150_l17 (3.3 V,
- *    regulator-always-on, RPMh) plus TLMM GPIO35 (bus switch, low), GPIO8 reset.
- *    (sunfish had PM6150 GPIO4 touch power and PM6150L GPIO2 vol+.)
+ *  - Touch (apollo-sm8250.dtsi): "xiaomi,spi-for-tp" on QUP SE4 SPI, 10 MHz;
+ *    TLMM GPIO39 interrupt, GPIO38 reset, GPIO11 chip select. Not touched here.
+ *    (redfin had PM8150L GPIO5 vol+, sunfish PM6150L GPIO2.)
  * Regs: 0x40 MODE (LV/MV: dir 0 in / 1 out), 0x41 VIN, 0x42 PULL,
  * 0x44 OUT_SOURCE ([7] invert: high for source 0), 0x45 OUT_CTL, 0x46 EN.
  */
@@ -221,10 +221,10 @@ static void pmic_gpio_dump(const char *what, uint32_t sid, uint32_t base)
 		   what, sid, base, sub, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]);
 }
 
-#define VOLUP_SID	4
-#define VOLUP_GPIO	0xc400	/* PM8150L GPIO5 */
+#define VOLUP_SID	0
+#define VOLUP_GPIO	0xc500	/* PM8150 GPIO6 */
 
-static void redfin_pmic_gpios(void)
+static void apollo_pmic_gpios(void)
 {
 	pmic_gpio_dump("volup", VOLUP_SID, VOLUP_GPIO);
 	/* volume up: input with pull-up */
@@ -256,14 +256,14 @@ static void save_before_jump(void)
 
 void shim_main(uintptr_t dtb)
 {
-	log_printf("FLAMESHIM probe v1 t=%lu\n", ticks_now());
+	log_printf("APOLLOSHIM probe v1 t=%lu\n", ticks_now());
 	log_cpu(dtb);
 	int spmi_ok = !spmi_init();
 	if (spmi_ok) {
 		log_pmic();
 		set_reboot_bootloader();
 		set_hard_reset();
-		redfin_pmic_gpios();
+		apollo_pmic_gpios();
 	}
 	/* Probe runs reset themselves; only an XNU boot arms the watchdog. */
 	wdt_off();
@@ -320,7 +320,7 @@ void shim_main(uintptr_t dtb)
 	int con_ok = !con_init(fb, stride);
 	if (con_ok) {
 		con_clear(0xff203040);
-		con_str("FLAME", "shim probe v1");
+		con_str("APOLLO", "shim probe v1");
 	}
 	sde_autorefresh(1);
 	sde_sample("autorefresh", 16, 20);
