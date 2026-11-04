@@ -13,8 +13,8 @@ if git -C "$bearssl_tmp" fetch -q --depth 1 \
     [[ "$(git -C "$bearssl_tmp" rev-parse HEAD)" == "$bearssl_sha" ]]
     bearssl_src=$bearssl_tmp
 elif [[ -n "${BEARSSL_DIR:-}" && -f "$BEARSSL_DIR/src/inner.h" ]]; then
-    # apollo local builds: bearssl.org's git answered 502 (2026-11-04). The files staged below (AES ct, MD5,
-    # SHA-1/2, codecs, inc/) are unchanged between BearSSL 0.6 (Debian/Ubuntu source) and this commit.
+    # apollo local builds: bearssl.org's git answers 502 on and off (2026-11-04). The WSL script keeps a
+    # checkout of the same pinned commit (verified there) in BEARSSL_DIR for when the live fetch fails.
     echo "bearssl.org unreachable: using BEARSSL_DIR=$BEARSSL_DIR" >&2
     bearssl_src=$BEARSSL_DIR
 else
