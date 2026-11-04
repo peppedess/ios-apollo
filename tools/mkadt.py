@@ -28,9 +28,9 @@ SOC_BASE = 0x01000000
 GICD, GICD_SIZE = 0x17a00000, 0x10000
 GICR, GICR_SIZE = 0x17a60000, 0x100000
 # cont_splash_region; ABL scans it out (autorefreshed command-mode panel)
-FB, FB_SIZE = 0xa0000000, 0x2300000  # redfin (live DT); sunfish 0x9c000000/0x1700000
+FB, FB_SIZE = 0x9c000000, 0x2300000  # apollo (live DT 2026-11-04); redfin 0xa0000000, sunfish 0x9c000000/0x1700000
 SWEET_ECID = 0x5357454554000001  # 'SWEET' + 1, synthetic
-FB_W, FB_H, FB_STRIDE = 1080, 2340, 1080 * 4
+FB_W, FB_H, FB_STRIDE = 1080, 2400, 1080 * 4  # apollo j3s video mode; redfin 2340
 # Internal UFS host (ufshc@1d84000 "ufs_mem"); QEMU virt has none
 UFS, UFS_SIZE = 0x01d84000, 0x3000
 TIMEBASE = 19200000
@@ -220,8 +220,9 @@ def build(seed=None, qemu=False, highmem=False, camera=False, flash=False, backl
             ('l3-cache-id', u32(0)),     # shared L3
             ('state', cstr('running' if core == 0 else 'stopped')),
             ('timebase-frequency', u32(timebase)),
-            # redfin cpufreq-hw top rows (0962): silver 1804.8, gold 2208, prime 2400 MHz
-            ('clock-frequency', u32(2400000000 if core == 7 else 2208000000 if core == 6 else 1804800000)),
+            # apollo (kona, SM8250): 0-3 A55 silver 1804.8, 4-6 A77 gold 2419.2, 7 A77 prime 2841.6 MHz
+            # (descriptive; redfin was silver 0-5, gold 6, prime 7)
+            ('clock-frequency', u32(2841600000 if core == 7 else 2419200000 if core >= 4 else 1804800000)),
             ('bus-frequency', u32(100000000)),
             ('memory-frequency', u32(1866000000)),
             ('peripheral-frequency', u32(timebase)),

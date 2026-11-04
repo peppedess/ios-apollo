@@ -350,3 +350,4 @@ all upstream patches. Kernels "0151"/"0152" in the logs = 0901/0902.
   `BT_HCI_TRANSPORT=H4BC:POSIX:com.apple.uart.bluetooth,3000000` (tools-claude/bt-launchd.py --transport). Userland:
   phone/bt/bluetool.c (BlueTool stand-in: every request result 0 after btd is up; `--bluetool`), btd bridge HCI compat
   (vendor answers carry the sub-opcode, Unknown Command / LE Command Disallowed -> success; `--bridge-raw` off).
+- 1100 apollo-basics: early FB 0x9c000000 1080x2400 (kona splash, video-mode j3s), vol+ PM8150 GPIO6 (SID 0, 0xc500), panel height 2400 in touch/GPU, GPU FB PA

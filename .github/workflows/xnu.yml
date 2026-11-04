@@ -18,7 +18,11 @@ on:
       clean:
         description: ignore the incremental build cache (full build)
         default: "false"
-  # apollo: manual only until the apollo kernel patches exist (push triggers removed)
+  push:
+    branches: [apollo]
+    paths:
+      - "xnu/patches/**"
+      - ".github/workflows/xnu.yml"
 
 concurrency:
   group: xnu-${{ github.ref }}

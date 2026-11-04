@@ -35,7 +35,8 @@ Write-Host "dispositivo: $model"
 if ($model -notmatch "apollo") { Write-Warning "non sembra uno Xiaomi 10T Pro (apollo): mi fermo"; exit 1 }
 
 if ($Mode -eq "backup") {
-	$ErrorActionPreference = "Stop"
+	# "Continue": in PowerShell 5 adb's progress on stderr would otherwise abort the loop
+	$ErrorActionPreference = "Continue"
 	$B = "backup"; New-Item -ItemType Directory -Force -Path $B | Out-Null
 	# userdata = dati Android, super = system/vendor (ripristinabili dalla ROM fastboot di Xiaomi)
 	$skip = @("userdata", "super")
@@ -46,21 +47,21 @@ if ($Mode -eq "backup") {
 	Write-Host ("RAM libera in TWRP: {0:N0} byte" -f $free)
 	if ($free -lt 512MB) { throw "RAM libera di TWRP non leggibile ($free): mi fermo" }
 	$log = Join-Path $B "backup-log.txt"
-	"apollo backup $(Get-Date -Format s)" | Out-File $log -Encoding ascii
+	"apollo backup $(Get-Date -Format s)" | Add-Content $log -Encoding ascii
 	foreach ($n in $names) {
 		if ($skip -contains $n -or $n -match '^sd[a-z]$') { Write-Host "salto  $n"; continue }
 		$dev = (Adb-Sh "readlink -f /dev/block/by-name/$n").Trim()
 		$size = [int64](Adb-Sh "blockdev --getsize64 $dev").Trim()
 		if ($size -gt ($free / 2)) { Write-Warning "salto  $n ($size byte, troppo grande per /tmp)"; "SALTATA $n $size" | Add-Content $log; continue }
 		$dst = Join-Path $B "$n.img"
-		if (Test-Path $dst) { Write-Host "c'e'   $n"; continue }
+		if ((Test-Path $dst) -and (Test-Path $log) -and (Select-String -Path $log -SimpleMatch "  $n.img  " -Quiet)) { Write-Host "c'e'   $n"; continue }
 		Write-Host ("copio  {0,-24} {1,12:N0} byte" -f $n, $size)
 		Adb-Sh "dd if=$dev of=/tmp/bk.img bs=1048576 2>/dev/null" | Out-Null
 		$phoneSum = (Adb-Sh "sha256sum /tmp/bk.img").Trim().Split(" ")[0]
-		& adb pull /tmp/bk.img $dst | Out-Null
+		& adb pull /tmp/bk.img $dst 2>&1 | Out-Null
 		Adb-Sh "rm -f /tmp/bk.img" | Out-Null
 		$pcSum = (Get-FileHash $dst -Algorithm SHA256).Hash.ToLower()
-		if ($pcSum -ne $phoneSum) { Remove-Item $dst; throw "hash diverso su $n" }
+		if ($pcSum -ne $phoneSum) { Remove-Item $dst; Write-Warning "hash diverso su ${n}: lo salto"; "ERRORE $n hash" | Add-Content $log; continue }
 		"$pcSum  $n.img  $size" | Add-Content $log
 	}
 	Write-Host "Backup finito: $B\ ($((Get-ChildItem $B -Filter *.img).Count) partizioni). Hash in $log"
