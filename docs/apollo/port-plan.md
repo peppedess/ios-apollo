@@ -130,3 +130,8 @@ k1l (cpus=8, same kernel): all 8 CPUs come alive (SweetCPU panics otherwise), bo
 
 Still to do before userland: kona cpufreq, brightness test (sweetbl_dcs=1 with 1104), RTC via
 another route, then phase 4 (iOS root on userdata: wipes Android, only after explicit confirmation).
+
+k1m (sweetbl_dcs=1, kernel with 1104): `SWEET BL: DSI0 ctrl 0x1f7 status 0x2008 trig 0x4: brightness via DCS 0x51`,
+no reset, boot continues to cannot mount root. But the j3s panel ("xiaomi 37 02 0a video mode dsc dsi panel", dtbo)
+uses `qcom,mdss-dsi-bl-pmic-control-type = "bl_ctrl_wled"` (PM8150L WLED5 at SPMI 0xd800/0xd900, levels 2..0xfff):
+DCS 0x51 does nothing on apollo. Brightness needs a WLED driver (SPMI writes; check the APID owner first, as for the RTC).
