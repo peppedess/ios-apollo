@@ -18,6 +18,11 @@ args="$args rd=ufsroot0 ufsrw=0 rootrw=0 sweetlog=0 flamereboot=150 wdt=-1"
 args="$args sweetfb_noconsole=0 sweetfb_hz=60 sweetfb_thread=0"
 args="$args sweetusb=0 flametouch=0 sweettouch=0 sectouch=0 sweetkeys=1 sweetgpu=0 sweetmtl=0 sweetddr=0"
 args="$args flamecpufreq=0 sweetbattery=0 sweettherm=0"
+# Extra KEY=VALUE args replace the defaults above (the kernel takes the first occurrence of a key)
+for a in "$@"; do
+	k=${a%%=*}
+	args=$(printf '%s\n' $args | grep -v -x -e "$k" -e "$k=.*" | tr '\n' ' ')
+done
 args="$args $*"
 python3 -I tools/mkpayload.py "$W/kernel" "$W/apollo-hi.adt" "$W/payload" --cmdline "$args"
 SHIM_CFLAGS="-DSHIM_NO_UFS_WRITE" SHIM_KERNEL=raw DTB="$DTB" bash shim/build.sh "$W/payload" "$OUT"

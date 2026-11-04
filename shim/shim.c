@@ -13,6 +13,7 @@
 #include "fdt.h"
 #include "loader.h"
 #include "ramlog.h"
+#include "ramshow.h"
 #include "log.h"
 #include "sde.h"
 #include "showlog.h"
@@ -267,6 +268,19 @@ void shim_main(uintptr_t dtb)
 	}
 	/* Probe runs reset themselves; only an XNU boot arms the watchdog. */
 	wdt_off();
+#ifdef SHIM_RAMSHOW
+	/* apollo: show the previous XNU run's console from DRAM (read-only), then reset */
+	sde_probe();
+	{
+		uintptr_t rfb = sde.pipe ? rd32(sde.pipe + 0x14) : 0;
+		uint32_t rstride = sde.pipe ? rd32(sde.pipe + 0x24) & 0xffff : 0;
+		if (!con_init(rfb, rstride)) {
+			sde_autorefresh(1);
+			ramshow_run();
+		}
+	}
+	reset();
+#endif
 #ifdef SHIM_DIAG
 	sde_probe();
 	uintptr_t dfb = sde.pipe ? rd32(sde.pipe + 0x14) : 0;

@@ -92,3 +92,24 @@ Early console framebuffer 0x9c000000 1080x2400, vol+ PM8150 GPIO6, panel height 
 constants, ADT framebuffer + CPU clocks for kona. First boot is read-only and minimal:
 `rd=ufsroot0 ufsrw=0 rootrw=0 sweetlog=0 sweetusb=0 flamecpufreq=0 flamereboot=150`, touch/GPU/Metal off.
 flamecpufreq=0 because kona's cpufreq-hw is not at lito's addresses (to do).
+
+## k1: first XNU boot (2026-11-04, local WSL kernel c82d2d1, `apollo-k1.img`)
+
+Kernel built in WSL (tools/wsl, UniXNU toolchain, 151 s). `fastboot boot` OK (19 MB image, AVB footer on a
+20 MiB partition size). Screen: the XNU console at 1080x2400 on 0x9c000000. Log read back from DRAM after the
+reset with the new read-only shim mode `SHIM_RAMSHOW` (`apollo-ramshow.img`: XNU's uncached ring mirror at
+0x1fa000000 survives the warm reset):
+
+- Darwin 22.6.0 xnu-8796.141.3; pmap/VM/zone init fine; 251305 free pages.
+- AMFI/sandbox stand-ins, vnguard, LOG mirror, device-tree platform expert, FLAME WDT petting every 5 s.
+- SPMI arb v5; AKS; IOWatchdog; IOCoreSurfaceRoot; HID buttons + touch services; SWEET MOTION services;
+  battery static fallback (sweetbattery=0); AMFI published.
+- 8 CPUs registered (ml_processor_register, one cluster). `SWEET CPU: requested=8 selected=8`;
+  cpu0 alive (SGI1 OK); cpu1 `PSCI CPU_ON target=0x100 rc=0`, `arm_cpu_init(): cpu 1 online`,
+  `cpu=1 entered initCPU mpidr=0x100 EL1 IRQs=0` — but **no "cpu=1 came alive"** and no cpu_start(2).
+- SWEET BL: DSI0 ctrl 0x1f7 status 0x2008 (video-mode DSI read fine); SWEET FB: AppleCLCD 1080x2400 stride
+  4320 at 0x9c000000, presented as 1125x2436.
+- **Last line at 9.765 s.** Then nothing: the hardware watchdog reset the phone into fastboot (~2 min).
+
+Reading: the boot CPU waits for cpu1's alive handshake (SGI) and the whole kernel stops (WDT not petted).
+Next: k1b = same kernel with `cpus=1` to see the rest of the boot (UFS, root mount); then SMP on kona.
