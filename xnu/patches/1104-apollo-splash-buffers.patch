@@ -1,0 +1,51 @@
+From 681cb7ef868ffef6d0b8a883ba1fd28090567094 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 4 Nov 2026 22:03:16 +0100
+Subject: [PATCH] apollo 1104: backlight packet, MDP test and scanout carve-out
+ inside kona's splash region
+
+---
+ iokit/Kernel/arm/SweetFramebuffer.cpp | 6 +++---
+ iokit/Kernel/arm/SweetSurface.cpp     | 2 +-
+ 2 files changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index e1d86a4..45d6b36 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -462,7 +462,7 @@ OSDefineMetaClassAndStructors(IOMobileFramebufferUserClient, IOUserClient);
+  * over every frame, which the CPU renderer could not afford on topaz (<1 fps); with the GPU it is fine.
+  */
+ #define SWEET_BL_DSI0_PA        0x0ae94000ULL
+-#define SWEET_BL_PKT_PA         0xa2200000ULL
++#define SWEET_BL_PKT_PA         0x9e200000ULL   /* apollo 1104: last MB of kona's splash (redfin 0xa2200000) */
+ #define SWEET_BL_MIN            0x4u
+ #define SWEET_BL_MAX            0x3ffu
+ #define SWEET_BL_MAX_NITS       500u    /* IOMFBBrightnessLevel that maps to SWEET_BL_MAX */
+@@ -1852,8 +1852,8 @@ AppleCLCD::setHz(uint32_t hz, bool tc)
+ #define QS_INIT_UV_V            (QSEED + 0x9c)
+ #define SWEET_SPLASH_PA         0x9c000000ULL   /* apollo (kona) cont_splash_region; redfin 0xa0000000 */
+ #define SWEET_SPLASH_LEN        0x2300000ULL
+-#define SWEET_MDP_TEST_PA       0xa1400000ULL   /* above A6_FB_SIZE (0905's buffers), below the backlight packet */
+-#define SWEET_MDP_TEST_LEN      0xab8000ULL     /* 4608 x 2436 in 16 KB pages: ends 0xa1eb8000 < 0xa2200000 */
++#define SWEET_MDP_TEST_PA       0x9d400000ULL   /* above A6_FB_SIZE (0905's buffers), below the backlight packet */
++#define SWEET_MDP_TEST_LEN      0xab8000ULL     /* 4608 x 2436 in 16 KB pages: ends 0x9deb8000 < 0x9e200000 (apollo 1104; redfin 0xa1400000) */
+ #define SWEET_MDP_SURF_STRIDE   4608u
+ #define SWEET_SMMU_PA           0x15000000ULL
+ #define SWEET_MDP_SID           0xb40u
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+index f1979df..111cb5b 100644
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -87,7 +87,7 @@ OSDefineMetaClassAndStructors(SweetSurface, OSObject);
+  * RAM, each allocated on first use and kept for the next surface. Every other create, and every create once the
+  * slots are taken, gets ordinary memory as before.
+  */
+-#define SWEET_SCAN_CARVE_PA     0xa1400000ULL
++#define SWEET_SCAN_CARVE_PA     0x9d400000ULL   /* apollo 1104 (redfin 0xa1400000) */
+ extern "C" void flush_dcache64(addr64_t addr, unsigned count, int phys);
+ static struct {
+ 	IOMemoryDescriptor *md;
+-- 
+2.43.0
+
