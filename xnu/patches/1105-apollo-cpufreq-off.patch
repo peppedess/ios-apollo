@@ -1,0 +1,33 @@
+From fbaf3130f8d17c1b8db93162cb74220f042ca58c Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 4 Nov 2026 22:16:51 +0100
+Subject: [PATCH] apollo 1105: flamecpufreq=0 skips the (lito) cpufreq-hw
+ blocks entirely
+
+---
+ bsd/dev/sweet_cpufreq.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/bsd/dev/sweet_cpufreq.c b/bsd/dev/sweet_cpufreq.c
+index 53006cd..0438c08 100644
+--- a/bsd/dev/sweet_cpufreq.c
++++ b/bsd/dev/sweet_cpufreq.c
+@@ -593,6 +593,15 @@ sweet_cpufreq_init(void)
+ {
+ 	unsigned want = 1;
+ 	(void)PE_parse_boot_argn("flamecpufreq", &want, sizeof(want));
++	/*
++	 * apollo 1105: flamecpufreq=0 must not touch the hardware. The domains below are lito's (redfin)
++	 * cpufreq-hw blocks; kona has qcom,cpufreq-hw-epss at 0x18591000/0x18592000/0x18593000 (silver 0-3,
++	 * gold 4-6, prime 7), and reading lito's addresses reset the phone right after the UFS probe.
++	 */
++	if (!want) {
++		printf("SWEET CPUFREQ: off (flamecpufreq=0)\n");
++		return;
++	}
+ 	{
+ 		/* 0970: sweetgov=XXYY (e.g. 4060), sweetboost=MHZ, sweetboostms=MS */
+ 		unsigned g = 0, mhz = 1800, ms = 200;
+-- 
+2.43.0
+
