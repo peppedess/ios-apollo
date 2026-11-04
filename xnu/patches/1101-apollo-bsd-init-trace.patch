@@ -1,0 +1,18 @@
+diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
+index bb2a2bf..79f9fbc 100644
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -490,10 +490,11 @@ bsd_init(void)
+ 	platform_stall_panic_or_spin(PLATFORM_STALL_XNU_LOCATION_BSD_INIT);
+ #endif
+ 
+-#define DEBUG_BSDINIT 0
++/* apollo 1101: bring-up trace, to the console (and its RAM mirror, which kprintf does not reach) */
++#define DEBUG_BSDINIT 1
+ 
+ #if DEBUG_BSDINIT
+-#define bsd_init_kprintf(x, ...) kprintf("bsd_init: " x, ## __VA_ARGS__)
++#define bsd_init_kprintf(x, ...) printf("bsd_init: " x, ## __VA_ARGS__)
+ #else
+ #define bsd_init_kprintf(x, ...)
+ #endif
