@@ -113,3 +113,18 @@ reset with the new read-only shim mode `SHIM_RAMSHOW` (`apollo-ramshow.img`: XNU
 
 Reading: the boot CPU waits for cpu1's alive handshake (SGI) and the whole kernel stops (WDT not petted).
 Next: k1b = same kernel with `cpus=1` to see the rest of the boot (UFS, root mount); then SMP on kona.
+
+## k1 result (2026-11-04, k1k: kernel apollo-c91fd7f03e, cpus=1)
+
+Read-only XNU boot reaches the expected end: `SWEET UFS: "userdata" on LUN 0: first block 0x2c0000, 231711 MiB,
+read-only`, then `hfs_ValidateHFSPlusVolumeHeader: unknown Volume Signature : 39a4` (userdata still holds Android)
+and `cannot mount root, errno = 19` in a loop. No UFS write ever happens (ufsrw=0, SHIM_NO_UFS_WRITE).
+
+Fixed on the way (all redfin values that differ on kona):
+- 1103: PM8150 RTC (SPMI APID 2) belongs to EE1; its observer read hung bsd_init.
+- mkadt: virtual timer INTID 27 (kona DT PPIs 13/14/11/12), not 19: without it no thread ever woke from a sleep.
+- 1104: backlight DCS packet / MDP test / scanout carve-out moved inside kona's splash (0x9c000000+0x2300000).
+- 1105: flamecpufreq=0 no longer reads lito's cpufreq-hw (kona: cpufreq-hw-epss 0x18591000/2000/3000).
+
+Still to do before userland: SMP (cpus=8), kona cpufreq, brightness test (sweetbl_dcs=1 with 1104), RTC via
+another route, then phase 4 (iOS root on userdata: wipes Android, only after explicit confirmation).
