@@ -24,6 +24,12 @@ for a in "$@"; do
 	args=$(printf '%s\n' $args | grep -v -x -e "$k" -e "$k=.*" | tr '\n' ' ')
 done
 args="$args $*"
+# later arguments win: drop earlier copies of any key given again
+args=$(python3 -c 'import sys
+seen = {}
+for a in sys.argv[1:]:
+    seen[a.split("=", 1)[0]] = a
+print(" ".join(seen.values()))' $args)
 python3 -I tools/mkpayload.py "$W/kernel" "$W/apollo-hi.adt" "$W/payload" --cmdline "$args"
 SHIM_CFLAGS="-DSHIM_NO_UFS_WRITE" SHIM_KERNEL=raw DTB="$DTB" bash shim/build.sh "$W/payload" "$OUT"
 # Shrink the AVB padding (fastboot boot needs no full 128 MiB partition image; the bridge takes <100 MB per file)
