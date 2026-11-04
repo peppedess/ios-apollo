@@ -1,0 +1,49 @@
+diff --git a/bsd/dev/sweet_spmi.c b/bsd/dev/sweet_spmi.c
+index 9243e51..1f2e730 100644
+--- a/bsd/dev/sweet_spmi.c
++++ b/bsd/dev/sweet_spmi.c
+@@ -114,6 +114,16 @@ sweet_spmi_read(unsigned sid, unsigned addr, uint8_t *out)
+ 	}
+ 	IOLockLock(sp_lock);
+ 	uint16_t apid = sp_find_apid((sid << 8) | peripheral);
++	{
++		/* apollo 1102: bring-up trace, the first read of each (sid, peripheral) */
++		static uint32_t traced[32];
++		unsigned key = ((sid & 3u) << 8) | peripheral;
++		if (!(traced[key >> 5] & (1u << (key & 31)))) {
++			traced[key >> 5] |= 1u << (key & 31);
++			printf("SWEET SPMI: sid %u periph %#x -> apid %#x owner %u\n", sid, peripheral, apid,
++			    apid == SP_NO_APID ? 9u : (sp_rd(sp_cfg, 0x700u + 4u * apid) & 7u));
++		}
++	}
+ 	if (apid == SP_NO_APID || sp_poisoned[apid]) {
+ 		IOLockUnlock(sp_lock);
+ 		return -1;
+@@ -127,6 +137,7 @@ sweet_spmi_read(unsigned sid, unsigned addr, uint8_t *out)
+ 		uint32_t status = sp_rd(sp_obs, off + 0x08u);
+ 		if (status & 1u) {
+ 			if (status & 0x0eu) {
++				printf("SWEET SPMI: read sid %u addr %#x status %#x\n", sid, addr, status);
+ 				IOLockUnlock(sp_lock);
+ 				return -1;
+ 			}
+diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+index 2514af3..ec807ee 100644
+--- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
++++ b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+@@ -157,10 +157,14 @@ SweetPlatformExpert::start(IOService *provider)
+ 		return false;
+ 	}
+ 	flame_wdt_start();
++	printf("SWEET PE: wdt started, poke next\n");     /* apollo 1102: bring-up trace */
+ 	sweet_poke_start();             /* register scripts: bsd/dev/sweet_poke.c */
+ 	uint32_t rtc = 0;
+ 	uint8_t ctrl = 0;
+-	if (sweet_rtc_read(&rtc) == 0 && sweet_spmi_read(0, PM8150_RTC_CTRL, &ctrl) == 0) {
++	uint32_t rtc_on = 1;
++	(void)PE_parse_boot_argn("sweetrtc", &rtc_on, sizeof(rtc_on));      /* apollo 1102: sweetrtc=0 skips the PMIC RTC */
++	printf("SWEET PE: rtc read next (sweetrtc=%u)\n", rtc_on);
++	if (rtc_on && sweet_rtc_read(&rtc) == 0 && sweet_spmi_read(0, PM8150_RTC_CTRL, &ctrl) == 0) {
+ 		IOLog("SWEET RTC: PM8150 RTC %u s (ctrl %02x), time of day %ld\n", rtc, ctrl, getGMTTimeOfDay());
+ 		publishResource("IORTC", this);
+ 	} else {

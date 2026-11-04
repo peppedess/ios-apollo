@@ -352,3 +352,4 @@ all upstream patches. Kernels "0151"/"0152" in the logs = 0901/0902.
   (vendor answers carry the sub-opcode, Unknown Command / LE Command Disallowed -> success; `--bridge-raw` off).
 - 1100 apollo-basics: early FB 0x9c000000 1080x2400 (kona splash, video-mode j3s), vol+ PM8150 GPIO6 (SID 0, 0xc500), panel height 2400 in touch/GPU, GPU FB PA
 - 1101 apollo-bsd-init-trace: bsd_init's own step messages on (printf, so they reach the RAM mirror the shim's RAMSHOW reads) to find where k1/k1b stop after AppleCLCD
+- 1102 apollo-pe-rtc-trace: trace in the platform expert start; boot-arg sweetrtc=0 skips the PM8150 RTC read; first SPMI read of each peripheral logs its APID/owner (k1d stops after bsd_init: calling IOKitInitializeTime, which waits for IORTC)
