@@ -43,6 +43,22 @@ xnu)
 	for d in "$BR"/src/xnu-8796.141.3/EXTERNAL_HEADERS "$BR"/work/xnu/xnu/EXTERNAL_HEADERS; do
 		[ -f "$d/Availability.h" ] && cp "$d"/Availability*.h "$MAC_SDK/usr/include/" && break
 	done
+	# The SDK's Availability.h also has the SPI macros (Libc's private headers use them); XNU's copy does not.
+	grep -q apollo-spi "$MAC_SDK/usr/include/Availability.h" || cat >> "$MAC_SDK/usr/include/Availability.h" <<'H'
+/* apollo-spi: SPI availability macros of the macOS SDK's Availability.h, as no-ops (local WSL builds only) */
+#ifndef __SPI_AVAILABLE
+#define __SPI_AVAILABLE(...)
+#endif
+#ifndef __SPI_DEPRECATED
+#define __SPI_DEPRECATED(...)
+#endif
+#ifndef __SPI_DEPRECATED_WITH_REPLACEMENT
+#define __SPI_DEPRECATED_WITH_REPLACEMENT(...)
+#endif
+#ifndef __SPI_UNAVAILABLE
+#define __SPI_UNAVAILABLE(...)
+#endif
+H
 	ls "$MAC_SDK/usr/include"
 	# BearSSL for xnu/patches/0020: bearssl.org's git answers 502 on and off. Keep a verified local copy of the
 	# pinned commit (retried until it comes through) and hand it over as BEARSSL_DIR for when the live fetch fails.
@@ -50,13 +66,30 @@ xnu)
 	bsha=7bea48e5e850ab4cafbe68d3765cdaba13a86d6f
 	if [ "$(git -C "$BEARSSL_DIR" rev-parse HEAD 2>/dev/null)" != "$bsha" ]; then
 		rm -rf "$BEARSSL_DIR"; mkdir -p "$BEARSSL_DIR"; git init -q "$BEARSSL_DIR"
-		for t in $(seq 1 20); do
+		for t in $(seq 1 3); do
 			git -C "$BEARSSL_DIR" fetch -q --depth 1 https://www.bearssl.org/git/BearSSL "$bsha" 2>/dev/null && break
 			say "bearssl.org fetch $t failed, retrying"; sleep 15
 		done
 		git -C "$BEARSSL_DIR" checkout -q FETCH_HEAD 2>/dev/null
 	fi
-	[ "$(git -C "$BEARSSL_DIR" rev-parse HEAD 2>/dev/null)" = "$bsha" ] && say "BearSSL cached ($bsha)" || say "WARN BearSSL not cached"
+	if [ "$(git -C "$BEARSSL_DIR" rev-parse HEAD 2>/dev/null)" = "$bsha" ]; then
+		say "BearSSL cached ($bsha)"
+	elif [ -f "$BR/work/xnu/xnu/libkern/crypto/sweet_bearssl/src/inner.h" ]; then
+		# An earlier run staged this commit's files into the build tree (18:07, when bearssl.org answered once):
+		# rebuild the source layout 0020 copies from, with inner.h's include put back as upstream has it.
+		export BEARSSL_DIR=/root/bearssl-src/from-tree
+		rm -rf "$BEARSSL_DIR"; cp -a "$BR/work/xnu/xnu/libkern/crypto/sweet_bearssl" "$BEARSSL_DIR"
+		python3 - "$BEARSSL_DIR/src/inner.h" <<'PY'
+import sys
+p = sys.argv[1]; t = open(p).read()
+k = '#if defined(KERNEL)\n#include <machine/limits.h>\n#else\n#include <limits.h>\n#endif'
+assert t.count(k) == 1, 'inner.h: staged include block not found'
+open(p, 'w').write(t.replace(k, '#include <limits.h>'))
+PY
+		say "BearSSL from the earlier staged tree: $BEARSSL_DIR"
+	else
+		say "WARN BearSSL not available"
+	fi
 
 	cd "$LB" && time bash build.sh xnu "${2:-apollo}"
 	echo "XNU-EXIT=$?"
