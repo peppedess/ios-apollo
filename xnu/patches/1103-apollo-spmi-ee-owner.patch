@@ -1,0 +1,41 @@
+diff --git a/bsd/dev/sweet_spmi.c b/bsd/dev/sweet_spmi.c
+index 1f2e730..20f618c 100644
+--- a/bsd/dev/sweet_spmi.c
++++ b/bsd/dev/sweet_spmi.c
+@@ -124,6 +124,21 @@ sweet_spmi_read(unsigned sid, unsigned addr, uint8_t *out)
+ 			    apid == SP_NO_APID ? 9u : (sp_rd(sp_cfg, 0x700u + 4u * apid) & 7u));
+ 		}
+ 	}
++	/*
++	 * apollo 1103: kona hands some peripherals to another execution environment (the PM8150 RTC, 0x60, is APID 2
++	 * owned by EE 1). An EE 0 observer read of such an APID never completes on apollo (k1e: the platform expert
++	 * stopped there and bsd_init waited on it in IOKitInitializeTime). Refuse them unless boot-arg sweetspmiee=1.
++	 */
++	static int sp_any_ee = -1;
++	if (sp_any_ee < 0) {
++		uint32_t v = 0;
++		(void)PE_parse_boot_argn("sweetspmiee", &v, sizeof(v));
++		sp_any_ee = v ? 1 : 0;
++	}
++	if (apid != SP_NO_APID && !sp_any_ee && (sp_rd(sp_cfg, 0x700u + 4u * apid) & 7u) != 0) {
++		IOLockUnlock(sp_lock);
++		return -1;
++	}
+ 	if (apid == SP_NO_APID || sp_poisoned[apid]) {
+ 		IOLockUnlock(sp_lock);
+ 		return -1;
+diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+index ec807ee..a75d513 100644
+--- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
++++ b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+@@ -95,7 +95,9 @@ static int
+ sweet_rtc_read(uint32_t *secs)
+ {
+ 	uint8_t b[4], again;
+-	if (sweet_spmi_init() != 0) {
++	uint32_t on = 1;
++	(void)PE_parse_boot_argn("sweetrtc", &on, sizeof(on));        /* apollo 1103: sweetrtc=0, no PMIC RTC at all */
++	if (!on || sweet_spmi_init() != 0) {
+ 		return -1;
+ 	}
+ 	for (int tries = 0; tries < 3; tries++) {
