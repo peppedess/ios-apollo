@@ -34,7 +34,9 @@ FB_W, FB_H, FB_STRIDE = 1080, 2400, 1080 * 4  # apollo j3s video mode; redfin 23
 # Internal UFS host (ufshc@1d84000 "ufs_mem"); QEMU virt has none
 UFS, UFS_SIZE = 0x01d84000, 0x3000
 TIMEBASE = 19200000
-VTIMER_INTID = 19
+# apollo (kona): the DT's arm,armv8-timer lists the standard PPIs 13/14/11/12, so CNTV is PPI 11 = INTID 27
+# (redfin/flame number them 1/2/3/0: INTID 19). With 19 the timer never interrupted and every sleep hung.
+VTIMER_INTID = 27
 # QEMU virt (-M virt,gic-version=3 -cpu cortex-a76): GICD/GICR and the generic timer's CNTFRQ
 QEMU_GICD, QEMU_GICR, QEMU_TIMEBASE = 0x08000000, 0x080a0000, 62500000
 QEMU_VTIMER_INTID = 27
