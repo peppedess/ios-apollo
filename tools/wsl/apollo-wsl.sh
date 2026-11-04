@@ -2,6 +2,9 @@
 # Run inside WSL (Ubuntu 24.04) as root, from tools on the Windows Desktop.
 #   apollo-wsl.sh setup        packages + toolchain (UniXNU clang, ld64, mig, iig): once, ~1 h
 #   apollo-wsl.sh xnu [REF]    build the SWEET kernel from peppedess/ios-apollo REF (default apollo)
+#   apollo-wsl.sh root [STEP]  build the iOS 16 root image (iPhone X 20H392) in WSL with tools/redfin-mkroot-wsl.sh:
+#                              STEP = check | deps | hfsmod | fetch | build | finish | all (default all).
+#                              Never touches the phone; the image stays in /root/apollo-root (WSL's own disk).
 # Outputs land in the Windows folder Desktop\ios-apollo\builds\xnu\<ref>-<sha>\
 set -uo pipefail
 export DEBIAN_FRONTEND=noninteractive
@@ -95,5 +98,28 @@ PY
 	echo "XNU-EXIT=$?"
 	ls -la "$P"/builds/xnu/*/ 2>/dev/null | tail -12
 	;;
-*) echo "usage: apollo-wsl.sh setup | xnu [REF]"; exit 2;;
+root)
+	R=/root/apollo-repo
+	if [ -d "$R/.git" ]; then
+		git -C "$R" fetch -q origin apollo && git -C "$R" checkout -q -f FETCH_HEAD
+	else
+		git clone -q --depth 1 -b apollo https://github.com/peppedess/ios-apollo.git "$R"
+	fi
+	say "repo $(git -C "$R" rev-parse --short HEAD)"
+	export REDFIN_WORK=/root/apollo-root
+	mkdir -p "$REDFIN_WORK"
+	df -h /root | tail -1
+	step=${2:-all}
+	if [ "$step" = all ]; then steps="deps hfsmod fetch build"; else steps=$step; fi
+	for s in $steps; do
+		say "== mkroot $s"
+		bash "$R/tools/redfin-mkroot-wsl.sh" "$s" || { echo "ROOT-EXIT=1 (step $s)"; exit 1; }
+	done
+	mkdir -p "$P/builds/iosroot"
+	cp -f "$R"/work/iosroot/*.sha256 "$P/builds/iosroot/" 2>/dev/null
+	ls -ls "$REDFIN_WORK"/iosroot.img* 2>/dev/null
+	df -h /root | tail -1
+	echo "ROOT-EXIT=0"
+	;;
+*) echo "usage: apollo-wsl.sh setup | xnu [REF] | root [STEP]"; exit 2;;
 esac
