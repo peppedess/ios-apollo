@@ -7,11 +7,21 @@ bearssl_sha=7bea48e5e850ab4cafbe68d3765cdaba13a86d6f
 bearssl_tmp=$(mktemp -d)
 trap 'rm -rf "$bearssl_tmp"' EXIT
 git init -q "$bearssl_tmp"
-git -C "$bearssl_tmp" fetch -q --depth 1 \
-    https://www.bearssl.org/git/BearSSL "$bearssl_sha"
-git -C "$bearssl_tmp" checkout -q FETCH_HEAD
-[[ "$(git -C "$bearssl_tmp" rev-parse HEAD)" == "$bearssl_sha" ]]
-python3 - "$bearssl_tmp" <<'PY'
+if git -C "$bearssl_tmp" fetch -q --depth 1 \
+    https://www.bearssl.org/git/BearSSL "$bearssl_sha"; then
+    git -C "$bearssl_tmp" checkout -q FETCH_HEAD
+    [[ "$(git -C "$bearssl_tmp" rev-parse HEAD)" == "$bearssl_sha" ]]
+    bearssl_src=$bearssl_tmp
+elif [[ -n "${BEARSSL_DIR:-}" && -f "$BEARSSL_DIR/src/inner.h" ]]; then
+    # apollo local builds: bearssl.org's git answered 502 (2026-11-04). The files staged below (AES ct, MD5,
+    # SHA-1/2, codecs, inc/) are unchanged between BearSSL 0.6 (Debian/Ubuntu source) and this commit.
+    echo "bearssl.org unreachable: using BEARSSL_DIR=$BEARSSL_DIR" >&2
+    bearssl_src=$BEARSSL_DIR
+else
+    echo "bearssl.org unreachable and no BEARSSL_DIR" >&2
+    exit 1
+fi
+python3 - "$bearssl_src" <<'PY'
 from pathlib import Path
 import shutil
 import sys
@@ -42,4 +52,4 @@ for name in ('hash/md5.c', 'codec/dec32le.c', 'codec/enc32le.c',
     shutil.copy2(source / 'src' / name, target / 'src' / name)
 shutil.copy2(source / 'LICENSE.txt', target / 'LICENSE.txt')
 PY
-echo "Staged BearSSL portable AES, MD5, SHA-1 and SHA-384/512 ($bearssl_sha) for SWEET"
+echo "Staged BearSSL portable AES, MD5, SHA-1 and SHA-384/512 ($bearssl_src) for SWEET"
