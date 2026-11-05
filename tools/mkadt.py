@@ -133,7 +133,7 @@ def node(name, props=(), children=()):
     return n
 
 
-def build(seed=None, qemu=False, highmem=False, camera=False, flash=False, backlight=False, gamut=False):
+def build(seed=None, qemu=False, highmem=False, camera=False, flash=False, backlight=False, gamut=False, nvtfw=None):
     """qemu=True: same tree, but with QEMU virt's GIC addresses and CNTFRQ (tools/qemu-sweet.py).
     camera=True: /arm-io/isp (Camera.app on the home screen); flash=True: /product/camera flash
     (the flashlight in Control Center). See CAMERA below.
@@ -270,7 +270,11 @@ def build(seed=None, qemu=False, highmem=False, camera=False, flash=False, backl
             ('compatible', cstr('sweet,display')),
             ('canvas-width', u32(1125)),
             ('canvas-height', u32(2436)),
-        ])] + ([isp_node(ph)] if camera else []))
+        ])] + ([isp_node(ph)] if camera else [])
+        # apollo xnu 1107: the Novatek NT36675 touch firmware (host download, bsd/dev/apollo_nvt.c). The file is
+        # Xiaomi's (vendor/firmware/novatek_nt36675_j3s_fw01.bin from the phone), passed with --nvtfw, never in git.
+        + ([node('nvt-touch', [ph(), ('compatible', cstr('novatek,nt36675')),
+                               ('firmware', open(nvtfw, 'rb').read())])] if nvtfw else []))
 
     fbcon = node('sweet-fbcon', [
         ph(),
@@ -341,7 +345,8 @@ def build(seed=None, qemu=False, highmem=False, camera=False, flash=False, backl
 if __name__ == '__main__':
     root = build(qemu='--qemu' in sys.argv, highmem='--highmem' in sys.argv,
                  camera='--camera' in sys.argv, flash='--flash' in sys.argv, backlight='--backlight' in sys.argv,
-                 gamut='--gamut' in sys.argv)
+                 gamut='--gamut' in sys.argv,
+                 nvtfw=next((a.split('=', 1)[1] for a in sys.argv if a.startswith('--nvtfw=')), None))
     blob = adt.serialize(root)
     open(sys.argv[1], 'wb').write(blob)
     if '--dump' in sys.argv:

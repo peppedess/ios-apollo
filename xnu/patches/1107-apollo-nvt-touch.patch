@@ -1,0 +1,806 @@
+From fb8526429bff665c39f13fc9a401c82bb4c89a5d Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 5 Nov 2026 03:11:35 +0100
+Subject: [PATCH] apollo 1107: Novatek NT36675 touch (host firmware download
+ over GENI SPI SE4), nvttouch=1
+
+---
+ bsd/conf/files       |   1 +
+ bsd/dev/apollo_nvt.c | 752 +++++++++++++++++++++++++++++++++++++++++++
+ bsd/dev/sweet_ufs.c  |   2 +
+ 3 files changed, 755 insertions(+)
+ create mode 100644 bsd/dev/apollo_nvt.c
+
+diff --git a/bsd/conf/files b/bsd/conf/files
+index 685ae15..9a59b47 100644
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -111,6 +111,7 @@ bsd/dev/sweet_touch.c			standard
+ bsd/dev/sweet_motion.c			standard
+ bsd/dev/sweet_fts.c			standard
+ bsd/dev/sweet_sects.c			standard
++bsd/dev/apollo_nvt.c			standard
+ bsd/dev/sweet_haptic.c			standard
+ bsd/dev/sweet_torch.c			standard
+ bsd/dev/sweet_cam.c			standard
+diff --git a/bsd/dev/apollo_nvt.c b/bsd/dev/apollo_nvt.c
+new file mode 100644
+index 0000000..9fecfaa
+--- /dev/null
++++ b/bsd/dev/apollo_nvt.c
+@@ -0,0 +1,752 @@
++/*
++ * apollo (Xiaomi 10T Pro) touch: Novatek NT36675 (TDDI, display + touch in one IC) on GENI SPI,
++ * QUPv3 wrapper 0 SE4 (spi@990000). The touch MCU has no flash: its firmware is downloaded over SPI
++ * on every power-up (Novatek "host download", hw CRC variant), as Xiaomi's nt36672c driver does.
++ *
++ * Sources: apollo dtbo (ts_novatek: reset GPIO 38, irq GPIO 39 rising, swrst-n8-addr 0x3f0fe,
++ * spi-rd-fast-addr 0x3f310, fw novatek_nt36675_j3s_fw01.bin), kona-qupv3.dtsi (SE4, pins 8-11 qup4),
++ * gcc-kona.c (wrap0 vote bits 6-9 + s4 bit 14 at 0x52008, s4 RCG 0x174d0, halt 0x174cc),
++ * pinctrl-kona.c (TLMM 0x0f000000: NORTH +0x900000 pins 8-11, SOUTH +0x500000 pins 38/39), and
++ * drivers/input/touchscreen/nt36672c/{nt36xxx.c,nt36xxx_fw_update.c,nt36xxx_mem_map.h} of the
++ * LineageOS sm8250 kernel. GENI FIFO code follows redfin's sweet_sects.c, with streaming FIFOs.
++ *
++ * The firmware comes from the ADT: /arm-io/nvt-touch "firmware" (tools/mkadt.py --nvtfw FILE; the
++ * file is Xiaomi's, from the phone's vendor partition, never in git).
++ *
++ * Bus framing (CTP_SPI_WRITE / CTP_SPI_READ, SPI mode 0):
++ *   write: [addr7 | 0x80] data...            (one CS-asserted transfer)
++ *   read:  [addr7 & 0x7f] + len bytes, full duplex; data starts at rx[2] (one dummy byte)
++ *   page:  write [0xff, addr >> 15, addr >> 7] selects the 128-byte window for addr7 = addr & 0x7f
++ *
++ * Boot-args: nvttouch=1 on (default off until it has run on a phone), nvtlog=1 log every frame,
++ * nvtpoll=MS read period without an edge (default 8).
++ * Nothing is written to any flash: the firmware goes to the IC's SRAM only.
++ */
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <sys/errno.h>
++#include <kern/clock.h>
++#include <kern/thread.h>
++#include <kern/sched_prim.h>
++#include <machine/machine_routines.h>
++#include <pexpert/pexpert.h>
++#include <pexpert/device_tree.h>
++
++extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++extern kern_return_t thread_terminate(thread_t);
++extern kern_return_t kernel_thread_start(thread_continue_t, void *, thread_t *);
++extern void thread_deallocate(thread_t);
++extern uint64_t mach_absolute_time(void);
++extern void sweet_hid_touch(int finger, int down, int x, int y);
++void apollo_nvt_init(void);
++
++#define NV_SE_PA        0x00990000u     /* spi@990000, QUPv3 wrap0 SE4 */
++#define NV_GCC_PA       0x00100000u
++#define NV_NORTH_PA     0x0f900000u     /* TLMM + NORTH: pins 8-11 */
++#define NV_SOUTH_PA     0x0f500000u     /* TLMM + SOUTH: pins 38, 39 */
++#define NV_GCC_VOTE     0x52008u
++#define NV_GCC_BITS     ((0xfu << 6) | (1u << 14))      /* wrap0 m_ahb, s_ahb, core, core_2x; s4 */
++#define NV_RCG          0x174d0u        /* gcc_qupv3_wrap0_s4_clk_src */
++#define NV_GPIO_CFG(n)  ((uint32_t)(n) * 0x1000u)
++#define NV_GPIO_IO(n)   (NV_GPIO_CFG(n) + 4u)
++#define NV_INTR_CFG(n)  (NV_GPIO_CFG(n) + 8u)
++#define NV_INTR_ST(n)   (NV_GPIO_CFG(n) + 0xcu)
++#define NV_PIN_SPI0     8               /* 8-11 = qup4 (function 1) */
++#define NV_PIN_RESET    38
++#define NV_PIN_IRQ      39
++#define NV_MAX          10u
++#define NV_PANEL_W      1080
++#define NV_PANEL_H      2400
++
++/* nt36xxx_mem_map.h, NT36675 */
++#define NV_EVENT_BUF    0x22d00u
++#define NV_BOOT_RDY     0x3f10du
++#define NV_ILM_LEN      0x3f118u
++#define NV_DLM_LEN      0x3f130u
++#define NV_ILM_DES      0x3f128u
++#define NV_DLM_DES      0x3f12cu
++#define NV_G_ILM_SUM    0x3f100u
++#define NV_G_DLM_SUM    0x3f104u
++#define NV_R_ILM_SUM    0x3f120u
++#define NV_R_DLM_SUM    0x3f124u
++#define NV_BLD_CRC_EN   0x3f30eu
++#define NV_BLD_CRC_FLAG 0x3f133u
++#define NV_SWRST        0x3f0feu        /* DT novatek,swrst-n8-addr */
++#define NV_RD_FAST      0x3f310u        /* DT novatek,spi-rd-fast-addr */
++#define NV_ENG_RST      0x7fff80u
++#define NV_MAP_HOST_CMD 0x50u
++#define NV_MAP_RESET    0x60u
++#define NV_MAP_FWINFO   0x78u
++#define NV_RESET_INIT   0xa0u
++#define NV_RESET_MAX    0xafu
++#define NV_POINT_LEN    65u
++#define NV_CHUNK        4096u
++
++#define SE_STATUS       0x040u
++#define SE_MCLK         0x048u
++#define SE_FIFO_OFF     0x064u
++#define SE_FW           0x068u
++#define SE_CLK_SEL      0x07cu
++#define SE_SPI_CPHA     0x224u
++#define SE_SPI_LOOP     0x22cu
++#define SE_SPI_CPOL     0x230u
++#define SE_SPI_INV      0x24cu
++#define SE_SPI_DEMUX    0x250u
++#define SE_DMA          0x258u
++#define SE_SPI_TRANS    0x25cu
++#define SE_SPI_WORD     0x268u
++#define SE_TX_LEN       0x26cu
++#define SE_RX_LEN       0x270u
++#define SE_SPI_DELAY    0x278u
++#define SE_CMD          0x600u
++#define SE_CTRL         0x604u
++#define SE_IRQ          0x610u
++#define SE_IRQ_EN       0x614u
++#define SE_IRQ_CLR      0x618u
++#define SE_TX           0x700u
++#define SE_RX           0x780u
++#define SE_TX_COUNT     0x800u
++#define SE_RX_COUNT     0x804u
++#define SE_TX_WM        0x80cu
++#define SE_HW_TX        0xe24u
++#define SE_HW_RX        0xe28u
++#define SE_DONE         (1u << 0)
++#define SE_ERRORS       (0x3eu | (3u << 28))
++#define SE_EVENTS       (SE_DONE | SE_ERRORS | (1u << 26) | (1u << 27) | (1u << 30))
++#define SPI_TX_ONLY     1u
++#define SPI_FULL_DUPLEX 3u
++#define SE_PACK0        0x0007f8feu
++#define SE_PACK1        0x000ffefeu
++
++static struct {
++	vm_offset_t se, gcc, north, south;
++	bool started, dead;
++	int log;
++	unsigned depth;                 /* FIFO depth in words */
++	const uint8_t *fw;
++	unsigned fw_size;
++	uint32_t active;
++	unsigned abs_x, abs_y;
++} nv;
++static int nv_chan;
++static uint8_t nv_tx[NV_CHUNK + 8], nv_rx[NV_CHUNK + 8];
++
++static uint32_t
++nv_rd(vm_offset_t base, uint32_t off)
++{
++	uint32_t v = *(volatile uint32_t *)(base + off);
++	__asm__ volatile("dmb oshld" ::: "memory");
++	return v;
++}
++
++static void
++nv_wr(vm_offset_t base, uint32_t off, uint32_t val)
++{
++	__asm__ volatile("dmb oshst" ::: "memory");
++	*(volatile uint32_t *)(base + off) = val;
++	__asm__ volatile("dsb osh" ::: "memory");
++}
++
++static void
++nv_sleep(unsigned ms)
++{
++	uint64_t deadline;
++	clock_interval_to_deadline(ms, NSEC_PER_MSEC, &deadline);
++	(void)assert_wait_deadline(&nv_chan, THREAD_UNINT, deadline);
++	thread_block(THREAD_CONTINUE_NULL);
++}
++
++static bool
++nv_wait_clear(vm_offset_t base, uint32_t off, uint32_t mask)
++{
++	for (unsigned i = 0; i < 5000; ++i) {
++		if (!(nv_rd(base, off) & mask)) {
++			return true;
++		}
++		delay(1);
++	}
++	return false;
++}
++
++/* TLMM: [1:0] pull (0 none, 1 down, 3 up), [5:2] function, [8:6] drive (mA/2 - 1), [9] output enable. */
++static void
++nv_gpio(vm_offset_t tile, unsigned pin, unsigned mux, unsigned pull, unsigned drive, bool out, bool high)
++{
++	if (out) {
++		nv_wr(tile, NV_GPIO_IO(pin), (nv_rd(tile, NV_GPIO_IO(pin)) & ~2u) | (high ? 2u : 0u));
++	}
++	uint32_t cfg = nv_rd(tile, NV_GPIO_CFG(pin)) & ~0x3ffu;
++	cfg |= (mux << 2) | pull | (drive << 6) | (out ? 0x200u : 0u);
++	nv_wr(tile, NV_GPIO_CFG(pin), cfg);
++}
++
++static bool
++nv_clocks(void)
++{
++	nv_wr(nv.gcc, NV_GCC_VOTE, nv_rd(nv.gcc, NV_GCC_VOTE) | NV_GCC_BITS);
++	uint32_t cfg = nv_rd(nv.gcc, NV_RCG + 4u), dfs = nv_rd(nv.gcc, NV_RCG + 0x14u);
++	printf("APOLLO NVT: gcc vote=%#x rcg=%#x cfg=%#x dfs=%#x\n", nv_rd(nv.gcc, NV_GCC_VOTE),
++	    nv_rd(nv.gcc, NV_RCG), cfg, dfs);
++	if (dfs & 1u) {
++		cfg = nv_rd(nv.gcc, NV_RCG + 0x1cu);
++		if ((cfg & 0x371fu) != 1u) {
++			printf("APOLLO NVT: DFS level 0 cfg %#x is not XO/1; stopping\n", cfg);
++			return false;
++		}
++	} else {
++		cfg = (cfg & ~(0x371fu | (1u << 20))) | 1u;
++		nv_wr(nv.gcc, NV_RCG + 4u, cfg);
++		nv_wr(nv.gcc, NV_RCG, nv_rd(nv.gcc, NV_RCG) | 1u);
++		if (!nv_wait_clear(nv.gcc, NV_RCG, 1u)) {
++			printf("APOLLO NVT: RCG update timeout\n");
++			return false;
++		}
++	}
++	const uint32_t branches[] = {0x17004, 0x17008, 0x174cc};
++	for (unsigned i = 0; i < sizeof(branches) / sizeof(branches[0]); ++i) {
++		uint32_t cbcr = nv_rd(nv.gcc, branches[i]);
++		if (cbcr & 2u) {
++			continue;       /* hardware clock gating */
++		}
++		if (!nv_wait_clear(nv.gcc, branches[i], 1u << 31)) {
++			printf("APOLLO NVT: GCC branch %#x halted (%#x)\n", branches[i], nv_rd(nv.gcc, branches[i]));
++			return false;
++		}
++	}
++	return true;
++}
++
++static bool
++nv_se_init(void)
++{
++	uint32_t fw = nv_rd(nv.se, SE_FW), tx = nv_rd(nv.se, SE_HW_TX), rx = nv_rd(nv.se, SE_HW_RX);
++	printf("APOLLO NVT: se4 fw=%#x proto=%u status=%#x fifo-off=%#x tx=%#x rx=%#x\n", fw, (fw >> 8) & 0xffu,
++	    nv_rd(nv.se, SE_STATUS), nv_rd(nv.se, SE_FIFO_OFF), tx, rx);
++	if (((fw >> 8) & 0xffu) != 1u || (nv_rd(nv.se, SE_FIFO_OFF) & 1u) ||
++	    ((tx >> 24) & 0x3fu) != 32u || ((rx >> 24) & 0x3fu) != 32u ||
++	    ((tx >> 16) & 0x3fu) < 4u || ((rx >> 16) & 0x3fu) < 4u) {
++		printf("APOLLO NVT: SE4 has no SPI firmware with 32-bit FIFOs; stopping\n");
++		return false;
++	}
++	if (nv_rd(nv.se, SE_STATUS) & 0x1001u) {
++		printf("APOLLO NVT: SE4 busy; stopping\n");
++		return false;
++	}
++	nv.depth = (tx >> 16) & 0x3fu;
++	if (((rx >> 16) & 0x3fu) < nv.depth) {
++		nv.depth = (rx >> 16) & 0x3fu;
++	}
++	nv_wr(nv.se, 0xe18, 0);
++	nv_wr(nv.se, 0xe1c, 0);
++	nv_wr(nv.se, 0x644, 0);
++	nv_wr(nv.se, SE_IRQ_CLR, 0xffffffffu);
++	nv_wr(nv.se, 0x648, 0xffffffffu);
++	nv_wr(nv.se, SE_DMA, 0);
++	nv_wr(nv.se, 0x28, nv_rd(nv.se, 0x28) | 0x7fu);
++	nv_wr(nv.se, 0xe30, nv_rd(nv.se, 0xe30) | 0x0fu);
++	nv_wr(nv.se, 0x24, 0x7f);
++	nv_wr(nv.se, 0x20, 1);
++	/* SPI mode 0 (nt36xxx.c), CS0, no loopback; XO 19.2 MHz / 4 = 4.8 MHz (DT max 15). */
++	nv_wr(nv.se, SE_SPI_LOOP, nv_rd(nv.se, SE_SPI_LOOP) & ~3u);
++	nv_wr(nv.se, SE_SPI_DEMUX, 0);
++	nv_wr(nv.se, SE_SPI_CPHA, nv_rd(nv.se, SE_SPI_CPHA) & ~1u);
++	nv_wr(nv.se, SE_SPI_CPOL, nv_rd(nv.se, SE_SPI_CPOL) & ~4u);
++	nv_wr(nv.se, SE_SPI_INV, 0);
++	nv_wr(nv.se, SE_CLK_SEL, 0);
++	nv_wr(nv.se, SE_MCLK, (4u << 4) | 1u);
++	nv_wr(nv.se, SE_SPI_DELAY, 0);
++	nv_wr(nv.se, SE_SPI_WORD, (nv_rd(nv.se, SE_SPI_WORD) & ~0x3ffu) | (8u - 4u));
++	nv_wr(nv.se, SE_SPI_TRANS, nv_rd(nv.se, SE_SPI_TRANS) & ~1u);
++	nv_wr(nv.se, 0x254, 0);
++	nv_wr(nv.se, 0x260, SE_PACK0);
++	nv_wr(nv.se, 0x264, SE_PACK1);
++	nv_wr(nv.se, 0x284, SE_PACK0);
++	nv_wr(nv.se, 0x288, SE_PACK1);
++	nv_wr(nv.se, SE_TX_WM, 0);
++	nv_wr(nv.se, 0x810, 0);
++	nv_wr(nv.se, 0x814, ((rx >> 16) & 0x3fu) - 2u);
++	nv_wr(nv.se, SE_IRQ_EN, SE_EVENTS);
++	/* Drain anything a previous owner left behind. */
++	for (unsigned i = 0; i < 64 && (nv_rd(nv.se, SE_RX_COUNT) & 0x1ffffffu); ++i) {
++		(void)nv_rd(nv.se, SE_RX);
++	}
++	return true;
++}
++
++static void
++nv_abort(void)
++{
++	nv_wr(nv.se, SE_CTRL, 2);
++	bool done = false;
++	for (unsigned i = 0; i < 5000; ++i) {
++		if (nv_rd(nv.se, SE_IRQ) & (1u << 5)) {
++			done = true;
++			break;
++		}
++		delay(1);
++	}
++	for (unsigned i = 0; i < 4096 && (nv_rd(nv.se, SE_RX_COUNT) & 0x1ffffffu); ++i) {
++		(void)nv_rd(nv.se, SE_RX);
++	}
++	nv_wr(nv.se, SE_IRQ_CLR, 0xffffffffu);
++	if (!done || !nv_wait_clear(nv.se, SE_STATUS, 1u)) {
++		nv.dead = true;
++		printf("APOLLO NVT: abort failed status=%#x irq=%#x; stopping\n", nv_rd(nv.se, SE_STATUS),
++		    nv_rd(nv.se, SE_IRQ));
++	}
++}
++
++/*
++ * One CS-asserted GENI command of any length: TX_ONLY sends tx[0..len); FULL_DUPLEX also clocks len
++ * bytes into rx. The FIFOs are fed and drained by polling their word counts.
++ */
++static int
++nv_xfer(unsigned op, const uint8_t *tx, uint8_t *rx, unsigned len)
++{
++	bool duplex = op == SPI_FULL_DUPLEX;
++	unsigned words = (len + 3u) / 4u, sent = 0, got = 0;
++	if (nv.dead || len == 0) {
++		return EIO;
++	}
++	if (!nv_wait_clear(nv.se, SE_STATUS, 1u)) {
++		nv.dead = true;
++		return EBUSY;
++	}
++	nv_wr(nv.se, SE_IRQ_CLR, 0xffffffffu);
++	nv_wr(nv.se, SE_TX_LEN, len);
++	nv_wr(nv.se, SE_RX_LEN, duplex ? len : 0);
++	nv_wr(nv.se, SE_CMD, op << 27);
++	for (unsigned spin = 0; spin < 200000; ++spin) {
++		uint32_t irq = nv_rd(nv.se, SE_IRQ);
++		if (irq & SE_ERRORS) {
++			printf("APOLLO NVT: xfer error op=%u len=%u irq=%#x\n", op, len, irq);
++			break;
++		}
++		uint32_t used = nv_rd(nv.se, SE_TX_COUNT) & 0xfffffffu;
++		while (sent < words && used < nv.depth) {
++			uint32_t word = 0;
++			for (unsigned j = 0; j < 4 && sent * 4u + j < len; ++j) {
++				word |= (uint32_t)tx[sent * 4u + j] << (8u * j);
++			}
++			nv_wr(nv.se, SE_TX, word);
++			sent++;
++			used++;
++		}
++		if (duplex) {
++			uint32_t count = nv_rd(nv.se, SE_RX_COUNT) & 0x1ffffffu;
++			while (count-- && got < len) {
++				uint32_t word = nv_rd(nv.se, SE_RX);
++				for (unsigned j = 0; j < 4 && got < len; ++j) {
++					rx[got++] = (uint8_t)(word >> (8u * j));
++				}
++			}
++		}
++		if (irq & SE_DONE) {
++			nv_wr(nv.se, SE_IRQ_CLR, irq);
++			if (sent == words && (!duplex || got == len)) {
++				return 0;
++			}
++			if (duplex && sent == words) {
++				continue;       /* final RX words may land after DONE */
++			}
++			break;
++		}
++		nv_wr(nv.se, SE_IRQ_CLR, irq & ~(SE_DONE | SE_ERRORS));
++		if (sent == words) {
++			delay(1);
++		}
++	}
++	printf("APOLLO NVT: xfer op=%u len=%u sent=%u/%u got=%u irq=%#x status=%#x\n", op, len, sent, words, got,
++	    nv_rd(nv.se, SE_IRQ), nv_rd(nv.se, SE_STATUS));
++	nv_abort();
++	return EIO;
++}
++
++/* CTP_SPI_WRITE: buf[0] = SPI_WRITE_MASK(addr7). */
++static int
++nv_write(uint8_t addr7, const uint8_t *data, unsigned n)
++{
++	if (n + 1u > sizeof(nv_tx)) {
++		return EINVAL;
++	}
++	nv_tx[0] = addr7 | 0x80u;
++	memcpy(nv_tx + 1, data, n);
++	return nv_xfer(SPI_TX_ONLY, nv_tx, NULL, n + 1u);
++}
++
++/* CTP_SPI_READ: n data bytes from addr7 of the current page (one dummy byte after the address). */
++static int
++nv_read(uint8_t addr7, uint8_t *out, unsigned n)
++{
++	if (n + 2u > sizeof(nv_tx)) {
++		return EINVAL;
++	}
++	memset(nv_tx, 0, n + 2u);
++	nv_tx[0] = addr7 & 0x7fu;
++	int err = nv_xfer(SPI_FULL_DUPLEX, nv_tx, nv_rx, n + 2u);
++	if (!err) {
++		memcpy(out, nv_rx + 2, n);
++	}
++	return err;
++}
++
++static int
++nv_page(uint32_t addr)
++{
++	uint8_t b[2] = {(uint8_t)(addr >> 15), (uint8_t)(addr >> 7)};
++	return nv_write(0x7f, b, 2);    /* 0xff | 0x80 = 0xff */
++}
++
++static int
++nv_write_addr(uint32_t addr, uint8_t v)
++{
++	int err = nv_page(addr);
++	return err ? err : nv_write(addr & 0x7fu, &v, 1);
++}
++
++static int
++nv_read_addr(uint32_t addr, uint8_t *out, unsigned n)
++{
++	int err = nv_page(addr);
++	return err ? err : nv_read(addr & 0x7fu, out, n);
++}
++
++/* nvt_bootloader_reset */
++static void
++nv_bootloader_reset(void)
++{
++	(void)nv_write_addr(NV_SWRST, 0x69);
++	delay(5000);
++	(void)nv_write_addr(NV_RD_FAST, 0x00);
++}
++
++/* nvt_ts_check_chip_ver_trim: id bytes at 0x1f64e; NT36675 = xx xx xx 75/72 66 03. */
++static bool
++nv_chip_id(void)
++{
++	uint8_t id[6];
++	for (unsigned retry = 0; retry < 5 && !nv.dead; ++retry) {
++		nv_bootloader_reset();
++		memset(id, 0, sizeof(id));
++		if (!nv_read_addr(0x1f64e, id, sizeof(id))) {
++			printf("APOLLO NVT: chip id %02x %02x %02x %02x %02x %02x\n", id[0], id[1], id[2], id[3], id[4],
++			    id[5]);
++			if ((id[3] == 0x75 || id[3] == 0x72) && id[4] == 0x66 && id[5] == 0x03) {
++				return true;
++			}
++		}
++		nv_sleep(10);
++	}
++	return false;
++}
++
++static uint32_t
++nv_word(const uint8_t *p)
++{
++	return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
++}
++
++#define NV_PARTS 24u
++static struct {
++	uint32_t bin, sram, size, crc;
++} nv_map[NV_PARTS];
++static unsigned nv_nparts;
++
++/* nvt_bin_header_parser with hw_crc (CRCs from the header). */
++static bool
++nv_parse(void)
++{
++	const uint8_t *f = nv.fw;
++	unsigned size = nv.fw_size;
++	if (size < 0x1000) {
++		return false;
++	}
++	uint32_t end = nv_word(f);
++	unsigned info = 0;
++	for (uint32_t pos = 0x30; pos < end; pos += 0x10) {
++		info++;
++	}
++	unsigned ovly = (f[0x28] & 0x10) ? (f[0x28] & 0x0fu) : 0;
++	nv_nparts = 2u + info + ovly;
++	if (nv_nparts > NV_PARTS) {
++		printf("APOLLO NVT: firmware has %u partitions; stopping\n", nv_nparts);
++		return false;
++	}
++	for (unsigned i = 0; i < nv_nparts; ++i) {
++		uint32_t pos;
++		if (i < 2) {
++			nv_map[i].bin = nv_word(&f[i * 12u]);
++			nv_map[i].sram = nv_word(&f[4 + i * 12u]);
++			nv_map[i].size = nv_word(&f[8 + i * 12u]);
++			nv_map[i].crc = nv_word(&f[0x18 + i * 4u]);
++			continue;
++		}
++		pos = i < 2u + info ? 0x30u + 0x10u * (i - 2u) : nv_map[1].bin + 0x10u * (i - 2u - info);
++		if (pos + 16u > size) {
++			return false;
++		}
++		nv_map[i].sram = nv_word(&f[pos]);
++		nv_map[i].size = nv_word(&f[pos + 4]);
++		nv_map[i].bin = nv_word(&f[pos + 8]);
++		nv_map[i].crc = nv_word(&f[pos + 12]);
++	}
++	for (unsigned i = 0; i < nv_nparts; ++i) {
++		if (nv_map[i].size && nv_map[i].bin + nv_map[i].size + 1u > size) {
++			printf("APOLLO NVT: partition %u out of the file (bin %#x size %#x)\n", i, nv_map[i].bin,
++			    nv_map[i].size);
++			return false;
++		}
++	}
++	printf("APOLLO NVT: firmware %u bytes, %u partitions (info %u, overlay %u), ILM %#x+%#x DLM %#x+%#x\n", size,
++	    nv_nparts, info, ovly, nv_map[0].sram, nv_map[0].size, nv_map[1].sram, nv_map[1].size);
++	return true;
++}
++
++/* nvt_write_firmware: each partition (size + 1 bytes, as the driver) to SRAM, NV_CHUNK at a time. */
++static bool
++nv_write_firmware(void)
++{
++	for (unsigned i = 0; i < nv_nparts; ++i) {
++		if (!nv_map[i].size) {
++			continue;
++		}
++		uint32_t sram = nv_map[i].sram, bin = nv_map[i].bin, left = nv_map[i].size + 1u;
++		while (left) {
++			unsigned len = left < NV_CHUNK ? left : NV_CHUNK;
++			if (nv_page(sram) || nv_write(sram & 0x7fu, nv.fw + bin, len)) {
++				printf("APOLLO NVT: SRAM write failed at %#x (partition %u)\n", sram, i);
++				return false;
++			}
++			sram += len;
++			bin += len;
++			left -= len;
++		}
++	}
++	return true;
++}
++
++/* nvt_set_bld_crc_bank (hw_crc > 1: 3-byte length) */
++static void
++nv_crc_bank(uint32_t des, uint32_t sram, uint32_t len_addr, uint32_t size, uint32_t g_addr, uint32_t crc)
++{
++	uint8_t b[4];
++	(void)nv_page(des);
++	b[0] = (uint8_t)sram; b[1] = (uint8_t)(sram >> 8); b[2] = (uint8_t)(sram >> 16);
++	(void)nv_write(des & 0x7fu, b, 3);
++	b[0] = (uint8_t)size; b[1] = (uint8_t)(size >> 8); b[2] = (uint8_t)((size >> 16) & 1u);
++	(void)nv_write(len_addr & 0x7fu, b, 3);
++	b[0] = (uint8_t)crc; b[1] = (uint8_t)(crc >> 8); b[2] = (uint8_t)(crc >> 16); b[3] = (uint8_t)(crc >> 24);
++	(void)nv_write(g_addr & 0x7fu, b, 4);
++}
++
++static int
++nv_reset_state(void)
++{
++	uint8_t b[5];
++	for (unsigned retry = 0; retry <= 10; ++retry) {
++		memset(b, 0, sizeof(b));
++		if (!nv_read_addr(NV_EVENT_BUF | NV_MAP_RESET, b, sizeof(b)) && b[0] >= NV_RESET_INIT &&
++		    b[0] <= NV_RESET_MAX) {
++			return b[0];
++		}
++		nv_sleep(10);
++	}
++	printf("APOLLO NVT: reset state %02x %02x %02x %02x %02x\n", b[0], b[1], b[2], b[3], b[4]);
++	return -1;
++}
++
++/* nvt_download_firmware_hw_crc */
++static bool
++nv_download(void)
++{
++	for (unsigned retry = 0; retry < 3 && !nv.dead; ++retry) {
++		uint64_t t0 = mach_absolute_time(), ns;
++		nv_bootloader_reset();
++		if (!nv_write_firmware()) {
++			continue;
++		}
++		nv_crc_bank(NV_ILM_DES, nv_map[0].sram, NV_ILM_LEN, nv_map[0].size, NV_G_ILM_SUM, nv_map[0].crc);
++		nv_crc_bank(NV_DLM_DES, nv_map[1].sram, NV_DLM_LEN, nv_map[1].size, NV_G_DLM_SUM, nv_map[1].crc);
++		/* nvt_bld_crc_enable */
++		uint8_t v = 0xff;
++		(void)nv_read_addr(NV_BLD_CRC_EN, &v, 1);
++		v |= 0x80u;
++		(void)nv_write(NV_BLD_CRC_EN & 0x7fu, &v, 1);
++		/* nvt_fw_crc_enable: clear the reset status, host command 0xae */
++		(void)nv_page(NV_EVENT_BUF);
++		v = 0;
++		(void)nv_write(NV_MAP_RESET, &v, 1);
++		v = 0xae;
++		(void)nv_write(NV_MAP_HOST_CMD, &v, 1);
++		/* nvt_boot_ready */
++		(void)nv_write_addr(NV_BOOT_RDY, 1);
++		delay(5000);
++		int state = nv_reset_state();
++		absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
++		if (state >= 0) {
++			printf("APOLLO NVT: firmware running, reset state %#x (%llu ms)\n", state, ns / 1000000ULL);
++			return true;
++		}
++		uint8_t flag = 0, g[4] = {0}, r[4] = {0};
++		(void)nv_read_addr(NV_BLD_CRC_FLAG, &flag, 1);
++		(void)nv_read_addr(NV_G_ILM_SUM, g, 4);
++		(void)nv_read_addr(NV_R_ILM_SUM, r, 4);
++		printf("APOLLO NVT: download %u failed: crc flag %#x ilm bin %#x golden %#x result %#x\n", retry, flag,
++		    nv_map[0].crc, nv_word(g), nv_word(r));
++	}
++	return false;
++}
++
++static void
++nv_fw_info(void)
++{
++	uint8_t b[16] = {0};
++	nv.abs_x = NV_PANEL_W;
++	nv.abs_y = NV_PANEL_H;
++	for (unsigned retry = 0; retry < 3; ++retry) {
++		if (!nv_read_addr(NV_EVENT_BUF | NV_MAP_FWINFO, b, sizeof(b)) && (uint8_t)(b[0] + b[1]) == 0xff) {
++			unsigned x = ((unsigned)b[4] << 8) | b[5], y = ((unsigned)b[6] << 8) | b[7];
++			printf("APOLLO NVT: fw ver %u, %ux%u sensors, range %ux%u, type %#x\n", b[0], b[2], b[3], x, y,
++			    b[13]);
++			if (x >= 100 && y >= 100) {
++				nv.abs_x = x;
++				nv.abs_y = y;
++			}
++			return;
++		}
++		nv_sleep(10);
++	}
++	printf("APOLLO NVT: fw info broken (%02x %02x); range %ux%u\n", b[0], b[1], nv.abs_x, nv.abs_y);
++}
++
++/* nvt_ts_work_func: 10 slots of 6 bytes after the first byte. */
++static void
++nv_report(const uint8_t *d)
++{
++	uint32_t now = 0;
++	int x[NV_MAX] = {0}, y[NV_MAX] = {0};
++	for (unsigned i = 0; i < NV_MAX; ++i) {
++		const uint8_t *p = d + 6u * i;
++		unsigned id = p[0] >> 3, status = p[0] & 7u;
++		if (id == 0 || id > NV_MAX || (status != 1 && status != 2)) {
++			continue;
++		}
++		unsigned rx = ((unsigned)p[1] << 4) | (p[3] >> 4), ry = ((unsigned)p[2] << 4) | (p[3] & 0x0fu);
++		if (rx > nv.abs_x || ry > nv.abs_y) {
++			continue;
++		}
++		now |= 1u << (id - 1);
++		x[id - 1] = (int)(rx * NV_PANEL_W / nv.abs_x);
++		y[id - 1] = (int)(ry * NV_PANEL_H / nv.abs_y);
++	}
++	for (unsigned f = 0; f < NV_MAX; ++f) {
++		if (now & (1u << f)) {
++			sweet_hid_touch((int)f, 1, x[f], y[f]);
++			if (nv.log) {
++				printf("APOLLO NVT: finger %u at %d,%d\n", f, x[f], y[f]);
++			}
++		} else if (nv.active & (1u << f)) {
++			sweet_hid_touch((int)f, 0, 0, 0);
++			if (nv.log) {
++				printf("APOLLO NVT: finger %u up\n", f);
++			}
++		}
++	}
++	nv.active = now;
++}
++
++static void
++nv_thread(__unused void *arg, __unused wait_result_t wr)
++{
++	uint32_t poll = 8;
++	(void)PE_parse_boot_argn("nvtpoll", &poll, sizeof(poll));
++	if (poll < 2 || poll > 100) {
++		poll = 8;
++	}
++	nv.se = ml_io_map(NV_SE_PA, 0x4000);
++	nv.gcc = ml_io_map(NV_GCC_PA, 0x1f0000);
++	nv.north = ml_io_map(NV_NORTH_PA, NV_GPIO_CFG(NV_PIN_SPI0 + 4));
++	nv.south = ml_io_map(NV_SOUTH_PA, NV_GPIO_CFG(NV_PIN_IRQ + 1));
++	if (!nv.se || !nv.gcc || !nv.north || !nv.south || !nv_clocks()) {
++		printf("APOLLO NVT: mapping or clocks failed\n");
++		goto out;
++	}
++	for (unsigned p = NV_PIN_SPI0; p < NV_PIN_SPI0 + 4; ++p) {
++		nv_gpio(nv.north, p, 1, 0, 2, false, false);    /* qup4, 6 mA, no pull */
++	}
++	nv_gpio(nv.south, NV_PIN_IRQ, 0, 0, 0, false, false);   /* input */
++	/* Edge latch without routing to the CPU: raw status, rising edge, apps target, not enabled. */
++	nv_wr(nv.south, NV_INTR_CFG(NV_PIN_IRQ), (3u << 5) | (1u << 4) | (1u << 2) | (1u << 1));
++	nv_wr(nv.south, NV_INTR_ST(NV_PIN_IRQ), 0);
++	if (!nv_se_init()) {
++		goto out;
++	}
++	/* Probe order of nvt_ts_probe: reset low, eng reset, reset high, 10 ms, chip id. */
++	nv_gpio(nv.south, NV_PIN_RESET, 0, 0, 0, true, false);
++	delay(1000);
++	(void)nv_write_addr(NV_ENG_RST, 0x5a);
++	delay(1000);
++	nv_gpio(nv.south, NV_PIN_RESET, 0, 0, 0, true, true);
++	nv_sleep(10);
++	if (!nv_chip_id()) {
++		printf("APOLLO NVT: no NT36675 answered; stopping\n");
++		goto out;
++	}
++	if (!nv_parse() || !nv_download()) {
++		goto out;
++	}
++	nv_fw_info();
++	printf("APOLLO NVT: touch running (poll %u ms, edge latch on GPIO %u)\n", poll, NV_PIN_IRQ);
++	uint8_t d[NV_POINT_LEN];
++	unsigned idle = 0;
++	while (!nv.dead) {
++		bool edge = nv_rd(nv.south, NV_INTR_ST(NV_PIN_IRQ)) & 1u;
++		if (edge || nv.active || ++idle >= 6) {
++			if (edge) {
++				nv_wr(nv.south, NV_INTR_ST(NV_PIN_IRQ), 0);
++			}
++			idle = 0;
++			if (!nv_read_addr(NV_EVENT_BUF, d, sizeof(d))) {
++				nv_report(d);
++			}
++		}
++		nv_sleep(poll);
++	}
++out:
++	printf("APOLLO NVT: thread stopped\n");
++	thread_terminate(current_thread());
++}
++
++void
++apollo_nvt_init(void)
++{
++	int enabled = 0;
++	thread_t thread;
++	if (nv.started) {
++		return;
++	}
++	nv.started = true;
++	(void)PE_parse_boot_argn("nvttouch", &enabled, sizeof(enabled));
++	(void)PE_parse_boot_argn("nvtlog", &nv.log, sizeof(nv.log));
++	if (!enabled) {
++		printf("APOLLO NVT: disabled (nvttouch=1 enables the NT36675 driver)\n");
++		return;
++	}
++	DTEntry node;
++	void const *fw = NULL;
++	unsigned int size = 0;
++	if (SecureDTLookupEntry(NULL, "/arm-io/nvt-touch", &node) != kSuccess ||
++	    SecureDTGetProperty(node, "firmware", &fw, &size) != kSuccess || size < 0x1000) {
++		printf("APOLLO NVT: no /arm-io/nvt-touch firmware in the device tree (mkadt.py --nvtfw)\n");
++		return;
++	}
++	nv.fw = (const uint8_t *)fw;
++	nv.fw_size = size;
++	if (kernel_thread_start(nv_thread, NULL, &thread) == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	} else {
++		printf("APOLLO NVT: kernel_thread_start failed\n");
++	}
++}
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index ba89c43..7e9e54e 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -55,6 +55,7 @@ extern void sweet_touch_init(void);
+ extern void sweet_motion_init(void);
+ extern void sweet_fts_init(void);
+ extern void sweet_sects_init(void);
++extern void apollo_nvt_init(void);
+ extern void sweet_haptic_init(void);
+ extern void sweet_torch_init(void);
+ extern void sweet_cam_init(void);
+@@ -680,6 +681,7 @@ sweet_ufs_init(void)
+ 	sweet_motion_init();	/* redfin sensors: /dev/redwood-motion, poke m (bsd/dev/sweet_motion.c) */
+ 	sweet_fts_init();
+ 	sweet_sects_init();	/* redfin sec_ts (sectouch=1) */
++	apollo_nvt_init();	/* apollo Novatek NT36675 (nvttouch=1): bsd/dev/apollo_nvt.c */
+ 	sweet_haptic_init();	/* redfin DRV2624 (sweethaptic=1) */
+ 	sweet_torch_init();	/* redfin flash LED (sweettorch=2): bsd/dev/sweet_torch.c */
+ 	sweet_cam_init();	/* redfin camera sensors (sweetcam=1/2): bsd/dev/sweet_cam.c */
+-- 
+2.43.0
+
