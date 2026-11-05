@@ -146,3 +146,8 @@ phone yet: installing it means writing userdata (sda34), i.e. wiping Android (ph
 Phase 4 done 2026-11-05 01:28-01:53 (confirmed by Giuseppe): iosroot.img written to userdata (sda34) from LineageOS
 recovery with tools/apollo-install-root-wsl.sh; all 16 GiB verified against the per-GiB SHA-256. Next: k2
 (img/apollo-k2.img: rd=ufsroot0 ufsrw=1 rootrw=1 ignition_level=1 ..., sweetlog=1 ufslogsecs=2, cpus=8).
+
+k2 (2026-11-05 01:54): **iOS 16 userland boots on apollo.** Root mounted from userdata, launchd starts the daemons
+(xpcproxy, bluetoothd, fairplayd.H2, spindump, softwareupdateservicesd, appleaccountd, localizationswitcherd, ...),
+backboardd (pid 57) presents the Apple logo through AppleCLCD (`SWEET FB: 5s: swaps 5 shown 5 dropped 0`), and
+reads the motion/pressure HID properties. Touch, USB, Wi-Fi, GPU still off (Pixel drivers).
