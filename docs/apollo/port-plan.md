@@ -205,3 +205,7 @@ k5b (1111, sweetfb_thread=1 sweetddr=1): touch back, GPU present ~0.8 ms per fra
 cpufreq): 1-8 fps while in use (frames 100-170 ms), 60 fps only in idle animations. k6a: SweetMetal2 (builds-metal2
 96f29b9, Turnip with FD650) put into the WSL root (apollo-wsl.sh metal2, mtl2-clients "* -chronod"), install delta
 (10 GiB rewritten, verify ok), boot with sweetmtl=2.
+k6a with metal2: first boot refused every Metal device (ShaderCache Permission denied: /var/local/m2v-cache missing,
+/var/local root 755) -> apollo-metal2-wsl.sh makes it 1777. Second k6a: backboardd got "Turnip Adreno (TM) 620",
+made its pipelines, drew 6 frames ('b3a8' surfaces) at 25-26 s, then nothing (black screen, spindump at 51 s):
+Turnip was given FD620's device info -> 1112.

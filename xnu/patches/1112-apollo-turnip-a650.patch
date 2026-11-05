@@ -1,0 +1,48 @@
+From 8cc8446b40ffbd9f130951ad702822aed12ca2e6 Mon Sep 17 00:00:00 2001
+From: apollo <apollo@local>
+Date: Thu, 5 Nov 2026 17:35:52 +0100
+Subject: [PATCH] apollo: Turnip gets the Adreno 650 (FD650) device info
+
+---
+ iokit/Kernel/arm/SweetAccelerator.cpp | 14 ++++++++++----
+ 1 file changed, 10 insertions(+), 4 deletions(-)
+
+diff --git a/iokit/Kernel/arm/SweetAccelerator.cpp b/iokit/Kernel/arm/SweetAccelerator.cpp
+index 3bff469..d3a15f4 100644
+--- a/iokit/Kernel/arm/SweetAccelerator.cpp
++++ b/iokit/Kernel/arm/SweetAccelerator.cpp
+@@ -123,7 +123,7 @@ SweetAccelerator::start(IOService *provider)
+ 	setProperty("MetalPluginName", plugin);
+ 	setProperty("MetalPluginClassName", which == 2 ? "SweetMTL2Device" : "SweetMTLDevice");
+ 	setProperty("IOGLBundleName", plugin);
+-	setProperty("model", "Adreno 620");	/* redfin (0904) */
++	setProperty("model", "Adreno 650");	/* apollo 1112 (redfin: Adreno 620) */
+ 	setProperty(kIOUserClientClassKey, "SweetAcceleratorUserClient");
+ 	registerService();
+ 	IOLog("SWEET MTL: IOAcceleratorES published (MetalPluginName %s)\n", plugin);
+@@ -731,13 +731,19 @@ SweetAcceleratorUserClient::v2Method(uint32_t method, const void *in, uint32_t i
+ 		 * redfin A620 (0904): chip id 0x06020000 (Mesa FD620), 512 KB GMEM at 0x100000, highest bank bit 14,
+ 		 * UBWC 3 (DT qcom,ubwc-mode = 3: sweet_a6xx.c programs AMSBC), level 2+3 swizzle as on flame.
+ 		 */
+-		rp->chip_id = 0x06020000;
+-		rp->gmem_bytes = 0x80000;
++		/*
++		 * apollo 1112: kona Adreno 650 = Mesa FD650 (chip id 0x06050002): GMEM 1 MB + 128 KB at 0x100000 (the
++		 * range sweet_a6xx.c 1110 programs), highest bank bit 16 (DT), UBWC kept at 3 with 4-channel macrotiles,
++		 * which is what 1110's RB/SP/TPL1 NC_MODE_CNTL values say. k6a: Turnip was told FD620 (1 CCU, 512 KB
++		 * GMEM) and backboardd's GPU work stopped after its first frames.
++		 */
++		rp->chip_id = 0x06050002;
++		rp->gmem_bytes = 0x120000;
+ 		rp->gmem_base = 0x100000;
+ 		rp->uche_trap_base = 0x1fffffffff000ULL;
+ 		rp->va_start = fWinBase;
+ 		rp->va_size = fWinSize;
+-		rp->highest_bank_bit = 14;
++		rp->highest_bank_bit = 16;
+ 		rp->ubwc_swizzle = 0x6;
+ 		rp->macrotile_mode = 0;
+ 		rp->ubwc_version = 3;
+-- 
+2.43.0
+
