@@ -185,3 +185,6 @@ NVTFW= (mkadt --nvtfw; extracted locally from the phone's own kernel, not in git
 
 **MILESTONE 2026-11-05 03:45: touch works on iOS** (k3c: kernel f233926 = 1107-1109, nvttouch=1, firmware blob A
 host-downloaded to the NT36675 over SPI). Next: make it the default boot (k4), unlock / home screen, Setup.
+k3c, 03:46: unlocked by swipe -> iOS 16 **home screen** (Photos, App Store, Settings, Photos widget; dock Phone,
+Safari, Messages) and the **Settings app** opens and scrolls (Wi-Fi Off, Bluetooth Unavailable). Setup skipped by the
+root image tweaks.
