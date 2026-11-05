@@ -135,3 +135,10 @@ k1m (sweetbl_dcs=1, kernel with 1104): `SWEET BL: DSI0 ctrl 0x1f7 status 0x2008 
 no reset, boot continues to cannot mount root. But the j3s panel ("xiaomi 37 02 0a video mode dsc dsi panel", dtbo)
 uses `qcom,mdss-dsi-bl-pmic-control-type = "bl_ctrl_wled"` (PM8150L WLED5 at SPMI 0xd800/0xd900, levels 2..0xfff):
 DCS 0x51 does nothing on apollo. Brightness needs a WLED driver (SPMI writes; check the APID owner first, as for the RTC).
+
+## iOS root image (2026-11-05)
+
+Built in WSL (`wsl/wsl-root.bat` = `apollo-wsl.sh root`): iOS 16.7.16 iPhone X (20H392) rootfs + SystemOS + AppOS
+cryptexes, case-sensitive journaled HFS+ "iOSRoot", 16 GiB (sparse, ~11.6 GB used), fsck clean,
+`/root/apollo-root/iosroot.img` in WSL; per-GiB SHA-256 in work/iosroot/iosroot.gib.sha256 (WSL clone). Not on the
+phone yet: installing it means writing userdata (sda34), i.e. wiping Android (phase 4, explicit confirmation only).
