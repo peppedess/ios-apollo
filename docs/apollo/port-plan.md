@@ -196,3 +196,8 @@ MHz, GMEM 1 MB + 128 KB, hang detect 0xcfffff, PC_DBG_ECO 0x300000, UBWC (hbb 16
 (RB_CCU_CNTL 0x18000000), PC/VFD power 2, accelerator reports 650. Firmware (a650_sqe.fw, a650_gmu.bin,
 a650_zap.mdt/.b02 from vendor/firmware, not in git) goes in with GPUFW=DIR tools/apollo-k1.sh. Test k5: sweetgpu=1
 (log "a6:"/"zap:"/"rpmh:" lines in sweetlog), then sweetmtl=2.
+
+**MILESTONE 2026-11-05 16:22: Adreno 650 up** (k5a: kernel fb9280f = 1110, sweetgpu=1 sweetfb_thread=0 sweetddr=0):
+GMU fw 6a1e904 BOOTED, HFI perf vote 490 MHz, oob gpu_set acked (GX GDSC on), CP me_init idle, zap a650 auth at
+0xc8100000 rc 0, "GPU ready in 303 ms"; the framebuffer present already scales frames on the GPU (submits ~1.5 ms).
+Touch was dead in k5a: warm reboot left stale NT36675 firmware (stuck finger 2 at 1000,780) -> 1111.

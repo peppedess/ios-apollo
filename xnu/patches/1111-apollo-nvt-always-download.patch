@@ -1,0 +1,33 @@
+From 3b23adefb24ed3411e243c8f80f6a9075744fbc8 Mon Sep 17 00:00:00 2001
+From: apollo <apollo@local>
+Date: Thu, 5 Nov 2026 16:25:56 +0100
+Subject: [PATCH] apollo: NT36675 always host-downloads the ADT firmware
+
+---
+ bsd/dev/apollo_nvt.c | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/bsd/dev/apollo_nvt.c b/bsd/dev/apollo_nvt.c
+index 14738de..813f5ea 100644
+--- a/bsd/dev/apollo_nvt.c
++++ b/bsd/dev/apollo_nvt.c
+@@ -711,7 +711,15 @@ nv_thread(__unused void *arg, __unused wait_result_t wr)
+ 		printf("APOLLO NVT: no NT36675 answered; stopping\n");
+ 		goto out;
+ 	}
+-	int state = nv_reset_state(50);         /* flash/self-loaded firmware (nt36xxx probe order) */
++	/*
++	 * apollo 1111: with firmware in the ADT, always host-download it. k5a (warm reboot from a running iOS)
++	 * found the previous boot's firmware still in the IC's SRAM: after the eng reset it reported reset state
++	 * 0xaf but its fw info was broken (30 0f) and it sent one stuck finger (2 at 1000,780) forever, which
++	 * blocked every real touch. Boot-arg nvtkeep=1 keeps a firmware that is already running instead.
++	 */
++	uint32_t keep = 0;
++	(void)PE_parse_boot_argn("nvtkeep", &keep, sizeof(keep));
++	int state = (nv.fw && !keep) ? -1 : nv_reset_state(50);   /* flash/self-loaded firmware (nt36xxx probe order) */
+ 	if (state >= 0) {
+ 		printf("APOLLO NVT: firmware running without host download, reset state %#x\n", state);
+ 	} else if (!nv.fw) {
+-- 
+2.43.0
+
