@@ -1,0 +1,86 @@
+From 4bfc59130f7b8e45cd93c7ba01d7845e4d3f80c9 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 5 Nov 2026 03:25:08 +0100
+Subject: [PATCH] apollo 1108: NT36675 firmware self-loads after bootloader
+ reset; host download only as fallback
+
+---
+ bsd/dev/apollo_nvt.c | 31 +++++++++++++++++++------------
+ 1 file changed, 19 insertions(+), 12 deletions(-)
+
+diff --git a/bsd/dev/apollo_nvt.c b/bsd/dev/apollo_nvt.c
+index 9fecfaa..46ccd1c 100644
+--- a/bsd/dev/apollo_nvt.c
++++ b/bsd/dev/apollo_nvt.c
+@@ -10,8 +10,10 @@
+  * drivers/input/touchscreen/nt36672c/{nt36xxx.c,nt36xxx_fw_update.c,nt36xxx_mem_map.h} of the
+  * LineageOS sm8250 kernel. GENI FIFO code follows redfin's sweet_sects.c, with streaming FIFOs.
+  *
+- * The firmware comes from the ADT: /arm-io/nvt-touch "firmware" (tools/mkadt.py --nvtfw FILE; the
+- * file is Xiaomi's, from the phone's vendor partition, never in git).
++ * apollo 1108: LineageOS ships no novatek_nt36675_j3s_fw01.bin (not in vendor, odm or the kernel), so
++ * the TDDI loads its touch firmware itself (FFM2CPU: from the panel's flash) after a bootloader reset, as
++ * flash-based nt36xxx parts do (bootloader reset, then reset state >= 0xa0). Host download only runs when
++ * that fails and the ADT carries a firmware: /arm-io/nvt-touch "firmware" (tools/mkadt.py --nvtfw FILE).
+  *
+  * Bus framing (CTP_SPI_WRITE / CTP_SPI_READ, SPI mode 0):
+  *   write: [addr7 | 0x80] data...            (one CS-asserted transfer)
+@@ -541,10 +543,10 @@ nv_crc_bank(uint32_t des, uint32_t sram, uint32_t len_addr, uint32_t size, uint3
+ }
+ 
+ static int
+-nv_reset_state(void)
++nv_reset_state(unsigned tries)
+ {
+ 	uint8_t b[5];
+-	for (unsigned retry = 0; retry <= 10; ++retry) {
++	for (unsigned retry = 0; retry <= tries; ++retry) {
+ 		memset(b, 0, sizeof(b));
+ 		if (!nv_read_addr(NV_EVENT_BUF | NV_MAP_RESET, b, sizeof(b)) && b[0] >= NV_RESET_INIT &&
+ 		    b[0] <= NV_RESET_MAX) {
+@@ -582,7 +584,7 @@ nv_download(void)
+ 		/* nvt_boot_ready */
+ 		(void)nv_write_addr(NV_BOOT_RDY, 1);
+ 		delay(5000);
+-		int state = nv_reset_state();
++		int state = nv_reset_state(10);
+ 		absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
+ 		if (state >= 0) {
+ 			printf("APOLLO NVT: firmware running, reset state %#x (%llu ms)\n", state, ns / 1000000ULL);
+@@ -693,7 +695,13 @@ nv_thread(__unused void *arg, __unused wait_result_t wr)
+ 		printf("APOLLO NVT: no NT36675 answered; stopping\n");
+ 		goto out;
+ 	}
+-	if (!nv_parse() || !nv_download()) {
++	int state = nv_reset_state(50);         /* flash/self-loaded firmware (nt36xxx probe order) */
++	if (state >= 0) {
++		printf("APOLLO NVT: firmware running without host download, reset state %#x\n", state);
++	} else if (!nv.fw) {
++		printf("APOLLO NVT: firmware did not start and the ADT has none to download; stopping\n");
++		goto out;
++	} else if (!nv_parse() || !nv_download()) {
+ 		goto out;
+ 	}
+ 	nv_fw_info();
+@@ -736,13 +744,12 @@ apollo_nvt_init(void)
+ 	DTEntry node;
+ 	void const *fw = NULL;
+ 	unsigned int size = 0;
+-	if (SecureDTLookupEntry(NULL, "/arm-io/nvt-touch", &node) != kSuccess ||
+-	    SecureDTGetProperty(node, "firmware", &fw, &size) != kSuccess || size < 0x1000) {
+-		printf("APOLLO NVT: no /arm-io/nvt-touch firmware in the device tree (mkadt.py --nvtfw)\n");
+-		return;
++	if (SecureDTLookupEntry(NULL, "/arm-io/nvt-touch", &node) == kSuccess &&
++	    SecureDTGetProperty(node, "firmware", &fw, &size) == kSuccess && size >= 0x1000) {
++		nv.fw = (const uint8_t *)fw;
++		nv.fw_size = size;
+ 	}
+-	nv.fw = (const uint8_t *)fw;
+-	nv.fw_size = size;
++	printf("APOLLO NVT: starting (%s)\n", nv.fw ? "ADT firmware for host download" : "no ADT firmware");
+ 	if (kernel_thread_start(nv_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	} else {
+-- 
+2.43.0
+
