@@ -5,6 +5,9 @@
 #   apollo-wsl.sh root [STEP]  build the iOS 16 root image (iPhone X 20H392) in WSL with tools/redfin-mkroot-wsl.sh:
 #                              STEP = check | deps | hfsmod | fetch | build | finish | all (default all).
 #                              Never touches the phone; the image stays in /root/apollo-root (WSL's own disk).
+#   apollo-wsl.sh install [verify|delta]   write that image to the phone's userdata (sda34) from LineageOS recovery
+#                              with tools/apollo-install-root-wsl.sh. ERASES ANDROID'S DATA: the full install only runs
+#                              with CONFIRM=ERASE set by the caller (wsl-install-root.bat); verify only reads.
 # Outputs land in the Windows folder Desktop\ios-apollo\builds\xnu\<ref>-<sha>\
 set -uo pipefail
 export DEBIAN_FRONTEND=noninteractive
@@ -121,5 +124,13 @@ root)
 	df -h /root | tail -1
 	echo "ROOT-EXIT=0"
 	;;
-*) echo "usage: apollo-wsl.sh setup | xnu [REF] | root [STEP]"; exit 2;;
+install)
+	R=/root/apollo-repo
+	git -C "$R" fetch -q origin apollo && git -C "$R" checkout -q -f FETCH_HEAD || exit 1
+	say "repo $(git -C "$R" rev-parse --short HEAD)"
+	export REDFIN_WORK=/root/apollo-root ADB="/mnt/c/Users/giuse/Desktop/Firmware e ROM/platform-tools/adb.exe"
+	bash "$R/tools/apollo-install-root-wsl.sh" ${2:-}
+	echo "INSTALL-EXIT=$?"
+	;;
+*) echo "usage: apollo-wsl.sh setup | xnu [REF] | root [STEP] | install [verify|delta]"; exit 2;;
 esac
