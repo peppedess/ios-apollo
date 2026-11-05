@@ -1,0 +1,54 @@
+From ffe06df3316eee1409c25d1093b466a2fce6f573 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 5 Nov 2026 02:47:24 +0100
+Subject: [PATCH] apollo 1106: time of day from boot-arg sweettime when the
+ PMIC RTC is not readable; publish IORTC
+
+---
+ iokit/Kernel/arm/SweetPlatformExpert.cpp | 16 +++++++++++++++-
+ 1 file changed, 15 insertions(+), 1 deletion(-)
+
+diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+index a75d513..75cc78a 100644
+--- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
++++ b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+@@ -9,6 +9,7 @@
+ #include <IOKit/IOPlatformExpert.h>
+ #include <IOKit/IODeviceTreeSupport.h>
+ #include <IOKit/IOLib.h>
++#include <kern/clock.h>
+ 
+ class SweetPlatformExpert : public IODTPlatformExpert {
+ 	OSDeclareDefaultStructors(SweetPlatformExpert);
+@@ -131,7 +132,16 @@ SweetPlatformExpert::getGMTTimeOfDay(void)
+ 	uint32_t rtc = 0;
+ 	uint64_t off = 0;
+ 	if (sweet_rtc_read(&rtc) != 0) {
+-		return 0;
++		/*
++		 * apollo 1106: kona's PM8150 RTC belongs to another SPMI EE (1103), so without it the time of day comes
++		 * from boot-arg sweettime (UNIX seconds, written when the boot image is built) plus the uptime.
++		 */
++		uint64_t t = 0, ns = 0;
++		if (!PE_parse_boot_argn("sweettime", &t, sizeof(t)) || t == 0) {
++			return 0;
++		}
++		absolutetime_to_nanoseconds(mach_absolute_time(), &ns);
++		return (long)(t + ns / NSEC_PER_SEC);
+ 	}
+ 	(void)PE_parse_boot_argn("sweetrtcoff", &off, sizeof(off));
+ 	return (long)((uint64_t)rtc + off);
+@@ -169,6 +179,10 @@ SweetPlatformExpert::start(IOService *provider)
+ 	if (rtc_on && sweet_rtc_read(&rtc) == 0 && sweet_spmi_read(0, PM8150_RTC_CTRL, &ctrl) == 0) {
+ 		IOLog("SWEET RTC: PM8150 RTC %u s (ctrl %02x), time of day %ld\n", rtc, ctrl, getGMTTimeOfDay());
+ 		publishResource("IORTC", this);
++	} else if (getGMTTimeOfDay() != 0) {
++		/* apollo 1106: publish the boot-arg clock too, so bsd_init does not wait 30 s for an IORTC */
++		IOLog("SWEET RTC: PM8150 RTC not readable; time of day %ld from boot-arg sweettime\n", getGMTTimeOfDay());
++		publishResource("IORTC", this);
+ 	} else {
+ 		IOLog("SWEET RTC: PM8150 RTC not readable; no time of day\n");
+ 	}
+-- 
+2.43.0
+
