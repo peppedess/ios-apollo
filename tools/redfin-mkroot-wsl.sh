@@ -227,7 +227,8 @@ finish() {
 		rm -f "$adt.lzfse"
 		ls -l "$adt"
 	fi
-	if python3 -I "$REPO/tools/adt.py" dump "$adt" 2>/dev/null | grep -q 'product'; then
+	# grep -q stops reading at the first match: with pipefail the dumper's broken pipe failed this test
+	if python3 -I "$REPO/tools/adt.py" dump "$adt" 2>/dev/null | grep -c 'product' >/dev/null; then
 		echo "d22ap.adt parses, /product present"
 	else
 		echo "d22ap.adt does not parse as an ADT:"; head -c 64 "$adt" | od -A x -t x1z | head -4; exit 1
