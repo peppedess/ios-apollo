@@ -5,6 +5,7 @@
 # (ufsrw=0 rootrw=0, no log thread: sweetlog=0). Expected: XNU console on screen, 8 CPUs, UFS userdata found read-only,
 # then "cannot mount root" (userdata still holds Android) until flamereboot resets to fastboot.
 # Drivers that still carry Pixel 5 (lito) addresses stay off: USB, touch, GPU/Metal, cpufreq (kona's cpufreq-hw differs).
+# Env: NVTFW=FILE (NT36675 firmware, 1107), GPUFW=DIR (Adreno 650 firmware, 1110).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 K=${1:?kernel} DTB=${2:?dtb} OUT=${3:?out.img}; shift 3
@@ -30,7 +31,9 @@ seen = {}
 for a in sys.argv[1:]:
     seen[a.split("=", 1)[0]] = a
 print(" ".join(seen.values()))' $args)
-python3 -I tools/mkpayload.py "$W/kernel" "$W/apollo-hi.adt" "$W/payload" --cmdline "$args"
+# GPUFW=DIR: Adreno 650 firmware (a650_sqe.fw, a650_gmu.bin, a650_zap.mdt/.b02 from the phone's vendor/firmware;
+# never in git) goes into /chosen/gpufw,* for sweetgpu=1 (patch 1110)
+python3 -I tools/mkpayload.py "$W/kernel" "$W/apollo-hi.adt" "$W/payload" --cmdline "$args" ${GPUFW:+--gpufw "$GPUFW"}
 SHIM_CFLAGS="-DSHIM_NO_UFS_WRITE" SHIM_KERNEL=raw DTB="$DTB" bash shim/build.sh "$W/payload" "$OUT"
 # Shrink the AVB padding (fastboot boot needs no full 128 MiB partition image; the bridge takes <100 MB per file)
 AVB=${AVBTOOL:-python3 downloads/avb/avbtool.py}

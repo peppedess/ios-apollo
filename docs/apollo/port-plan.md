@@ -188,3 +188,11 @@ host-downloaded to the NT36675 over SPI). Next: make it the default boot (k4), u
 k3c, 03:46: unlocked by swipe -> iOS 16 **home screen** (Photos, App Store, Settings, Photos widget; dock Phone,
 Safari, Messages) and the **Settings app** opens and scrolls (Wi-Fi Off, Bluetooth Unavailable). Setup skipped by the
 root image tweaks.
+
+GPU (Adreno 650, kona; 2026-11-05): patch 1110 puts kona's values on the existing A620 (A650-family) path. The block
+addresses (kgsl-3d0 0x3d00000, GMU 0x3d6a000, RSCC 0x3de0000, GPUCC 0x3d90000, SMMU 0x3da0000, PDC 0xb290000/0xb490000,
+cmd-db 0x80860000) match lito. Changed: chipid 0x06050002, zap a650_zap in pil_gpu_region 0x8681a000, OPP 305/400/490/587
+MHz, GMEM 1 MB + 128 KB, hang detect 0xcfffff, PC_DBG_ECO 0x300000, UBWC (hbb 16, ubwc-mode 4, mal 32), 3 CCUs
+(RB_CCU_CNTL 0x18000000), PC/VFD power 2, accelerator reports 650. Firmware (a650_sqe.fw, a650_gmu.bin,
+a650_zap.mdt/.b02 from vendor/firmware, not in git) goes in with GPUFW=DIR tools/apollo-k1.sh. Test k5: sweetgpu=1
+(log "a6:"/"zap:"/"rpmh:" lines in sweetlog), then sweetmtl=2.

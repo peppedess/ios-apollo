@@ -1,0 +1,168 @@
+From d3f5eace8c0147f18896047e3101c3e869b21a34 Mon Sep 17 00:00:00 2001
+From: apollo <apollo@local>
+Date: Thu, 5 Nov 2026 16:14:49 +0100
+Subject: [PATCH] apollo: Adreno 650 (kona) values on the A620 path
+
+---
+ bsd/dev/sweet_a6xx.c                  | 42 ++++++++++++++++++++++-----
+ bsd/dev/sweet_a6xx.h                  |  7 ++++-
+ bsd/dev/sweet_gpu.c                   |  2 +-
+ iokit/Kernel/arm/SweetAccelerator.cpp |  4 +--
+ 4 files changed, 43 insertions(+), 12 deletions(-)
+
+diff --git a/bsd/dev/sweet_a6xx.c b/bsd/dev/sweet_a6xx.c
+index b1c28de..6d066c0 100644
+--- a/bsd/dev/sweet_a6xx.c
++++ b/bsd/dev/sweet_a6xx.c
+@@ -741,7 +741,8 @@ static const uint32_t gpu_lvl[] = { 0, LVL_LOW_SVS, LVL_SVS, LVL_SVS_L1, LVL_SVS
+  * 0904: redfin live DT gpu-pwrlevels-0/-1 (speed bins 0 and 132; SM7250 "765G"): 275 LOW_SVS, 400 SVS,
+  * 500 SVS_L1, 625 NOM (lito-gpu.dtsi opp table). Bin 115 tops out at 540, same NOM corner.
+  */
+-static const uint32_t gpu_khz[] = { 0, 275000, 400000, 500000, 625000 };
++/* apollo 1110: kona gpu-opp-table_v2 / pwrlevels bin 0: 305 LOW_SVS, 400 SVS, 490 SVS_L1, 587 NOM */
++static const uint32_t gpu_khz[] = { 0, 305000, 400000, 490000, 587000 };
+ static const uint32_t gpu_lvl[] = { 0, LVL_LOW_SVS, LVL_SVS, LVL_SVS_L1, LVL_NOM };
+ #else
+ static const uint32_t gpu_khz[] = { 0, 180000, 267000, 355000, 430000, 565000 };
+@@ -1080,10 +1081,10 @@ static int gmu_hfi(struct a6_gpu *g)
+ 
+ #define PAS_GPU		13
+ #if A6_GPU_ID == 620
+-/* redfin live DT pil_gpu_region@8bc15400 (0x2000); a620_zap's one loadable segment (b02, 0x68c) goes at its start */
+-#define ZAP_REGION	0x8bc15400ull
+-#define ZAP_MDT		"a620_zap.mdt"
+-#define ZAP_B02		"a620_zap.b02"
++/* apollo 1110: kona pil_gpu_region@8681a000 (0x2000), DT qcom,firmware-name "a650_zap" (redfin: 0x8bc15400, a620_zap) */
++#define ZAP_REGION	0x8681a000ull
++#define ZAP_MDT		"a650_zap.mdt"
++#define ZAP_B02		"a650_zap.b02"
+ #elif A6_GPU_ID == 618
+ #define ZAP_REGION	0x98f95000ull	/* sunfish reserved-memory gpu_region (flame 0x9a915000) */
+ #define ZAP_MDT		"a615_zap.mdt"
+@@ -1574,7 +1575,9 @@ static int gpu_cp_init(struct a6_gpu *g, bool resume)
+ 		/* UCHE: write range max, trap base, write-through base (trap 0x1fffffffff000) */
+ 		{ 0x0e05, 0xffffffc0 }, { 0x0e06, 0x1ffff }, { 0x0e09, 0xfffff000 }, { 0x0e0a, 0x1ffff },
+ 		{ 0x0e07, 0xfffff000 }, { 0x0e08, 0x1ffff },
+-#if A6_GPU_ID == 618 || A6_GPU_ID == 620
++#if A6_GPU_ID == 620 && A6_ADRENO == 650
++		{ 0x0e0b, 0x100000 }, { 0x0e0c, 0 }, { 0x0e0d, 0x21ffff }, { 0x0e0e, 0 },	/* GMEM range: A650 1 MB + 128 KB */
++#elif A6_GPU_ID == 618 || A6_GPU_ID == 620
+ 		{ 0x0e0b, 0x100000 }, { 0x0e0c, 0 }, { 0x0e0d, 0x17ffff }, { 0x0e0e, 0 },	/* GMEM range: 512 KB */
+ #else
+ 		{ 0x0e0b, 0x100000 }, { 0x0e0c, 0 }, { 0x0e0d, 0x1fffff }, { 0x0e0e, 0 },	/* GMEM range */
+@@ -1587,7 +1590,9 @@ static int gpu_cp_init(struct a6_gpu *g, bool resume)
+ 		{ 0x08c2, 0x02000140 }, { 0x08c1, 0x8040362c }, { 0x08c3, 128 },	/* ROQ, mem pool */
+ #endif
+ 		{ 0x098d, 1 }, { 0x0500, 1 },		/* CP_AHB_CNTL, RBBM_PERFCTR_CNTL */
+-#if A6_GPU_ID == 620
++#if A6_GPU_ID == 620 && A6_ADRENO == 650
++		{ 0x001f, (1u << 30) | 0xcfffff },	/* RBBM_INTERFACE_HANG_INT_CNTL: a650 hang_detect_cycles */
++#elif A6_GPU_ID == 620
+ 		{ 0x001f, (1u << 30) | 0x3ffff },	/* RBBM_INTERFACE_HANG_INT_CNTL: a620 hang_detect_cycles */
+ #else
+ 		{ 0x001f, (1u << 30) | 0x1fffff },	/* RBBM_INTERFACE_HANG_INT_CNTL */
+@@ -1598,8 +1603,13 @@ static int gpu_cp_init(struct a6_gpu *g, bool resume)
+ 		{ 0x0e19, (1u << 7) | 1 },		/* UCHE_CLIENT_PF */
+ #endif
+ #if A6_GPU_ID == 620
++#if A6_ADRENO == 650
++		/* PC_DBG_ECO_CNTL: a650 prim_fifo_threshold 0x300000 | disable_tseskip (bit 9) */
++		{ 0x9e00, 0x00300000 | (1u << 9) },
++#else
+ 		/* PC_DBG_ECO_CNTL: a620 prim_fifo_threshold 0x10000 | disable_tseskip (bit 9) */
+ 		{ 0x9e00, 0x00010000 | (1u << 9) },
++#endif
+ 		/* a650 family: bicubic filter weights (TPL1_BICUBIC_WEIGHTS_TABLE_0..4) */
+ 		{ 0xb608, 0 }, { 0xb609, 0x3fe05ff4 }, { 0xb60a, 0x3fa0ebee }, { 0xb60b, 0x3f5193ed },
+ 		{ 0xb60c, 0x3f0243f0 },
+@@ -1616,8 +1626,17 @@ static int gpu_cp_init(struct a6_gpu *g, bool resume)
+ 		 * kgsl a6xx_start with redfin's DT: ubwc-mode 3 (mode 0, AMSBC), highest-bank-bit 14 (lower_bit 1),
+ 		 * min-access-length 32, a650 family uavflagprd_inv 2 in SP_NC_MODE_CNTL.
+ 		 */
++#if A6_ADRENO == 650
++		/*
++		 * apollo 1110: kona DT highest-bank-bit 16 (lower_bit 3), ubwc-mode 4, min-access-length 32 (mal 0);
++		 * a650 rgb565_predicator (bit 11), AMSBC, uavflagprd_inv 2 (as kgsl a6xx_start / Mesa FD650).
++		 */
++		{ 0x8e08, (1u << 11) | (1u << 4) | (3u << 1) }, { 0xb604, 3u << 1 }, { 0xae02, (2u << 4) | (3u << 1) },
++		{ 0x0e01, 3u << 21 }, { 0x0534, 0 },
++#else
+ 		{ 0x8e08, (1u << 4) | (1u << 1) }, { 0xb604, 1u << 1 }, { 0xae02, (2u << 4) | (1u << 1) },
+ 		{ 0x0e01, 1u << 21 }, { 0x0534, 0 },
++#endif
+ #else
+ 		/* a6xx_set_ubwc_config: highest bank bit 15 (hbb_lo 2), AMSBC, UBWC 3 */
+ 		{ 0x8e08, (1u << 4) | (2u << 1) }, { 0xb604, 2u << 1 }, { 0xae02, 2u << 1 },
+@@ -1673,7 +1692,12 @@ static const uint32_t blit_init[][2] = {
+ #if A6_GPU_ID == 620
+ 	/* 0904: Mesa freedreno_devices.py FD620 raw_magic_regs (PC/VFD power 0, TPL1 0x01008000, SP chicken 0x400,
+ 	 * SP_DBG_ECO 0x01000000, RB_RBP_CNTL 0) instead of the A640's */
++#if A6_ADRENO == 650
++	/* apollo 1110: A650 has 3 SPs: PC/VFD_POWER_CNTL = 2 (Mesa a650 magic regs) */
++	{ 0x9804, 0x1f }, { 0x9805, 2 }, { 0xa0f8, 2 }, { 0xb600, 0x01008000 }, { 0x8600, 0 },
++#else
+ 	{ 0x9804, 0x1f }, { 0x9805, 0 }, { 0xa0f8, 0 }, { 0xb600, 0x01008000 }, { 0x8600, 0 },
++#endif
+ 	{ 0xae03, 0x400 }, { 0xae00, 0x01000000 }, { 0xbe04, 0 }, { 0x9600, 0x2000000 }, { 0x0e12, 1 },
+ 	{ 0x8e01, 0 }, { 0x8e04, 0x4100000 }, { 0xae04, 0 }, { 0xae0f, 0x3f }, { 0xb605, 0x44 },
+ #else
+@@ -1687,7 +1711,9 @@ static const uint32_t blit_init[][2] = {
+ 	{ 0x9236, 0 }, { 0x9300, 0 }, { 0x9306, 1 }, { 0xb183, 0 }, { 0x80af, 0 }, { 0x8099, 0 },
+ 	{ 0x980a, 0 }, { 0x9210, 0 }, { 0x9211, 0 }, { 0x9602, 0 }, { 0x9e72, 0 }, { 0xb309, 0xa2 },
+ 	{ 0xb986, 0xfc }, { 0xa007, 0 }, { 0x8864, 0 }, { 0xb800, 0x102 },
+-#if A6_GPU_ID == 620
++#if A6_GPU_ID == 620 && A6_ADRENO == 650
++	{ 0x8e07, 0x18000000 },		/* RB_CCU_CNTL: sysmem, colour after 3 CCUs x 64 KB of depth (A650) */
++#elif A6_GPU_ID == 620
+ 	{ 0x8e07, 0x08000000 },		/* RB_CCU_CNTL: sysmem, colour after 1 CCU x 64 KB of depth (A640: 2 CCUs) */
+ #else
+ 	{ 0x8e07, 0x10000000 },		/* RB_CCU_CNTL: sysmem, full CCU */
+diff --git a/bsd/dev/sweet_a6xx.h b/bsd/dev/sweet_a6xx.h
+index 0c3aaf8..999f8c8 100644
+--- a/bsd/dev/sweet_a6xx.h
++++ b/bsd/dev/sweet_a6xx.h
+@@ -64,7 +64,12 @@
+  */
+ #define A6_FB_SIZE		0x1400000ull
+ #define A6_FB_BUF_OFF		0xa00000ull
+-#define A6_CHIP_ID		0x06020000ull	/* redfin live DT qcom,chipid */
++/*
++ * apollo 1110: kona's Adreno 650 shares the A620's A650-family code paths (same GPU/GMU/RSCC/PDC/SMMU/GPUCC
++ * addresses, cmd-db at 0x80860000); A6_ADRENO names the actual part where the two differ.
++ */
++#define A6_ADRENO		650
++#define A6_CHIP_ID		0x06050002ull	/* apollo live DT qcom,chipid (redfin A620: 0x06020000) */
+ #elif A6_GPU_ID == 618
+ #define A6_FB_PA		0x9c000000ull
+ #define A6_FB_SIZE		0xa00000ull	/* mapped for the GPU: 5 x 2 MB */
+diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
+index fe0ad35..df6d079 100644
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -442,7 +442,7 @@ sweet_gpu_init(void)
+ 	ppnum_t pn = pmap_find_phys(kernel_pmap, (addr64_t)va);
+ 	a6_init_state(&gpu, ptoa_64(pn));
+ #if A6_GPU_ID == 620
+-	uint32_t lvl = 3;	/* redfin: sweetgpufreq=1 (275), 2 (400), 3 (500), 4 (625) */
++	uint32_t lvl = 3;	/* apollo: sweetgpufreq=1 (305), 2 (400), 3 (490), 4 (587); redfin 275/400/500/625 */
+ #else
+ 	uint32_t lvl = 4;	/* boot-arg sweetgpufreq=1 (180) .. 5 (565); A618 also 6 (650), 7 (800), 8 (825) */
+ #endif
+diff --git a/iokit/Kernel/arm/SweetAccelerator.cpp b/iokit/Kernel/arm/SweetAccelerator.cpp
+index dd61aa9..3bff469 100644
+--- a/iokit/Kernel/arm/SweetAccelerator.cpp
++++ b/iokit/Kernel/arm/SweetAccelerator.cpp
+@@ -437,8 +437,8 @@ SweetAcceleratorUserClient::externalMethod(uint32_t selector, IOExternalMethodAr
+ 		if (args->scalarOutputCount < 3) {
+ 			return kIOReturnBadArgument;
+ 		}
+-		out[0] = 620;		/* redfin (0904): bsd/dev/sweet_a6xx.h A6_GPU_ID / A6_CHIP_ID */
+-		out[1] = 0x06020000;
++		out[0] = 650;		/* apollo 1110: kona Adreno 650 (redfin 620); bsd/dev/sweet_a6xx.h A6_ADRENO / A6_CHIP_ID */
++		out[1] = 0x06050002;
+ 		out[2] = sweet_gpu_ready();
+ 		return kIOReturnSuccess;
+ 	case 1: {
+-- 
+2.43.0
+
