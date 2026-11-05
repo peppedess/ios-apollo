@@ -176,3 +176,9 @@ line backboardd polling IOAcceleratorES. k2d = same without sweettime: clean iOS
 Probably NOT sweettime: k2c had already booted when power + volume down was held to enter fastboot (forced reset,
 hence no panic). k2c repeated (03:05) without touching the keys: lock screen with the real date (Wednesday, November 4, PST).
 sweettime works.
+
+Touch (NT36675): k3 (1107/1108) chip id `0e 00 00 72 66 03` over SPI SE4 OK; no firmware running after ABL
+(reset state 0x2f, fw info broken), none in vendor/odm/system/product/backups. The LineageOS kernel embeds the
+firmware: four 128 KiB blobs (end flag "NVTffZB" at 0x1ba253d/0x1bc453d/0x1be653d/0x1c0853d in the recovery Image;
+header end 0x100, ILM 0x100 -> SRAM 0 size 0x13c3f or 0x11c73, DLM 0x18100 -> 0x27140). k3c: blob A passed with
+NVTFW= (mkadt --nvtfw; extracted locally from the phone's own kernel, not in git).
