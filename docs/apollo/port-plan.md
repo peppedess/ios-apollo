@@ -157,3 +157,9 @@ k2 log (pulled from the end of userdata in recovery, `log-pull.bat`): SpringBoar
 BoundingPathBitmap-1125x2436-375x812-3.00x` (also the Poster extensions). Cause: the local ADT had no /product node
 (research/ipsw-x/d22ap.adt missing where the boot image was built), so no artwork-device-subtype 2436. k2b: same
 args, ADT built with the d22ap.adt from the WSL root build (copied out with wsl/adt-copy.bat; Apple file, not in git).
+
+k2b: same BoundingPath abort. The first boot (k2, no /product) left a MobileGestalt disk cache
+(/private/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches/
+com.apple.MobileGestalt.plist), keyed by build + UUID only, so the new /product is never read (ios-sweet hit the
+same: "reflashed clean to clear it"). Fix: `apollo-wsl.sh install delta` from recovery rewrites the GiBs that differ
+from the pristine image.
