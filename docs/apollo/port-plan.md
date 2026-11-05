@@ -201,3 +201,7 @@ a650_zap.mdt/.b02 from vendor/firmware, not in git) goes in with GPUFW=DIR tools
 GMU fw 6a1e904 BOOTED, HFI perf vote 490 MHz, oob gpu_set acked (GX GDSC on), CP me_init idle, zap a650 auth at
 0xc8100000 rc 0, "GPU ready in 303 ms"; the framebuffer present already scales frames on the GPU (submits ~1.5 ms).
 Touch was dead in k5a: warm reboot left stale NT36675 firmware (stuck finger 2 at 1000,780) -> 1111.
+k5b (1111, sweetfb_thread=1 sweetddr=1): touch back, GPU present ~0.8 ms per frame, but CA renders on the CPU (no
+cpufreq): 1-8 fps while in use (frames 100-170 ms), 60 fps only in idle animations. k6a: SweetMetal2 (builds-metal2
+96f29b9, Turnip with FD650) put into the WSL root (apollo-wsl.sh metal2, mtl2-clients "* -chronod"), install delta
+(10 GiB rewritten, verify ok), boot with sweetmtl=2.
