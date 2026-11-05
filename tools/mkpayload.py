@@ -157,7 +157,9 @@ def add_poke_to_adt(adt_blob, script):
 
 # redfin Adreno 620 (kgsl adreno_gpu_core_a620): a650 GMU + SQE, a620 zap. a620_zap.mdt's only
 # PT_LOAD segment is b02 (paddr 0x5000, 0x68c bytes, relocatable): it goes at pil_gpu_region's start.
-GPU_FW = ('a650_gmu.bin', 'a650_sqe.fw', 'a620_zap.mdt', 'a620_zap.b02')
+GPU_FW = ('a650_gmu.bin', 'a650_sqe.fw')
+# zap shader: redfin's a620_zap, apollo's a650_zap (patch 1110); whichever pair the directory holds
+GPU_ZAP = (('a620_zap.mdt', 'a620_zap.b02'), ('a650_zap.mdt', 'a650_zap.b02'))
 
 
 def add_gpufw_to_adt(adt_blob, fw_dir):
@@ -165,7 +167,13 @@ def add_gpufw_to_adt(adt_blob, fw_dir):
     root, _ = adt.parse(adt_blob)
     chosen = next(c for c in root.children if c.name == 'chosen')
     chosen.props = [p for p in chosen.props if not p[0].startswith('gpufw,')]
-    for name in GPU_FW:
+    names = list(GPU_FW)
+    zaps = [z for z in GPU_ZAP if all(os.path.exists(os.path.join(fw_dir, n)) for n in z)]
+    if not zaps:
+        raise SystemExit('gpufw: no zap shader (a620_zap or a650_zap .mdt + .b02) in ' + fw_dir)
+    for z in zaps:
+        names += z
+    for name in names:
         chosen.props.append(('gpufw,' + name, 0, open(os.path.join(fw_dir, name), 'rb').read()))
     return adt.serialize(root)
 
