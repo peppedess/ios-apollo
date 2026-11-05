@@ -142,3 +142,7 @@ Built in WSL (`wsl/wsl-root.bat` = `apollo-wsl.sh root`): iOS 16.7.16 iPhone X (
 cryptexes, case-sensitive journaled HFS+ "iOSRoot", 16 GiB (sparse, ~11.6 GB used), fsck clean,
 `/root/apollo-root/iosroot.img` in WSL; per-GiB SHA-256 in work/iosroot/iosroot.gib.sha256 (WSL clone). Not on the
 phone yet: installing it means writing userdata (sda34), i.e. wiping Android (phase 4, explicit confirmation only).
+
+Phase 4 done 2026-11-05 01:28-01:53 (confirmed by Giuseppe): iosroot.img written to userdata (sda34) from LineageOS
+recovery with tools/apollo-install-root-wsl.sh; all 16 GiB verified against the per-GiB SHA-256. Next: k2
+(img/apollo-k2.img: rd=ufsroot0 ufsrw=1 rootrw=1 ignition_level=1 ..., sweetlog=1 ufslogsecs=2, cpus=8).
