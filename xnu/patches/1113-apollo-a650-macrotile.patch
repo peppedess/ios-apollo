@@ -1,0 +1,44 @@
+From ca426f8413d53b2327fbe0832440e2e06f9de8b9 Mon Sep 17 00:00:00 2001
+From: apollo <apollo@local>
+Date: Thu, 5 Nov 2026 17:40:38 +0100
+Subject: [PATCH] apollo: A650 8-channel macrotile mode (GPU and Turnip)
+
+---
+ bsd/dev/sweet_a6xx.c                  | 7 ++++++-
+ iokit/Kernel/arm/SweetAccelerator.cpp | 2 +-
+ 2 files changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/bsd/dev/sweet_a6xx.c b/bsd/dev/sweet_a6xx.c
+index 6d066c0..83b415b 100644
+--- a/bsd/dev/sweet_a6xx.c
++++ b/bsd/dev/sweet_a6xx.c
+@@ -1632,7 +1632,12 @@ static int gpu_cp_init(struct a6_gpu *g, bool resume)
+ 		 * a650 rgb565_predicator (bit 11), AMSBC, uavflagprd_inv 2 (as kgsl a6xx_start / Mesa FD650).
+ 		 */
+ 		{ 0x8e08, (1u << 11) | (1u << 4) | (3u << 1) }, { 0xb604, 3u << 1 }, { 0xae02, (2u << 4) | (3u << 1) },
+-		{ 0x0e01, 3u << 21 }, { 0x0534, 0 },
++		/*
++		 * apollo 1113: RBBM_NC_MODE_CNTL = 1, 8-channel macrotiles, as Linux a6xx_calc_ubwc_config gives the A650
++		 * family (macrotile_mode = true with hbb 16); Turnip is told the same (SweetAccelerator). k6b with 0: the
++		 * GPU rendered, but every UBWC texture came out as noise.
++		 */
++		{ 0x0e01, 3u << 21 }, { 0x0534, 1 },
+ #else
+ 		{ 0x8e08, (1u << 4) | (1u << 1) }, { 0xb604, 1u << 1 }, { 0xae02, (2u << 4) | (1u << 1) },
+ 		{ 0x0e01, 1u << 21 }, { 0x0534, 0 },
+diff --git a/iokit/Kernel/arm/SweetAccelerator.cpp b/iokit/Kernel/arm/SweetAccelerator.cpp
+index d3a15f4..c3c2dda 100644
+--- a/iokit/Kernel/arm/SweetAccelerator.cpp
++++ b/iokit/Kernel/arm/SweetAccelerator.cpp
+@@ -745,7 +745,7 @@ SweetAcceleratorUserClient::v2Method(uint32_t method, const void *in, uint32_t i
+ 		rp->va_size = fWinSize;
+ 		rp->highest_bank_bit = 16;
+ 		rp->ubwc_swizzle = 0x6;
+-		rp->macrotile_mode = 0;
++		rp->macrotile_mode = 1;	/* apollo 1113: 8-channel, = RBBM_NC_MODE_CNTL in sweet_a6xx.c */
+ 		rp->ubwc_version = 3;
+ 		rp->flags = NativeAdrenoDeviceClientIova;
+ 		return kIOReturnSuccess;
+-- 
+2.43.0
+
