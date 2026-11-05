@@ -163,3 +163,10 @@ k2b: same BoundingPath abort. The first boot (k2, no /product) left a MobileGest
 com.apple.MobileGestalt.plist), keyed by build + UUID only, so the new /product is never read (ios-sweet hit the
 same: "reflashed clean to clear it"). Fix: `apollo-wsl.sh install delta` from recovery rewrites the GiBs that differ
 from the pristine image.
+
+**MILESTONE 2026-11-05 02:43: iOS 16 lock screen on the Xiaomi 10T Pro.** k2b after `install delta` restored the
+pristine root (10 of 16 GiB rewritten, all 16 verified): SpringBoard stays up and draws the iOS 16 lock screen
+(clock 4:03 = 1969-12-31 16:03 PST: no RTC yet; default blue poster; quick-action button bottom right), through
+backboardd + AppleCLCD (`SWEET FB: 5s: swaps 18 shown 17 dropped 1`).
+Next: time of day without the PM8150 RTC (boot-arg epoch), touch (xiaomi,spi-for-tp on spi@990000), WLED backlight,
+USB, kona cpufreq, then Setup skip / activation as on ios-sweet.
