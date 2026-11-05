@@ -173,5 +173,5 @@ USB, kona cpufreq, then Setup skip / activation as on ios-sweet.
 
 k2c (1106 kernel + sweettime=<now> + sweetfb_noconsole=1 sweetsample=-): reset at ~32.5 s, no panic log, last
 line backboardd polling IOAcceleratorES. k2d = same without sweettime: clean iOS lock screen, no console overlay.
-So the real time of day triggers the reset (userland reboot or a time-jump effect): to analyse from the persisted
-log of a sweettime boot (log-pull.bat from recovery). Until then boot without sweettime (k2d).
+Probably NOT sweettime: k2c had already booted when power + volume down was held to enter fastboot (forced reset,
+hence no panic). k2c to be repeated without touching the keys.
