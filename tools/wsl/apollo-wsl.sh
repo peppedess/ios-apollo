@@ -5,6 +5,8 @@
 #   apollo-wsl.sh root [STEP]  build the iOS 16 root image (iPhone X 20H392) in WSL with tools/redfin-mkroot-wsl.sh:
 #                              STEP = check | deps | hfsmod | fetch | build | finish | all (default all).
 #                              Never touches the phone; the image stays in /root/apollo-root (WSL's own disk).
+#   apollo-wsl.sh metal2 [REF]  put SweetMetal2.bundle (Metal on Turnip) into that image (tools/apollo-metal2-wsl.sh);
+#                              the phone gets it with install delta
 #   apollo-wsl.sh install [verify|delta]   write that image to the phone's userdata (sda34) from LineageOS recovery
 #                              with tools/apollo-install-root-wsl.sh. ERASES ANDROID'S DATA: the full install only runs
 #                              with CONFIRM=ERASE set by the caller (wsl-install-root.bat); verify only reads.
@@ -124,6 +126,14 @@ root)
 	df -h /root | tail -1
 	echo "ROOT-EXIT=0"
 	;;
+metal2)
+	R=/root/apollo-repo
+	git -C "$R" fetch -q origin apollo && git -C "$R" checkout -q -f FETCH_HEAD || exit 1
+	say "repo $(git -C "$R" rev-parse --short HEAD)"
+	export REDFIN_WORK=/root/apollo-root
+	bash "$R/tools/apollo-metal2-wsl.sh" ${2:-}
+	echo "METAL2-WSL-EXIT=$?"
+	;;
 install)
 	R=/root/apollo-repo
 	git -C "$R" fetch -q origin apollo && git -C "$R" checkout -q -f FETCH_HEAD || exit 1
@@ -132,5 +142,5 @@ install)
 	bash "$R/tools/apollo-install-root-wsl.sh" ${2:-}
 	echo "INSTALL-EXIT=$?"
 	;;
-*) echo "usage: apollo-wsl.sh setup | xnu [REF] | root [STEP] | install [verify|delta]"; exit 2;;
+*) echo "usage: apollo-wsl.sh setup | xnu [REF] | root [STEP] | metal2 [REF] | install [verify|delta]"; exit 2;;
 esac
