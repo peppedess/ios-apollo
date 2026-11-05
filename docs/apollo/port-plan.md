@@ -170,3 +170,8 @@ pristine root (10 of 16 GiB rewritten, all 16 verified): SpringBoard stays up an
 backboardd + AppleCLCD (`SWEET FB: 5s: swaps 18 shown 17 dropped 1`).
 Next: time of day without the PM8150 RTC (boot-arg epoch), touch (xiaomi,spi-for-tp on spi@990000), WLED backlight,
 USB, kona cpufreq, then Setup skip / activation as on ios-sweet.
+
+k2c (1106 kernel + sweettime=<now> + sweetfb_noconsole=1 sweetsample=-): reset at ~32.5 s, no panic log, last
+line backboardd polling IOAcceleratorES. k2d = same without sweettime: clean iOS lock screen, no console overlay.
+So the real time of day triggers the reset (userland reboot or a time-jump effect): to analyse from the persisted
+log of a sweettime boot (log-pull.bat from recovery). Until then boot without sweettime (k2d).
