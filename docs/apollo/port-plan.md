@@ -151,3 +151,9 @@ k2 (2026-11-05 01:54): **iOS 16 userland boots on apollo.** Root mounted from us
 (xpcproxy, bluetoothd, fairplayd.H2, spindump, softwareupdateservicesd, appleaccountd, localizationswitcherd, ...),
 backboardd (pid 57) presents the Apple logo through AppleCLCD (`SWEET FB: 5s: swaps 5 shown 5 dropped 0`), and
 reads the motion/pressure HID properties. Touch, USB, Wi-Fi, GPU still off (Pixel drivers).
+
+k2 log (pulled from the end of userdata in recovery, `log-pull.bat`): SpringBoard aborts every ~5.5 s with
+`NSInternalInconsistencyException: Failed to load bounding path bitmap data from the asset manager for asset name:
+BoundingPathBitmap-1125x2436-375x812-3.00x` (also the Poster extensions). Cause: the local ADT had no /product node
+(research/ipsw-x/d22ap.adt missing where the boot image was built), so no artwork-device-subtype 2436. k2b: same
+args, ADT built with the d22ap.adt from the WSL root build (copied out with wsl/adt-copy.bat; Apple file, not in git).
