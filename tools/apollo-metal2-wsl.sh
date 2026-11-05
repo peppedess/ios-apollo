@@ -7,6 +7,7 @@
 #   /private/var/local/mtl2-clients                 "* -chronod" (HANDOFF.md: every process on Metal but chronod,
 #                                                   whose widgets stay white with a Metal device)
 #   /private/var/local/mtl2.log                     empty, mode 666 (each client's log)
+#   /private/var/local/m2v-cache/                   mode 1777 (the bridge's per-process shader caches)
 # Then recomputes the per-GiB SHA-256 list (redfin-mkroot-wsl.sh finish) that install delta compares against.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -52,6 +53,11 @@ mkdir -p "$L"
 printf '* -chronod\n' > "$L/mtl2-clients"
 : >> "$L/mtl2.log"
 chmod 644 "$L/mtl2-clients"; chmod 666 "$L/mtl2.log"
+# k6a: every client (backboardd, SpringBoard, apps run as mobile) refused its device with "ShaderCache ...
+# /var/local/m2v-cache/<process>: Permission denied": /var/local is root's 755. The cache root is world-writable
+# and sticky (each process makes its own subdirectory).
+mkdir -p "$L/m2v-cache"
+chmod 1777 "$L/m2v-cache"
 ls -la "$E/SweetMetal2.bundle"; cat "$L/mtl2-clients"
 df -h "$W/mnt" | tail -1
 sync
