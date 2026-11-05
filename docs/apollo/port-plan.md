@@ -182,3 +182,6 @@ Touch (NT36675): k3 (1107/1108) chip id `0e 00 00 72 66 03` over SPI SE4 OK; no 
 firmware: four 128 KiB blobs (end flag "NVTffZB" at 0x1ba253d/0x1bc453d/0x1be653d/0x1c0853d in the recovery Image;
 header end 0x100, ILM 0x100 -> SRAM 0 size 0x13c3f or 0x11c73, DLM 0x18100 -> 0x27140). k3c: blob A passed with
 NVTFW= (mkadt --nvtfw; extracted locally from the phone's own kernel, not in git).
+
+**MILESTONE 2026-11-05 03:45: touch works on iOS** (k3c: kernel f233926 = 1107-1109, nvttouch=1, firmware blob A
+host-downloaded to the NT36675 over SPI). Next: make it the default boot (k4), unlock / home screen, Setup.
