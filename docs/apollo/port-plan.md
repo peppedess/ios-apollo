@@ -213,3 +213,6 @@ k6b (1112): Metal renders on the A650 (no stall), lock screen drawn but every te
 k6c (1113): worse, all noise (BGRA framebuffer now, 60 fps swaps) -> 1114 redfin swizzle + register readback.
 k6d (1114, redfin swizzle): same picture as k6b (bands of noise, garbled text) -> swizzle is not it; 1115 sweetgmemkb to test GMEM/bins.
 k6e (sweetgmemkb=512): 11 bands instead of 5 -> the bands are Turnip's GMEM bins (each: noise on top, black below); GMEM rendering broken on the A650. Next: TU_DEBUG=sysmem via /var/local/mtl2-env (tools/wsl/mtl2-env.sh).
+k6d/k6f with TU_DEBUG=sysmem (/var/local/mtl2-env): **Metal renders correctly** (home screen, dock blur), stable for
+30 min; but slow: backboardd 35-75 ms of GPU per frame (redfin 10-15 ms) and the CPUs still at ABL's clocks.
+Next: 1116 cpufreq (EPSS), then GPU/DDR clocks, then GMEM (bins: noise top, black bottom).

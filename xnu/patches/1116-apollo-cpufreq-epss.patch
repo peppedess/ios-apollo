@@ -1,0 +1,90 @@
+From d4bc41efe142cbbb87668aca442bbe94f4ef2db4 Mon Sep 17 00:00:00 2001
+From: apollo <apollo@local>
+Date: Fri, 6 Nov 2026 11:30:37 +0100
+Subject: [PATCH] apollo: cpufreq on kona's EPSS blocks
+
+---
+ bsd/dev/sweet_cpufreq.c | 37 ++++++++++++++++++++-----------------
+ 1 file changed, 20 insertions(+), 17 deletions(-)
+
+diff --git a/bsd/dev/sweet_cpufreq.c b/bsd/dev/sweet_cpufreq.c
+index 0438c08..359a49e 100644
+--- a/bsd/dev/sweet_cpufreq.c
++++ b/bsd/dev/sweet_cpufreq.c
+@@ -60,13 +60,20 @@ void sweet_cpufreq_log(void);
+ int sweet_cpufreq_set(unsigned dom, unsigned idx, const char *why);
+ void sweet_cpufreq_table_log(unsigned dom);
+ 
++/*
++ * apollo 1116: kona's qcom,cpufreq-hw-epss (live DT): domains at 0x18591000 (silver CPUs 0-3), 0x18592000
++ * (gold 4-6), 0x18593000 (prime 7), qcom,freq-domain <3 N 4> (max cores 4 everywhere), qcom,lut-row-size 4.
++ * EPSS register layout (msm-4.19 qcom-cpufreq-hw.c cpufreq_qcom_epss_std_offsets): enable 0x000, frequency
++ * LUT 0x100 + 4*i (same row format: 31:30 source, 18:16 core count, 7:0 L), voltage LUT 0x200, perf state
++ * 0x320, cycle counter 0x3c4 (accumulative, first core of the domain). No LMh readout here (lmh_pa 0).
++ */
+ #define CF_ENABLE       0x000u
+-#define CF_LUT          0x110u          /* + 32 * index */
+-#define CF_VOLT         0x114u
+-#define CF_ROW          32u
++#define CF_LUT          0x100u          /* + 4 * index */
++#define CF_VOLT         0x200u
++#define CF_ROW          4u
+ #define CF_ROWS         40u
+-#define CF_PERF         0x920u
+-#define CF_CYCLES       0x9c0u
++#define CF_PERF         0x320u
++#define CF_CYCLES       0x3c4u
+ #define CF_XO_KHZ       19200u
+ #define LMH_REQ         0x704u
+ #define CF_NDOM         3u
+@@ -105,13 +112,10 @@ struct cf_dom {
+ };
+ 
+ static struct cf_dom cf[CF_NDOM] = {
+-	{ .name = "silver", .pa = 0x18323000u, .first = 0, .ncpu = 6, .old_cores = 6, .max_cores = 6,
+-	  .lmh_pa = 0x18358800u + LMH_REQ },
+-	{ .name = "gold", .pa = 0x18325800u, .first = 6, .ncpu = 1, .old_cores = 2, .max_cores = 2,
+-	  .lmh_pa = 0x18350800u + LMH_REQ },
+-	/* the 1-core prime domain: the old rule treated every row as normal */
+-	{ .name = "prime", .pa = 0x18327800u, .first = 7, .ncpu = 1, .old_cores = 1, .max_cores = 2,
+-	  .lmh_pa = 0x18350800u + LMH_REQ },
++	/* apollo 1116: kona EPSS domains (redfin: lito 0x18323000/0x18325800/0x18327800, 6+1+1 CPUs, LMh) */
++	{ .name = "silver", .pa = 0x18591000u, .first = 0, .ncpu = 4, .old_cores = 4, .max_cores = 4, .lmh_pa = 0 },
++	{ .name = "gold", .pa = 0x18592000u, .first = 4, .ncpu = 3, .old_cores = 4, .max_cores = 4, .lmh_pa = 0 },
++	{ .name = "prime", .pa = 0x18593000u, .first = 7, .ncpu = 1, .old_cores = 1, .max_cores = 4, .lmh_pa = 0 },
+ };
+ static bool cf_ready;
+ static volatile int cf_gov_on;
+@@ -313,7 +317,7 @@ sweet_cpufreq_log(void)
+ 	unsigned busy[CF_NCPU];
+ 	cf_busy(&ld, busy);
+ 	char line[440];
+-	int len = snprintf(line, sizeof(line), "SWEET CPUFREQ: busy %u %u %u %u %u %u | %u | %u %%;",
++	int len = snprintf(line, sizeof(line), "SWEET CPUFREQ: busy %u %u %u %u | %u %u %u | %u %%;",
+ 	    busy[0], busy[1], busy[2], busy[3], busy[4], busy[5], busy[6], busy[7]);
+ 	uint64_t now = mach_absolute_time();
+ 	for (unsigned i = 0; i < CF_NDOM; ++i) {
+@@ -594,9 +598,8 @@ sweet_cpufreq_init(void)
+ 	unsigned want = 1;
+ 	(void)PE_parse_boot_argn("flamecpufreq", &want, sizeof(want));
+ 	/*
+-	 * apollo 1105: flamecpufreq=0 must not touch the hardware. The domains below are lito's (redfin)
+-	 * cpufreq-hw blocks; kona has qcom,cpufreq-hw-epss at 0x18591000/0x18592000/0x18593000 (silver 0-3,
+-	 * gold 4-6, prime 7), and reading lito's addresses reset the phone right after the UFS probe.
++	 * apollo 1105: flamecpufreq=0 must not touch the hardware (lito's addresses reset the phone after the
++	 * UFS probe). 1116 points the domains at kona's EPSS blocks.
+ 	 */
+ 	if (!want) {
+ 		printf("SWEET CPUFREQ: off (flamecpufreq=0)\n");
+@@ -626,7 +629,7 @@ sweet_cpufreq_init(void)
+ 			printf("SWEET CPUFREQ: %s: map failed\n", d->name);
+ 			continue;
+ 		}
+-		d->lmh = (c > 0 && d->lmh_pa == cf[c - 1].lmh_pa) ? cf[c - 1].lmh : ml_io_map(d->lmh_pa, 4);
++		d->lmh = !d->lmh_pa ? 0 : (c > 0 && d->lmh_pa == cf[c - 1].lmh_pa) ? cf[c - 1].lmh : ml_io_map(d->lmh_pa, 4);
+ 		cf_read_lut(d);
+ 		d->boot_idx = d->req = cf_rd(d->base, CF_PERF);
+ 		d->cyc_prev = cf_rd(d->base, CF_CYCLES);
+-- 
+2.43.0
+
