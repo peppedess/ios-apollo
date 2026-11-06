@@ -234,3 +234,4 @@ CoreBrightness only sent "brightness" 512, then 1/0 and IOMFBBrightnessLevel 0-0
 real ambient light sensor?). -> 1119.
 k10b (1119, sweetwledtest=60): **WLED brightness works** (panel dims at boot, every write reads back). iOS side: CoreBrightness sends IOMFBBrightnessLevel 0-1 nits / brightness 0-1 whatever the slider (auto-brightness off): L_minimum, no panel luminance (redfin 0973). k10c: BACKLIGHT=1 (mkadt --backlight).
 k10c (BACKLIGHT=1): no change: CoreBrightness sends 404, then 0-0.49 nits at 19-22 s and nothing for the slider afterwards. Needs CoreBrightness's own log (shell over USB). 1120: sweetwledfix=N.
+k11a: sweetwledfix=512 (half brightness held) + BACKLIGHT=1, sysmem Metal, cpufreq: the current daily image. Wi-Fi plan: docs/apollo/wifi-plan.md.
