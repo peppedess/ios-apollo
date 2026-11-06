@@ -1,0 +1,370 @@
+From 0d4217854366867845d314a6039b64d1502182ec Mon Sep 17 00:00:00 2001
+From: apollo <apollo@local>
+Date: Fri, 6 Nov 2026 13:13:12 +0100
+Subject: [PATCH] apollo: PCIe RC0 bring-up for the QCA6390 (sweetpcie=1, phase
+ 1)
+
+---
+ bsd/conf/files        |   1 +
+ bsd/dev/apollo_pcie.c | 316 ++++++++++++++++++++++++++++++++++++++++++
+ bsd/dev/sweet_ufs.c   |   2 +
+ 3 files changed, 319 insertions(+)
+ create mode 100644 bsd/dev/apollo_pcie.c
+
+diff --git a/bsd/conf/files b/bsd/conf/files
+index 9a59b47..99404c1 100644
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -112,6 +112,7 @@ bsd/dev/sweet_motion.c			standard
+ bsd/dev/sweet_fts.c			standard
+ bsd/dev/sweet_sects.c			standard
+ bsd/dev/apollo_nvt.c			standard
++bsd/dev/apollo_pcie.c			standard
+ bsd/dev/sweet_haptic.c			standard
+ bsd/dev/sweet_torch.c			standard
+ bsd/dev/sweet_cam.c			standard
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+new file mode 100644
+index 0000000..fd97715
+--- /dev/null
++++ b/bsd/dev/apollo_pcie.c
+@@ -0,0 +1,316 @@
++/*
++ * apollo (Xiaomi 10T Pro, kona/SM8250): PCIe root complex 0 bring-up for the QCA6390 Wi-Fi chip,
++ * phase 1 of docs/apollo/wifi-plan.md: power, clocks, PHY, link training, one config read of the
++ * endpoint (expect 17cb:1101). Off unless boot-arg sweetpcie=1; everything is logged as "SWEET PCIE:".
++ *
++ * Sources: the live DT (qcom,pcie@1c00000 "qcom,pci-msm", qcom,cnss-qca6390@b0000000), Linux 6.12
++ * drivers/pci/controller/dwc/pcie-qcom.c (init_2_7_0, ops_1_9_0 used for sm8250), pcie-designware.h,
++ * drivers/clk/qcom/gcc-sm8250.c, drivers/pinctrl/qcom/pinctrl-sm8250.c.
++ *
++ *   PARF 0x01c00000, PHY 0x01c06000 (DT qcom,phy-sequence, status 0x814 bit 6), DBI 0x60000000,
++ *   iATU (unrolled) 0x60001000, config window 0x60100000.
++ *   GCC 0x00100000: PCIE_0 BCR 0x6b000, GDSC 0x6b004, aux RCG 0x6b038, PHY BCR 0x6c01c,
++ *   branch votes 0x52008 bits 0-5 (slv_axi, mstr_axi, cfg_ahb, aux, pipe, slv_q2a), refgen RCG 0x6f014 +
++ *   branch 0x6f02c, aggre NoC PCIe TBU 0x9000c, DDRSS PCIe SF TBU 0x8d058.
++ *   TLMM north tile 0x0f900000 (0x1000 per GPIO): WLAN_EN 20, PERST# 79, WAKE# 81.
++ *   RPMh: RC ldoa5 0.88 V, ldoa9 1.2 V; QCA6390 smpa6 0.95, smpf2 0.95, smpa4 1.8, smpa5 1.9, smpc8 1.35 V.
++ */
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <kern/thread.h>
++#include <kern/sched_prim.h>
++#include <kern/clock.h>
++#include <machine/machine_routines.h>
++#include <pexpert/pexpert.h>
++
++extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++extern kern_return_t kernel_thread_start(thread_continue_t, void *, thread_t *);
++extern void IOSleep(unsigned int milliseconds);
++extern int sweet_rpmh_write(const char *res, unsigned n, const uint32_t *offsets, const uint32_t *values);
++void apollo_pcie_init(void);
++
++#define GCC_PA          0x00100000u
++#define TLMM_N_PA       0x0f900000u
++#define PARF_PA         0x01c00000u
++#define PHY_PA          0x01c06000u
++#define DBI_PA          0x60000000u
++#define ATU_PA          0x60001000u
++#define CFG_PA          0x60100000u
++
++#define GPIO_WLAN_EN    20u
++#define GPIO_PERST      79u
++#define GPIO_WAKE       81u
++
++static vm_offset_t g_parf, g_phy, g_dbi, g_atu, g_cfg;
++
++static inline uint32_t
++rd(vm_offset_t b, uint32_t o)
++{
++	uint32_t v = *(volatile uint32_t *)(b + o);
++	__asm__ volatile ("dmb oshld" ::: "memory");
++	return v;
++}
++
++static inline void
++wr(vm_offset_t b, uint32_t o, uint32_t v)
++{
++	__asm__ volatile ("dmb oshst" ::: "memory");
++	*(volatile uint32_t *)(b + o) = v;
++	__asm__ volatile ("dsb osh" ::: "memory");
++}
++
++/* one GCC page (4 KiB) at a time: only the blocks we touch get mapped */
++static vm_offset_t
++gcc_page(uint32_t off)
++{
++	static struct { uint32_t pg; vm_offset_t va; } cache[8];
++	uint32_t pg = off & ~0xfffu;
++	for (unsigned i = 0; i < 8; i++) {
++		if (cache[i].va && cache[i].pg == pg) {
++			return cache[i].va;
++		}
++	}
++	for (unsigned i = 0; i < 8; i++) {
++		if (!cache[i].va) {
++			cache[i].pg = pg;
++			cache[i].va = ml_io_map(GCC_PA + pg, 0x1000);
++			return cache[i].va;
++		}
++	}
++	return 0;
++}
++
++static uint32_t
++gcc_rd(uint32_t off)
++{
++	vm_offset_t p = gcc_page(off);
++	return p ? rd(p, off & 0xfffu) : 0xdeadbeefu;
++}
++
++static void
++gcc_wr(uint32_t off, uint32_t v)
++{
++	vm_offset_t p = gcc_page(off);
++	if (p) {
++		wr(p, off & 0xfffu, v);
++	}
++}
++
++/* TLMM: ctl (func 2:5 = 0 GPIO, OE bit 9, drive 8:6), io (bit 1 out) */
++static void
++gpio_out(unsigned n, int high)
++{
++	vm_offset_t t = ml_io_map(TLMM_N_PA + 0x1000u * n, 0x1000);
++	if (!t) {
++		return;
++	}
++	wr(t, 0x4, high ? 2u : 0u);
++	wr(t, 0x0, (1u << 9) | (1u << 6));      /* GPIO, output, 4 mA, no pull */
++	wr(t, 0x4, high ? 2u : 0u);
++}
++
++static int
++gpio_in(unsigned n)
++{
++	vm_offset_t t = ml_io_map(TLMM_N_PA + 0x1000u * n, 0x1000);
++	return t ? (int)(rd(t, 0x4) & 1u) : -1;
++}
++
++static void
++msleep(unsigned ms)
++{
++	IOSleep(ms);
++}
++
++static int
++vote_ldo(const char *res, unsigned mv)
++{
++	const uint32_t o[3] = { 0, 8, 4 }, v[3] = { mv, 7, 1 };     /* voltage, HPM, enable */
++	int e = sweet_rpmh_write(res, 3, o, v);
++	printf("SWEET PCIE: rpmh %s %u mV -> %d\n", res, mv, e);
++	return e;
++}
++
++static int
++vote_smps(const char *res, unsigned mv)
++{
++	const uint32_t o[2] = { 0, 4 }, v[2] = { mv, 1 };            /* voltage, enable (mode left alone) */
++	int e = sweet_rpmh_write(res, 2, o, v);
++	printf("SWEET PCIE: rpmh %s %u mV -> %d\n", res, mv, e);
++	return e;
++}
++
++/* live DT qcom,phy-sequence of qcom,pcie@1c00000 (offset, value), all delays 0 */
++static const uint16_t phy_seq[][2] = {
++	{ 0x840, 0x03 }, { 0x094, 0x08 }, { 0x154, 0x34 }, { 0x16c, 0x08 }, { 0x058, 0x0f }, { 0x0a4, 0x42 },
++	{ 0x110, 0x24 }, { 0x11c, 0x03 }, { 0x118, 0xb4 }, { 0x10c, 0x02 }, { 0x1bc, 0x11 }, { 0x0bc, 0x82 },
++	{ 0x0d4, 0x03 }, { 0x0d0, 0x55 }, { 0x0cc, 0x55 }, { 0x0b0, 0x1a }, { 0x0ac, 0x0a }, { 0x0c4, 0x68 },
++	{ 0x0e0, 0x02 }, { 0x0dc, 0xaa }, { 0x0d8, 0xab }, { 0x0b8, 0x34 }, { 0x0b4, 0x14 }, { 0x158, 0x01 },
++	{ 0x074, 0x06 }, { 0x07c, 0x16 }, { 0x084, 0x36 }, { 0x078, 0x06 }, { 0x080, 0x16 }, { 0x088, 0x36 },
++	{ 0x1b0, 0x1e }, { 0x1ac, 0xca }, { 0x1b8, 0x18 }, { 0x1b4, 0xa2 }, { 0x050, 0x07 }, { 0x010, 0x01 },
++	{ 0x01c, 0x31 }, { 0x020, 0x01 }, { 0x024, 0xde }, { 0x028, 0x07 }, { 0x030, 0x4c }, { 0x034, 0x06 },
++	{ 0x29c, 0x12 }, { 0x284, 0x35 }, { 0x23c, 0x11 }, { 0x51c, 0x03 }, { 0x518, 0x1c }, { 0x524, 0x1e },
++	{ 0x4e8, 0x00 }, { 0x4ec, 0x0e }, { 0x4f0, 0x4a }, { 0x4f4, 0x0f }, { 0x5b4, 0x04 }, { 0x434, 0x7f },
++	{ 0x444, 0x70 }, { 0x510, 0x17 }, { 0x4d4, 0x04 }, { 0x4d8, 0x07 }, { 0x598, 0xd4 }, { 0x59c, 0x54 },
++	{ 0x5a0, 0xdb }, { 0x5a4, 0x3b }, { 0x5a8, 0x31 }, { 0x584, 0x24 }, { 0x588, 0xe4 }, { 0x58c, 0xec },
++	{ 0x590, 0x3b }, { 0x594, 0x36 }, { 0x570, 0x3f }, { 0x574, 0x3f }, { 0x578, 0xff }, { 0x57c, 0x7f },
++	{ 0x580, 0x14 }, { 0x4fc, 0x00 }, { 0x4f8, 0xc0 }, { 0x460, 0x30 }, { 0x464, 0x00 }, { 0x5bc, 0x0c },
++	{ 0x4dc, 0x1b }, { 0x408, 0x0c }, { 0x414, 0x03 }, { 0x5b8, 0x30 }, { 0x9a4, 0x01 }, { 0xc90, 0x00 },
++	{ 0xc40, 0x01 }, { 0xc48, 0x01 }, { 0xc50, 0x00 }, { 0xcb4, 0x33 }, { 0xcbc, 0x00 }, { 0xce0, 0x58 },
++	{ 0xca4, 0x0f }, { 0x048, 0x90 }, { 0xc1c, 0xc1 }, { 0x988, 0x77 }, { 0x998, 0x0b }, { 0x8dc, 0x0d },
++	{ 0x9ec, 0x12 }, { 0x800, 0x00 }, { 0x844, 0x03 },
++};
++
++static void
++pcie_main(void *arg __unused, wait_result_t w __unused)
++{
++	uint32_t step = 0xff;
++	(void)PE_parse_boot_argn("sweetpciestep", &step, sizeof(step));
++	printf("SWEET PCIE: start (sweetpciestep=%u)\n", step);
++
++	/* 1. power: the RC's PHY rails, the QCA6390's rails, then WLAN_EN (cnss: rails, 10 ms, WLAN_EN, 100 ms) */
++	vote_ldo("ldoa5", 880);
++	vote_ldo("ldoa9", 1200);
++	vote_smps("smpa4", 1800);
++	vote_smps("smpa6", 950);
++	vote_smps("smpf2", 952);
++	vote_smps("smpa5", 1900);
++	vote_smps("smpc8", 1352);
++	gpio_out(GPIO_PERST, 0);
++	msleep(10);
++	gpio_out(GPIO_WLAN_EN, 1);
++	msleep(100);
++	printf("SWEET PCIE: WLAN_EN high, PERST# low, WAKE# reads %d\n", gpio_in(GPIO_WAKE));
++	if (step < 2) {
++		return;
++	}
++
++	/* 2. GDSC, clocks, resets */
++	uint32_t gdsc = gcc_rd(0x6b004);
++	gcc_wr(0x6b004, gdsc & ~1u);                    /* SW_COLLAPSE off */
++	for (int i = 0; i < 100 && !(gcc_rd(0x6b004) & (1u << 31)); i++) {
++		delay(10);
++	}
++	printf("SWEET PCIE: GDSC %x -> %x\n", gdsc, gcc_rd(0x6b004));
++	/* refgen 100 MHz: GPLL0 main (src 1) / 6 (hid 11), then UPDATE */
++	gcc_wr(0x6f014 + 4, (1u << 8) | 11u);
++	gcc_wr(0x6f014, gcc_rd(0x6f014) | 1u);
++	gcc_wr(0x6f02c, gcc_rd(0x6f02c) | 1u);
++	/* aux 19.2 MHz: TCXO (src 0), div 1 */
++	gcc_wr(0x6b038 + 4, 0u);
++	gcc_wr(0x6b038, gcc_rd(0x6b038) | 1u);
++	gcc_wr(0x52008, gcc_rd(0x52008) | 0x3fu);       /* slv_axi mstr_axi cfg_ahb aux pipe slv_q2a */
++	gcc_wr(0x9000c, gcc_rd(0x9000c) | 1u);
++	gcc_wr(0x8d058, gcc_rd(0x8d058) | 1u);
++	delay(100);
++	printf("SWEET PCIE: clocks: vote %x aux %x cfg %x mstr %x slv %x q2a %x pipe %x refgen %x\n", gcc_rd(0x52008),
++	    gcc_rd(0x6b028), gcc_rd(0x6b024), gcc_rd(0x6b01c), gcc_rd(0x6b014), gcc_rd(0x6b010), gcc_rd(0x6b02c),
++	    gcc_rd(0x6f02c));
++	gcc_wr(0x6b000, 1);                             /* PCIE_0 BCR */
++	gcc_wr(0x6c01c, 1);                             /* PCIE_0 PHY BCR */
++	msleep(1);
++	gcc_wr(0x6c01c, 0);
++	gcc_wr(0x6b000, 0);
++	msleep(1);
++	if (step < 3) {
++		return;
++	}
++
++	/* 3. PARF (Linux qcom_pcie_init_2_7_0) */
++	g_parf = ml_io_map(PARF_PA, 0x3000);
++	g_phy = ml_io_map(PHY_PA, 0x1000);
++	g_dbi = ml_io_map(DBI_PA, 0x1000);
++	g_atu = ml_io_map(ATU_PA, 0x1000);
++	g_cfg = ml_io_map(CFG_PA, 0x1000);
++	if (!g_parf || !g_phy || !g_dbi || !g_atu || !g_cfg) {
++		printf("SWEET PCIE: map failed\n");
++		return;
++	}
++	wr(g_parf, 0x1000, 0x4);                                        /* DEVICE_TYPE RC */
++	wr(g_parf, 0x40, rd(g_parf, 0x40) & ~1u);                       /* PHY_CTRL: PHY_TEST_PWR_DOWN off */
++	wr(g_parf, 0x350, DBI_PA); wr(g_parf, 0x354, 0);                /* DBI base V2 */
++	wr(g_parf, 0x634, ATU_PA); wr(g_parf, 0x638, 0);                /* ATU base */
++	wr(g_parf, 0x358, 0); wr(g_parf, 0x35c, 1);                     /* slave address space 4 GiB */
++	wr(g_parf, 0x00, rd(g_parf, 0x00) & ~(1u << 29));               /* SYS_CTRL: P2 mux off */
++	wr(g_parf, 0x174, rd(g_parf, 0x174) | (1u << 4));              /* MHI clock reset: BYPASS */
++	wr(g_parf, 0x20, rd(g_parf, 0x20) & ~(1u << 5));                /* PM_CTRL: allow L1 */
++	wr(g_parf, 0x1a8, rd(g_parf, 0x1a8) | (1u << 31));              /* AXI master write halt V2: EN */
++	printf("SWEET PCIE: PARF sys %x phy_ctrl %x ltssm %x\n", rd(g_parf, 0x00), rd(g_parf, 0x40), rd(g_parf, 0x1b0));
++	if (step < 4) {
++		return;
++	}
++
++	/* 4. PHY: the DT sequence, then wait for PHYSTATUS (0x814 bit 6) to drop */
++	for (unsigned i = 0; i < sizeof(phy_seq) / sizeof(phy_seq[0]); i++) {
++		wr(g_phy, phy_seq[i][0], phy_seq[i][1]);
++	}
++	int ready = 0;
++	for (int i = 0; i < 1000; i++) {
++		if (!(rd(g_phy, 0x814) & (1u << 6))) {
++			ready = 1;
++			break;
++		}
++		delay(100);
++	}
++	printf("SWEET PCIE: PHY %s (status %x), pipe clk branch %x\n", ready ? "ready" : "NOT READY", rd(g_phy, 0x814),
++	    gcc_rd(0x6b02c));
++	if (!ready || step < 5) {
++		return;
++	}
++
++	/* 5. RC config (dw_pcie_setup_rc, minimal), PERST# release, LTSSM */
++	wr(g_dbi, 0x8bc, rd(g_dbi, 0x8bc) | 1u);                        /* MISC_CONTROL_1: DBI RO write */
++	wr(g_dbi, 0x10, 0); wr(g_dbi, 0x14, 0);                         /* BARs */
++	wr(g_dbi, 0x18, 0x00ff0100u);                                   /* primary 0, secondary 1, subordinate 0xff */
++	wr(g_dbi, 0x08, (rd(g_dbi, 0x08) & 0xffu) | (0x0604u << 16));   /* class: PCI bridge */
++	wr(g_dbi, 0x04, rd(g_dbi, 0x04) | 0x6u);                        /* memory + bus master */
++	wr(g_dbi, 0x8bc, rd(g_dbi, 0x8bc) & ~1u);
++	printf("SWEET PCIE: RC id %08x class %08x\n", rd(g_dbi, 0x0), rd(g_dbi, 0x08));
++	msleep(100);
++	gpio_out(GPIO_PERST, 1);
++	msleep(100);
++	wr(g_parf, 0x1b0, rd(g_parf, 0x1b0) | (1u << 8));               /* LTSSM_EN */
++	int up = 0;
++	uint32_t d0 = 0, d1 = 0;
++	for (int i = 0; i < 100; i++) {
++		d0 = rd(g_dbi, 0x728);
++		d1 = rd(g_dbi, 0x72c);
++		if ((d1 & (1u << 4)) && !(d1 & (1u << 29))) {
++			up = 1;
++			break;
++		}
++		msleep(10);
++	}
++	printf("SWEET PCIE: link %s: debug0 %x (LTSSM %#x) debug1 %x, link status %x, WAKE# %d\n", up ? "UP" : "DOWN",
++	    d0, d0 & 0x3fu, d1, rd(g_dbi, 0x80) >> 16, gpio_in(GPIO_WAKE));
++	if (!up) {
++		return;
++	}
++
++	/* 6. iATU region 0: CFG0 to bus 1 device 0, then the endpoint's IDs */
++	wr(g_atu, 0x08, CFG_PA); wr(g_atu, 0x0c, 0);
++	wr(g_atu, 0x10, CFG_PA + 0xfffu);
++	wr(g_atu, 0x14, 1u << 24); wr(g_atu, 0x18, 0);
++	wr(g_atu, 0x00, 4u);                                            /* type CFG0 */
++	wr(g_atu, 0x04, 1u << 31);                                      /* enable */
++	(void)rd(g_atu, 0x04);
++	uint32_t id = rd(g_cfg, 0x0), cls = rd(g_cfg, 0x8), bar0 = rd(g_cfg, 0x10);
++	printf("SWEET PCIE: endpoint 1:0.0 id %08x class %08x bar0 %08x%s\n", id, cls, bar0,
++	    id == 0x110117cbu ? " = QCA6390" : "");
++}
++
++void
++apollo_pcie_init(void)
++{
++	uint32_t on = 0;
++	(void)PE_parse_boot_argn("sweetpcie", &on, sizeof(on));
++	if (!on) {
++		return;
++	}
++	thread_t t;
++	if (kernel_thread_start(pcie_main, NULL, &t) == KERN_SUCCESS) {
++		thread_deallocate(t);
++	}
++}
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index 7e9e54e..620580c 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -56,6 +56,7 @@ extern void sweet_motion_init(void);
+ extern void sweet_fts_init(void);
+ extern void sweet_sects_init(void);
+ extern void apollo_nvt_init(void);
++extern void apollo_pcie_init(void);
+ extern void sweet_haptic_init(void);
+ extern void sweet_torch_init(void);
+ extern void sweet_cam_init(void);
+@@ -682,6 +683,7 @@ sweet_ufs_init(void)
+ 	sweet_fts_init();
+ 	sweet_sects_init();	/* redfin sec_ts (sectouch=1) */
+ 	apollo_nvt_init();	/* apollo Novatek NT36675 (nvttouch=1): bsd/dev/apollo_nvt.c */
++	apollo_pcie_init();	/* apollo PCIe RC0 + QCA6390 power (sweetpcie=1): bsd/dev/apollo_pcie.c */
+ 	sweet_haptic_init();	/* redfin DRV2624 (sweethaptic=1) */
+ 	sweet_torch_init();	/* redfin flash LED (sweettorch=2): bsd/dev/sweet_torch.c */
+ 	sweet_cam_init();	/* redfin camera sensors (sweetcam=1/2): bsd/dev/sweet_cam.c */
+-- 
+2.43.0
+
