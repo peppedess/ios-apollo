@@ -1,8 +1,7 @@
-From 0d4217854366867845d314a6039b64d1502182ec Mon Sep 17 00:00:00 2001
+From 90cab2e5015802242e1711ef47e39e478caa9cfd Mon Sep 17 00:00:00 2001
 From: apollo <apollo@local>
 Date: Fri, 6 Nov 2026 13:13:12 +0100
-Subject: [PATCH] apollo: PCIe RC0 bring-up for the QCA6390 (sweetpcie=1, phase
- 1)
+Subject: [PATCH] apollo: PCIe phase 1 (sweetpcie=1)
 
 ---
  bsd/conf/files        |   1 +
@@ -25,7 +24,7 @@ index 9a59b47..99404c1 100644
  bsd/dev/sweet_cam.c			standard
 diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
 new file mode 100644
-index 0000000..fd97715
+index 0000000..c5da7f2
 --- /dev/null
 +++ b/bsd/dev/apollo_pcie.c
 @@ -0,0 +1,316 @@
@@ -149,7 +148,7 @@ index 0000000..fd97715
 +}
 +
 +static void
-+msleep(unsigned ms)
++pc_msleep(unsigned ms)
 +{
 +	IOSleep(ms);
 +}
@@ -209,9 +208,9 @@ index 0000000..fd97715
 +	vote_smps("smpa5", 1900);
 +	vote_smps("smpc8", 1352);
 +	gpio_out(GPIO_PERST, 0);
-+	msleep(10);
++	pc_msleep(10);
 +	gpio_out(GPIO_WLAN_EN, 1);
-+	msleep(100);
++	pc_msleep(100);
 +	printf("SWEET PCIE: WLAN_EN high, PERST# low, WAKE# reads %d\n", gpio_in(GPIO_WAKE));
 +	if (step < 2) {
 +		return;
@@ -240,10 +239,10 @@ index 0000000..fd97715
 +	    gcc_rd(0x6f02c));
 +	gcc_wr(0x6b000, 1);                             /* PCIE_0 BCR */
 +	gcc_wr(0x6c01c, 1);                             /* PCIE_0 PHY BCR */
-+	msleep(1);
++	pc_msleep(1);
 +	gcc_wr(0x6c01c, 0);
 +	gcc_wr(0x6b000, 0);
-+	msleep(1);
++	pc_msleep(1);
 +	if (step < 3) {
 +		return;
 +	}
@@ -298,9 +297,9 @@ index 0000000..fd97715
 +	wr(g_dbi, 0x04, rd(g_dbi, 0x04) | 0x6u);                        /* memory + bus master */
 +	wr(g_dbi, 0x8bc, rd(g_dbi, 0x8bc) & ~1u);
 +	printf("SWEET PCIE: RC id %08x class %08x\n", rd(g_dbi, 0x0), rd(g_dbi, 0x08));
-+	msleep(100);
++	pc_msleep(100);
 +	gpio_out(GPIO_PERST, 1);
-+	msleep(100);
++	pc_msleep(100);
 +	wr(g_parf, 0x1b0, rd(g_parf, 0x1b0) | (1u << 8));               /* LTSSM_EN */
 +	int up = 0;
 +	uint32_t d0 = 0, d1 = 0;
@@ -311,7 +310,7 @@ index 0000000..fd97715
 +			up = 1;
 +			break;
 +		}
-+		msleep(10);
++		pc_msleep(10);
 +	}
 +	printf("SWEET PCIE: link %s: debug0 %x (LTSSM %#x) debug1 %x, link status %x, WAKE# %d\n", up ? "UP" : "DOWN",
 +	    d0, d0 & 0x3fu, d1, rd(g_dbi, 0x80) >> 16, gpio_in(GPIO_WAKE));
