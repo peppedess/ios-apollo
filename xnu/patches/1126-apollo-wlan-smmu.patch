@@ -1,0 +1,138 @@
+From fb2e702b305e662d13c097a963cd7cd39b448f41 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 6 Nov 2026 14:28:28 +0100
+Subject: [PATCH] apollo pcie: QCA6390 streams 0x1c00/0x1c01 through an apps
+ SMMU bank with translation off, SMMU fault dump around BHI
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01VzhH6pxBJ4naMiihKoMfcq
+---
+ bsd/dev/apollo_pcie.c | 98 +++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 98 insertions(+)
+
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 866a258..f529d04 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -214,6 +214,102 @@ wlan_firmware(const char *name, uint32_t *len)
+ 	return data;
+ }
+ 
++/*
++ * The apps SMMU (0x15000000) sees the QCA6390's reads as stream 0x1c01 (DT iommu-map: RID 0x100 -> 0x1c01, the
++ * RC itself 0x1c00). k12e: with nothing routing it, the PBL's BHI read failed (status error, ERRCODE 0xef128100).
++ * Route 0x1c00/0x1c01 (one SMR, mask 1) through a free context bank with translation off, as sweet_adsp.c's
++ * fastrpc_smmu_identity() and redfin's phone/wifi/radio.c do for their streams: IOVA == PA, so below 4 GiB.
++ */
++#define SMMU_PA         0x15000000u
++#define WLAN_SID        0x1c00u
++#define WLAN_SID_MASK   0x1u
++static vm_offset_t g_smmu0, g_smmu1, g_cbp;
++static uint32_t g_cb = ~0u;
++
++static void
++smmu_faults(const char *when)
++{
++	if (!g_smmu0) {
++		return;
++	}
++	printf("SWEET MHI: SMMU %s: global FSR %#x FAR %#x%08x FSYNR0 %#x FSYNR1 %#x", when, rd(g_smmu0, 0x48), rd(g_smmu0, 0x44),
++	    rd(g_smmu0, 0x40), rd(g_smmu0, 0x50), rd(g_smmu0, 0x54));
++	if (g_cbp) {
++		printf("; CB%u FSR %#x FAR %#x%08x FSYNR0 %#x", g_cb, rd(g_cbp, 0x58), rd(g_cbp, 0x64), rd(g_cbp, 0x60), rd(g_cbp, 0x68));
++	}
++	printf("\n");
++}
++
++static int
++smmu_wlan_identity(void)
++{
++	g_smmu0 = ml_io_map(SMMU_PA, 0x1000);
++	if (!g_smmu0) {
++		return -1;
++	}
++	uint32_t id0 = rd(g_smmu0, 0x20), id1 = rd(g_smmu0, 0x24), cr0 = rd(g_smmu0, 0x0);
++	uint32_t nsmr = id0 & 0xff, ncb = id1 & 0xff;
++	uint32_t psize = (id1 >> 31) ? 0x10000u : 0x1000u, npage = 1u << (((id1 >> 28) & 7) + 1);
++	printf("SWEET MHI: SMMU sCR0 %#x (USFCFG %u) ID0 %#x ID1 %#x: %u SMRs, %u banks\n", cr0, (cr0 >> 10) & 1u, id0, id1, nsmr,
++	    ncb);
++	smmu_faults("before");
++	if ((uint64_t)npage * psize * 2 != 0x100000 || nsmr > 128) {
++		printf("SWEET MHI: SMMU layout not known here\n");
++		return -1;
++	}
++	g_smmu1 = ml_io_map(SMMU_PA + psize, 0x1000);
++	uint64_t used[4] = { 0 };
++	uint32_t free_smr = ~0u;
++	for (uint32_t i = 0; i < nsmr; i++) {
++		uint32_t smr = rd(g_smmu0, 0x800 + 4 * i), s2cr = rd(g_smmu0, 0xc00 + 4 * i);
++		uint32_t id = smr & 0x7fff, mask = (smr >> 16) & 0x7fff;
++		if (!(smr >> 31)) {
++			free_smr = free_smr == ~0u ? i : free_smr;
++			continue;
++		}
++		if (((s2cr >> 16) & 3) == 0) {
++			used[(s2cr & 0xff) / 64] |= 1ull << ((s2cr & 0xff) % 64);
++		}
++		if (((id ^ WLAN_SID) & ~(mask | WLAN_SID_MASK) & 0x7fff) == 0) {
++			printf("SWEET MHI: SMMU: SMR%u %#x S2CR %#x already covers SID %#x: left alone\n", i, smr, s2cr, WLAN_SID);
++			return 0;
++		}
++	}
++	vm_offset_t page = 0;
++	for (uint32_t c = 0; c < ncb && c < 256 && g_cb == ~0u; c++) {
++		if ((used[c / 64] & (1ull << (c % 64))) || rd(g_smmu1, 4 * c) != 0) {
++			continue;
++		}
++		page = ml_io_map(SMMU_PA + (npage + c) * psize, 0x1000);
++		if (page && !(rd(page, 0) & 1u)) {
++			g_cb = c;
++			break;
++		}
++	}
++	if (free_smr == ~0u || g_cb == ~0u) {
++		printf("SWEET MHI: SMMU: no free SMR (%d) or bank (%d)\n", (int)free_smr, (int)g_cb);
++		return -1;
++	}
++	g_cbp = page;
++	wr(page, 0x58, 0xffffffffu);                                    /* FSR */
++	wr(page, 0x20, 0); wr(page, 0x24, 0);                           /* TTBR0 */
++	wr(page, 0x30, 0); wr(page, 0x10, 0);                           /* TCR, TCR2 */
++	wr(page, 0x38, 0); wr(page, 0x3c, 0);                           /* MAIR */
++	wr(g_smmu1, 0x800 + 4 * g_cb, 1);                               /* CBA2R: AArch64 */
++	wr(g_smmu1, 4 * g_cb, 0x1f000);                                 /* CBAR: S1, S2 bypass */
++	wr(page, 0, 0xe0);                                              /* SCTLR: M = 0 */
++	wr(g_smmu0, 0xc00 + 4 * free_smr, g_cb);                        /* S2CR: translate via the bank */
++	wr(g_smmu0, 0x800 + 4 * free_smr, 1u << 31 | WLAN_SID_MASK << 16 | WLAN_SID);
++	wr(g_smmu0, 0x70, 0);                                           /* sTLBGSYNC */
++	for (int i = 0; i < 1000 && (rd(g_smmu0, 0x74) & 1u); i++) {
++		delay(10);
++	}
++	printf("SWEET MHI: SMMU: SID %#x/%#x -> CB%u (translation off) via SMR%u: SMR %#x S2CR %#x CBAR %#x SCTLR %#x\n",
++	    WLAN_SID, WLAN_SID_MASK, g_cb, free_smr, rd(g_smmu0, 0x800 + 4 * free_smr), rd(g_smmu0, 0xc00 + 4 * free_smr),
++	    rd(g_smmu1, 4 * g_cb), rd(page, 0));
++	return 0;
++}
++
+ static void
+ bhi_load_sbl(uint32_t bhi)
+ {
+@@ -253,6 +349,7 @@ bhi_load_sbl(uint32_t bhi)
+ 	if (bad) {
+ 		return;
+ 	}
++	(void)smmu_wlan_identity();
+ 	wr(g_bar, bhi + 0x20, 0);                                       /* INTVEC: MSI vector 0 (we poll) */
+ 	wr(g_bar, bhi + 0x0c, (uint32_t)(pa >> 32));                    /* IMGADDR_HIGH */
+ 	wr(g_bar, bhi + 0x08, (uint32_t)pa);                            /* IMGADDR_LOW */
+@@ -271,6 +368,7 @@ bhi_load_sbl(uint32_t bhi)
+ 	printf("SWEET MHI: BHI %s after %d ms: status %#x err %#x dbg %x %x %x, ee %u\n",
+ 	    st == 2u ? "SUCCESS" : st == 3u ? "ERROR" : "timeout", ms, rd(g_bar, bhi + 0x2c), rd(g_bar, bhi + 0x30),
+ 	    rd(g_bar, bhi + 0x34), rd(g_bar, bhi + 0x38), rd(g_bar, bhi + 0x3c), rd(g_bar, bhi + 0x28));
++	smmu_faults("after BHI");
+ 	/* where it goes next: SBL waits for the BHIe image (phase 2c); watch the EE and MHI state for 3 s */
+ 	uint32_t last = 0xffffffffu;
+ 	for (ms = 0; ms <= 3000; ms += 50) {
+-- 
+2.43.0
+
