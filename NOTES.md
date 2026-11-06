@@ -368,4 +368,5 @@ all upstream patches. Kernels "0151"/"0152" in the logs = 0901/0902.
 - 1115 apollo-gmem-override: boot-arg sweetgmemkb=N (64..1152) sets the GMEM size Turnip is told (default 1152 KB)
 - 1116 apollo-cpufreq-epss: sweet_cpufreq.c on kona's qcom,cpufreq-hw-epss (0x18591000/2000/3000, 4+3+1 CPUs, LUT 0x100 row 4, perf 0x320, cycles 0x3c4, no LMh); test with flamecpufreq=1
 - 1117 apollo-ucgmem: boot-arg sweetucgmem=0 clears UCHE_GMEM_RANGE_MIN/MAX (Linux skips them on the A650 family); GMEM test
+- 1118 apollo-wled: boot-arg sweetwled=1: the framebuffer's brightness thread drives the PM8150L WLED5 (SID 5, sink 0xd900: MOD_A/B brightness 0x51-0x52/0x61-0x62, sync 0x65) over SPMI instead of DCS 0x51; sweet_wled_probe() logs the module state; SPMI reads/writes allow SID 5 0xd8/0xd9
 - mkadt: apollo virtual-timer-intid 27 (kona DT timer PPIs 13/14/11/12; redfin's 19 left the timer silent: every sleep, the 30 s IORTC wait and the WDT pet thread hung, then the watchdog reset the phone)
