@@ -1,0 +1,31 @@
+From 465e905be229387b60613be6b9dfb38dda3baad7 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 6 Nov 2026 16:41:48 +0100
+Subject: [PATCH] apollo pcie: once a second while waiting for READY, dump BHI,
+ Q6 cookie, scratch, link and config state
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01VzhH6pxBJ4naMiihKoMfcq
+---
+ bsd/dev/apollo_pcie.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index b0f27f4..06c2218 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -634,6 +634,11 @@ mhi_bringup(uint32_t bhi)
+ 		if (!(ctrl & 2u) && (st & 1u)) {
+ 			break;
+ 		}
++		if (ms % 1000 == 0) {
++			printf("SWEET MHI: +%d s: bhi status %#x err %#x | q6 cookie %#x scratch %#x warm %#x | RC link %#x ltssm %#x | cfg id %#x cmd/st %#x\n",
++			    ms / 1000, rd(g_bar, bhi + 0x2c), rd(g_bar, bhi + 0x30), win_rd(0x01f80500), rd(g_bar, 0x4040),
++			    win_rd(0x1f80504), rd(g_dbi, 0x80) >> 16, rd(g_parf, 0x1b0), rd(g_cfg, 0), rd(g_cfg, 4));
++		}
+ 		if ((st >> 2) & 1u) {
+ 			printf("SWEET MHI: SYS_ERR: BHI status %#x err %#x dbg %x %x %x, q6 cookie %#x warm %#x cause %#x\n",
+ 			    rd(g_bar, bhi + 0x2c), rd(g_bar, bhi + 0x30), rd(g_bar, bhi + 0x34), rd(g_bar, bhi + 0x38),
+-- 
+2.43.0
+
