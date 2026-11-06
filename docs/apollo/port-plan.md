@@ -212,3 +212,4 @@ Turnip was given FD620's device info -> 1112.
 k6b (1112): Metal renders on the A650 (no stall), lock screen drawn but every texture as noise -> 1113 (8-channel macrotile).
 k6c (1113): worse, all noise (BGRA framebuffer now, 60 fps swaps) -> 1114 redfin swizzle + register readback.
 k6d (1114, redfin swizzle): same picture as k6b (bands of noise, garbled text) -> swizzle is not it; 1115 sweetgmemkb to test GMEM/bins.
+k6e (sweetgmemkb=512): 11 bands instead of 5 -> the bands are Turnip's GMEM bins (each: noise on top, black below); GMEM rendering broken on the A650. Next: TU_DEBUG=sysmem via /var/local/mtl2-env (tools/wsl/mtl2-env.sh).
