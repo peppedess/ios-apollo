@@ -1,0 +1,86 @@
+From 2656caabe44c9b5733da9795d6a9447a23d391f1 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 6 Nov 2026 17:03:12 +0100
+Subject: [PATCH] apollo pcie: enable the QCA6390's MSI (address in the pool
+ block, all vectors, INTx off) before BHI; log the landing word
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01VzhH6pxBJ4naMiihKoMfcq
+---
+ bsd/dev/apollo_pcie.c | 46 ++++++++++++++++++++++++++++++++++++++++---
+ 1 file changed, 43 insertions(+), 3 deletions(-)
+
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 34513e2..5c99b77 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -675,9 +675,9 @@ mhi_bringup(uint32_t bhi)
+ 			break;
+ 		}
+ 		if (ms % 1000 == 0) {
+-			printf("SWEET MHI: +%d s: bhi status %#x err %#x | q6 cookie %#x scratch %#x warm %#x | RC link %#x ltssm %#x | cfg id %#x cmd/st %#x\n",
+-			    ms / 1000, rd(g_bar, bhi + 0x2c), rd(g_bar, bhi + 0x30), win_rd(0x01f80500), rd(g_bar, 0x4040),
+-			    win_rd(0x1f80504), rd(g_dbi, 0x80) >> 16, rd(g_parf, 0x1b0), rd(g_cfg, 0), rd(g_cfg, 4));
++			printf("SWEET MHI: +%d s: bhi status %#x err %#x | q6 cookie %#x warm %#x | RC link %#x | cmd/st %#x | msi word %#x\n",
++			    ms / 1000, rd(g_bar, bhi + 0x2c), rd(g_bar, bhi + 0x30), win_rd(0x01f80500), win_rd(0x1f80504),
++			    rd(g_dbi, 0x80) >> 16, rd(g_cfg, 4), *(volatile uint32_t *)(g_mva + MSI_LAND));
+ 		}
+ 		if ((st >> 2) & 1u) {
+ 			printf("SWEET MHI: SYS_ERR: BHI status %#x err %#x dbg %x %x %x, q6 cookie %#x warm %#x cause %#x\n",
+@@ -747,6 +747,43 @@ mhi_bringup(uint32_t bhi)
+ 	}
+ }
+ 
++/*
++ * MSI for the QCA6390 (ath11k_pci_msi_enable / ath11k_pcic_init_msi_config: 32 vectors, MHI users 1-3). k12k-p:
++ * the PBL accepts the SBL and a second later BHI_STATUS turns error (0xef0e0003) with EE still PBL, whatever
++ * memory the image comes from. Linux never runs the chip with MSI off; give it its MSI capability: message
++ * address = a word of our pool block (writes just land there, through the identity stream), data 0, as many
++ * vectors as it asks for, INTx off. The landing word is logged while waiting, so we see whether it signals.
++ */
++#define MSI_LAND        0xf000u
++static void
++msi_enable(void)
++{
++	uint32_t cap = rd(g_cfg, 0x34) & 0xfcu;
++	for (int n = 0; cap && n < 48; n++) {
++		uint32_t h = rd(g_cfg, cap);
++		if ((h & 0xffu) == 0x05u) {
++			uint32_t ctrl = h >> 16, mmc = (ctrl >> 1) & 7u;
++			bool is64 = (ctrl >> 7) & 1u;
++			m_w32(MSI_LAND, 0);
++			wr(g_cfg, cap + 4, (uint32_t)(g_mpa + MSI_LAND));
++			if (is64) {
++				wr(g_cfg, cap + 8, (uint32_t)((g_mpa + MSI_LAND) >> 32));
++				wr(g_cfg, cap + 12, 0);
++			} else {
++				wr(g_cfg, cap + 8, 0);
++			}
++			ctrl = (ctrl & ~0x70u) | (mmc << 4) | 1u;
++			wr(g_cfg, cap, (h & 0xffffu) | (ctrl << 16));
++			wr(g_cfg, 0x04, rd(g_cfg, 0x04) | (1u << 10));          /* INTx disable */
++			printf("SWEET MHI: MSI cap at %#x: ctrl %#x (%u vectors, 64-bit %d) -> %#x, address %#llx\n", cap, h >> 16,
++			    1u << mmc, is64, rd(g_cfg, cap) >> 16, g_mpa + MSI_LAND);
++			return;
++		}
++		cap = (h >> 8) & 0xfcu;
++	}
++	printf("SWEET MHI: no MSI capability\n");
++}
++
+ static void
+ bhi_load_sbl(uint32_t bhi)
+ {
+@@ -801,6 +838,9 @@ bhi_load_sbl(uint32_t bhi)
+ 	if (bad) {
+ 		return;
+ 	}
++	if (g_mva) {
++		msi_enable();
++	}
+ 	printf("SWEET MHI: SMMU setup next\n");
+ 	pc_msleep(2500);
+ 	(void)smmu_wlan_identity();
+-- 
+2.43.0
+
