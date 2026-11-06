@@ -219,3 +219,4 @@ Next: 1116 cpufreq (EPSS), then GPU/DDR clocks, then GMEM (bins: noise top, blac
 **k7a (1116, flamecpufreq=1): cpufreq works on kona EPSS.** Tables: silver 300-1804 MHz (ABL left 1420), gold
 710-2419 (ABL 710), prime 844-2841 (ABL 844); boot max writes read back. UI clearly smoother: up to ~25-30 shown
 fps scrolling, now GPU-bound (backboardd 20-50 ms GPU per frame in sysmem, 95 % busy in bursts).
+k8a (1117 sweetucgmem=0, TU_DEBUG=gmem): UI runs (up to ~35 shown fps, backboardd ~75 ms GPU per frame, GPU 99 % busy) but the screen stays black (k6 bins were noise + black); GPU pool full (876 MB) at 149 s. k8b = same with the range set, forced GMEM, for comparison.
