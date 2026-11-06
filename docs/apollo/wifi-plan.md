@@ -24,7 +24,7 @@ can stay; everything under it is new.
 1. **Link up** (DONE in k12b, patches 1121-1122) (kernel, sweetpcie=1): RPMh votes for the five supplies + the RC's 0p9/1p8, WLAN_EN high, GDSC and
    GCC clocks on, PHY reset + the DT sequence, PERST# release, LTSSM to L0, then config read of bus 1:
    expect vendor 0x17cb device 0x1101. Risk: GCC/GDSC offsets, the refclk path.
-2. **MHI** (kernel; 2a BAR0/registers done k12c, 2b BHI SBL done k12j, patches 1123-1130): BAR0 map, MHI register space, power up to the PBL, BHI download of amss.bin (+ m3 over MHI
+2. **MHI** (DONE in k12q, patches 1123-1137: BAR0, BHI SBL, MSI, MHI host, BHIe AMSS -> mission mode): BAR0 map, MHI register space, power up to the PBL, BHI download of amss.bin (+ m3 over MHI
    later), AMSS execution environment, channels up. Risk: SMMU (stream 0x1c00 must reach memory).
 3. **QMI over MHI** (userland, as wland's QMI): WLFW handshake (host cap, BDF download, M3 dump area, mode on).
 4. **ath11k data path** (CE rings over PCIe, HTC/WMI/HTT as wland does for ath10k): scan, join, TX/RX frames into
