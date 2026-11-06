@@ -370,4 +370,5 @@ all upstream patches. Kernels "0151"/"0152" in the logs = 0901/0902.
 - 1117 apollo-ucgmem: boot-arg sweetucgmem=0 clears UCHE_GMEM_RANGE_MIN/MAX (Linux skips them on the A650 family); GMEM test
 - 1118 apollo-wled: boot-arg sweetwled=1: the framebuffer's brightness thread drives the PM8150L WLED5 (SID 5, sink 0xd900: MOD_A/B brightness 0x51-0x52/0x61-0x62, sync 0x65) over SPMI instead of DCS 0x51; sweet_wled_probe() logs the module state; SPMI reads/writes allow SID 5 0xd8/0xd9
 - 1119 apollo-wled-regs: WLED5 brightness LSB/MSB are 0x53/0x54 (B 0x63/0x64; 0x51 SRC_SEL, 0x52 WIDTH_SEL, which 1118 wrote by mistake: read back unchanged), sync 0 then bit (Linux), probe logs the source (3 = external PWM); sweetwledtest=N sets a level at boot; brightness logs 40 lines
+- 1120 apollo-wledfix: boot-arg sweetwledfix=N (1..1023) holds the WLED at N whatever CoreBrightness asks (it sends its minimum at boot and nothing for the slider on apollo)
 - mkadt: apollo virtual-timer-intid 27 (kona DT timer PPIs 13/14/11/12; redfin's 19 left the timer silent: every sleep, the 30 s IORTC wait and the WDT pet thread hung, then the watchdog reset the phone)

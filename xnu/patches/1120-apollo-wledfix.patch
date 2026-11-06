@@ -1,0 +1,54 @@
+From d92ded05e858612493d351d0563488783abb8684 Mon Sep 17 00:00:00 2001
+From: apollo <apollo@local>
+Date: Fri, 6 Nov 2026 13:04:22 +0100
+Subject: [PATCH] apollo: sweetwledfix holds the backlight level
+
+---
+ bsd/dev/sweet_spmi.c | 17 ++++++++++++++++-
+ 1 file changed, 16 insertions(+), 1 deletion(-)
+
+diff --git a/bsd/dev/sweet_spmi.c b/bsd/dev/sweet_spmi.c
+index f4155da..05d83a6 100644
+--- a/bsd/dev/sweet_spmi.c
++++ b/bsd/dev/sweet_spmi.c
+@@ -302,6 +302,7 @@ sweet_spmi_write(unsigned sid, unsigned addr, uint8_t val)
+  * sweet_wled_set() writes a 12-bit (or 15-bit, WIDTH_SEL) level and toggles that module's sync bit.
+  */
+ static int wled_mod = -1;	/* 0 A, 1 B */
++static unsigned wled_fix;	/* 1120: sweetwledfix, 0 = follow iOS */
+ static unsigned wled_max = 0xfffu;
+ 
+ int
+@@ -346,7 +347,18 @@ sweet_wled_probe(void)
+ 	/* boot-arg sweetwledtest=N (1..1023): set that level now, to see the panel follow */
+ 	unsigned test = 0;
+ 	PE_parse_boot_argn("sweetwledtest", &test, sizeof(test));
+-	if (test >= 1 && test <= 1023) {
++	/*
++	 * apollo 1120: sweetwledfix=N (1..1023) holds the backlight at N whatever iOS asks (k10c: CoreBrightness
++	 * sends its minimum at boot and nothing for the slider). Set at once.
++	 */
++	PE_parse_boot_argn("sweetwledfix", &wled_fix, sizeof(wled_fix));
++	if (wled_fix > 1023) {
++		wled_fix = 0;
++	}
++	if (wled_fix) {
++		printf("SWEET WLED: sweetwledfix=%u: the level stays there\n", wled_fix);
++		(void)sweet_wled_set(wled_fix);
++	} else if (test >= 1 && test <= 1023) {
+ 		printf("SWEET WLED: sweetwledtest=%u\n", test);
+ 		(void)sweet_wled_set(test);
+ 	}
+@@ -360,6 +372,9 @@ sweet_wled_set(unsigned level)
+ 	if (sweet_wled_probe() != 0 || !sweet_spmi_wled_enabled()) {
+ 		return -1;
+ 	}
++	if (wled_fix) {
++		level = wled_fix;
++	}
+ 	unsigned w = (unsigned)(((uint64_t)level * wled_max) / 1023u);
+ 	w = w < 2 ? 2 : w > wled_max ? wled_max : w;
+ 	unsigned lsb = wled_mod ? 0xd963u : 0xd953u;
+-- 
+2.43.0
+
