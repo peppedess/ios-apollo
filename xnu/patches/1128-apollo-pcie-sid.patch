@@ -1,0 +1,114 @@
+From 0a28440a474018d37ab63fd124db28ecc037935b Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 6 Nov 2026 14:43:22 +0100
+Subject: [PATCH] apollo pcie: PARF BDF-to-SID table (config_sid_1_9_0), list
+ valid SMRs, two SMR tries
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01VzhH6pxBJ4naMiihKoMfcq
+---
+ bsd/dev/apollo_pcie.c | 60 ++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 59 insertions(+), 1 deletion(-)
+
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 35f7e72..5d3726a 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -253,6 +253,19 @@ smmu_wlan_identity(void)
+ 	printf("SWEET MHI: SMMU sCR0 %#x (USFCFG %u) ID0 %#x ID1 %#x: %u SMRs, %u banks\n", cr0, (cr0 >> 10) & 1u, id0, id1, nsmr,
+ 	    ncb);
+ 	smmu_faults("before");
++	{
++		unsigned nvalid = 0;
++		for (uint32_t i = 0; i < nsmr && i < 128; i++) {
++			uint32_t smr = rd(g_smmu0, 0x800 + 4 * i);
++			if (smr >> 31) {
++				if (nvalid < 24) {
++					printf("SWEET MHI: SMMU: SMR%u %#x S2CR %#x\n", i, smr, rd(g_smmu0, 0xc00 + 4 * i));
++				}
++				nvalid++;
++			}
++		}
++		printf("SWEET MHI: SMMU: %u valid SMRs of %u\n", nvalid, nsmr);
++	}
+ 	if ((uint64_t)npage * psize * 2 != 0x100000 || nsmr > 128) {
+ 		printf("SWEET MHI: SMMU layout not known here\n");
+ 		return -1;
+@@ -305,7 +318,7 @@ smmu_wlan_identity(void)
+ 	 * the value; a refused one gets its S2CR back to 0.
+ 	 */
+ 	uint32_t want = 1u << 31 | WLAN_SID_MASK << 16 | WLAN_SID, got_smr = ~0u, tries = 0;
+-	for (int i = (int)nsmr - 1; i >= 0 && got_smr == ~0u && tries < 16; i--) {
++	for (int i = (int)nsmr - 1; i >= 0 && got_smr == ~0u && tries < 2; i--) {
+ 		if (!(freeset[i / 64] & (1ull << (i % 64)))) {
+ 			continue;
+ 		}
+@@ -330,6 +343,7 @@ smmu_wlan_identity(void)
+ 		printf("SWEET MHI: SMMU: no match register took SID %#x (%u tried)\n", WLAN_SID, tries);
+ 		return -1;
+ 	}
++
+ 	printf("SWEET MHI: SMMU: SID %#x/%#x -> CB%u (translation off) via SMR%u: SMR %#x S2CR %#x CBAR %#x SCTLR %#x\n",
+ 	    WLAN_SID, WLAN_SID_MASK, g_cb, got_smr, rd(g_smmu0, 0x800 + 4 * got_smr), rd(g_smmu0, 0xc00 + 4 * got_smr),
+ 	    rd(g_smmu1, 4 * g_cb), rd(page, 0));
+@@ -476,6 +490,49 @@ mhi_probe(void)
+ 	}
+ }
+ 
++/*
++ * Linux qcom_pcie_config_sid_1_9_0 (sm8250 ops_1_9_0): the RC turns a requester's BDF into an SMMU stream through
++ * a 256-entry hash table in PARF (0x2000): entry crc8(BDF big-endian, poly 0x07, MSB first) = BDF << 16 |
++ * (SID - SID base) << 8 | next. DT iommu-map: BDF 0x000 -> 0x1c00, 0x100 -> 0x1c01. k12d-g never set it, so the
++ * QCA6390's reads went out with whatever stream the empty table gives.
++ */
++static uint8_t
++crc8_07(const uint8_t *p, unsigned n)
++{
++	uint8_t c = 0;
++	while (n--) {
++		c ^= *p++;
++		for (int b = 0; b < 8; b++) {
++			c = (c & 0x80) ? (uint8_t)((c << 1) ^ 0x07) : (uint8_t)(c << 1);
++		}
++	}
++	return c;
++}
++
++static void
++config_sid(void)
++{
++	static const uint16_t bdf[2] = { 0x000, 0x100 }, sidoff[2] = { 0, 1 };
++	for (unsigned i = 0; i < 256; i++) {
++		wr(g_parf, 0x2000 + 4 * i, 0);
++	}
++	for (unsigned i = 0; i < 2; i++) {
++		uint8_t be[2] = { (uint8_t)(bdf[i] >> 8), (uint8_t)bdf[i] };
++		uint8_t h = crc8_07(be, 2);
++		uint32_t v = rd(g_parf, 0x2000 + 4u * h);
++		while (v) {
++			uint8_t cur = h++;
++			if (!(v & 0xffu)) {
++				wr(g_parf, 0x2000 + 4u * cur, v | h);
++			}
++			v = rd(g_parf, 0x2000 + 4u * h);
++		}
++		wr(g_parf, 0x2000 + 4u * h, (uint32_t)bdf[i] << 16 | (uint32_t)sidoff[i] << 8);
++		printf("SWEET PCIE: BDF %#x -> SID %#x: hash %u = %#x\n", bdf[i], 0x1c00u + sidoff[i], h,
++		    rd(g_parf, 0x2000 + 4u * h));
++	}
++}
++
+ static void
+ pcie_main(void *arg __unused, wait_result_t w __unused)
+ {
+@@ -556,6 +613,7 @@ pcie_main(void *arg __unused, wait_result_t w __unused)
+ 	wr(g_parf, 0x20, rd(g_parf, 0x20) & ~(1u << 5));                /* PM_CTRL: allow L1 */
+ 	wr(g_parf, 0x1a8, rd(g_parf, 0x1a8) | (1u << 31));              /* AXI master write halt V2: EN */
+ 	printf("SWEET PCIE: PARF sys %x phy_ctrl %x ltssm %x\n", rd(g_parf, 0x00), rd(g_parf, 0x40), rd(g_parf, 0x1b0));
++	config_sid();
+ 	if (step < 4) {
+ 		return;
+ 	}
+-- 
+2.43.0
+
