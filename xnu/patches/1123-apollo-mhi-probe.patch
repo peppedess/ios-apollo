@@ -1,0 +1,127 @@
+From 2b5b2a6228540cd02154b26a9efd32760f142c02 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 6 Nov 2026 14:08:33 +0100
+Subject: [PATCH] apollo pcie: phase 2a, memory window + QCA6390 BAR0,
+ read-only MHI/BHI dump
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01VzhH6pxBJ4naMiihKoMfcq
+---
+ bsd/dev/apollo_pcie.c | 87 ++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 86 insertions(+), 1 deletion(-)
+
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 136deeb..28ea34a 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -1,7 +1,7 @@
+ /*
+  * apollo (Xiaomi 10T Pro, kona/SM8250): PCIe root complex 0 bring-up for the QCA6390 Wi-Fi chip,
+  * phase 1 of docs/apollo/wifi-plan.md: power, clocks, PHY, link training, one config read of the
+- * endpoint (expect 17cb:1101). Off unless boot-arg sweetpcie=1; everything is logged as "SWEET PCIE:".
++ * endpoint (expect 17cb:1101); step 7 (phase 2a): BAR0 and a read-only MHI/BHI dump. Off unless boot-arg sweetpcie=1; everything is logged as "SWEET PCIE:".
+  *
+  * Sources: the live DT (qcom,pcie@1c00000 "qcom,pci-msm", qcom,cnss-qca6390@b0000000), Linux 6.12
+  * drivers/pci/controller/dwc/pcie-qcom.c (init_2_7_0, ops_1_9_0 used for sm8250), pcie-designware.h,
+@@ -162,6 +162,87 @@ static const uint16_t phy_seq[][2] = {
+ 	{ 0x9ec, 0x12 }, { 0x800, 0x00 }, { 0x844, 0x03 },
+ };
+ 
++/*
++ * Wi-Fi phase 2a: memory window, the endpoint's BAR0, then a read-only look at its MHI and BHI registers
++ * (Linux drivers/bus/mhi/common.h + host/internal.h): which execution environment the QCA6390 is in (PBL
++ * expected after power-up), MHI state, BHI status, serial and hardware ID. Nothing is written to the chip
++ * but its BAR and command register.
++ */
++#define MEM_PA          0x60300000u
++#define MEM_END         0x63ffffffu
++static vm_offset_t g_bar;
++
++static const char *
++mhi_ee_name(uint32_t ee)
++{
++	static const char *const n[] = { "PBL", "SBL", "AMSS", "RDDM", "WFW", "PTHRU", "EDL", "FP" };
++	return ee < 8 ? n[ee] : "?";
++}
++
++static void
++mhi_probe(void)
++{
++	/* iATU region 1: MEM, CPU 0x60300000-0x63ffffff -> PCI bus addresses 1:1 */
++	wr(g_atu, 0x200 + 0x08, MEM_PA); wr(g_atu, 0x200 + 0x0c, 0);
++	wr(g_atu, 0x200 + 0x10, MEM_END);
++	wr(g_atu, 0x200 + 0x14, MEM_PA); wr(g_atu, 0x200 + 0x18, 0);
++	wr(g_atu, 0x200 + 0x00, 0u);                                    /* type MEM */
++	wr(g_atu, 0x200 + 0x04, 1u << 31);
++	(void)rd(g_atu, 0x204);
++	/* RC bridge: memory window covers it, prefetchable window off */
++	wr(g_dbi, 0x20, ((MEM_END >> 20) << 20) | ((MEM_PA >> 20) << 4));
++	wr(g_dbi, 0x24, 0x0000fff0u); wr(g_dbi, 0x28, 0); wr(g_dbi, 0x2c, 0);
++	/* endpoint BAR0 (64-bit): size it, place it at the first aligned address of the window */
++	uint32_t cmd = rd(g_cfg, 0x04);
++	wr(g_cfg, 0x04, cmd & ~0x7u);
++	uint32_t lo = rd(g_cfg, 0x10);
++	wr(g_cfg, 0x10, 0xffffffffu); wr(g_cfg, 0x14, 0xffffffffu);
++	uint32_t sl = rd(g_cfg, 0x10), sh = rd(g_cfg, 0x14);
++	uint32_t size = ~(sl & ~0xfu) + 1u;
++	if ((lo & 0x6u) == 0x4u && sh != 0xffffffffu) {
++		size = 0;                                               /* wants more than 4 GiB: not ours */
++	}
++	if (!size) {
++		size = 1u;
++	}
++	uint32_t base = (MEM_PA + size - 1u) & ~(size - 1u);
++	printf("SWEET PCIE: BAR0 type %x size %#x (hi %x) -> %#x\n", lo & 0xfu, size, sh, base);
++	if (size < 0x1000u || size > 0x2000000u || base + size - 1u > MEM_END) {
++		printf("SWEET PCIE: BAR0 does not fit the window\n");
++		return;
++	}
++	wr(g_cfg, 0x10, base | (lo & 0xfu)); wr(g_cfg, 0x14, 0);
++	wr(g_cfg, 0x04, cmd | 0x6u);                                    /* memory + bus master */
++	printf("SWEET PCIE: endpoint bar0 %08x:%08x command %x status %x\n", rd(g_cfg, 0x14), rd(g_cfg, 0x10),
++	    rd(g_cfg, 0x04) & 0xffffu, rd(g_cfg, 0x04) >> 16);
++	g_bar = ml_io_map(base, size < 0x100000u ? size : 0x100000u);
++	if (!g_bar) {
++		printf("SWEET PCIE: BAR0 map failed\n");
++		return;
++	}
++	uint32_t ver = rd(g_bar, 0x08);
++	if (ver == 0xffffffffu) {
++		printf("SWEET PCIE: MHI reads all ones (BAR not decoded?)\n");
++		return;
++	}
++	uint32_t bhi = rd(g_bar, 0x28), bhie = rd(g_bar, 0x2c);
++	printf("SWEET MHI: reglen %#x ver %#x cfg %#x chdb %#x erdb %#x bhi %#x bhie %#x\n", rd(g_bar, 0x00), ver,
++	    rd(g_bar, 0x10), rd(g_bar, 0x18), rd(g_bar, 0x20), bhi, bhie);
++	uint32_t ctrl = rd(g_bar, 0x38), st = rd(g_bar, 0x48);
++	printf("SWEET MHI: ctrl %#x (state %u reset %u) status %#x (state %u syserr %u ready %u)\n", ctrl,
++	    (ctrl >> 8) & 0xffu, (ctrl >> 1) & 1u, st, (st >> 8) & 0xffu, (st >> 2) & 1u, st & 1u);
++	if (bhi >= 0x1000u || (bhi & 3u)) {
++		return;
++	}
++	uint32_t ee = rd(g_bar, bhi + 0x28), bs = rd(g_bar, bhi + 0x2c);
++	printf("SWEET MHI: BHI v%u.%u ee %u (%s) status %#x (%u) err %#x dbg %x %x %x\n", rd(g_bar, bhi + 0x04),
++	    rd(g_bar, bhi + 0x00), ee, mhi_ee_name(ee), bs, bs >> 30, rd(g_bar, bhi + 0x30), rd(g_bar, bhi + 0x34),
++	    rd(g_bar, bhi + 0x38), rd(g_bar, bhi + 0x3c));
++	printf("SWEET MHI: serial %#x sbl-arb %#x numseg %u hwid %x %x %x %x\n", rd(g_bar, bhi + 0x40),
++	    rd(g_bar, bhi + 0x44), rd(g_bar, bhi + 0x48), rd(g_bar, bhi + 0x4c), rd(g_bar, bhi + 0x50),
++	    rd(g_bar, bhi + 0x54), rd(g_bar, bhi + 0x58));
++}
++
+ static void
+ pcie_main(void *arg __unused, wait_result_t w __unused)
+ {
+@@ -304,6 +385,10 @@ pcie_main(void *arg __unused, wait_result_t w __unused)
+ 	uint32_t id = rd(g_cfg, 0x0), cls = rd(g_cfg, 0x8), bar0 = rd(g_cfg, 0x10);
+ 	printf("SWEET PCIE: endpoint 1:0.0 id %08x class %08x bar0 %08x%s\n", id, cls, bar0,
+ 	    id == 0x110117cbu ? " = QCA6390" : "");
++	if (id != 0x110117cbu || step < 7) {
++		return;
++	}
++	mhi_probe();
+ }
+ 
+ void
+-- 
+2.43.0
+
