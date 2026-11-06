@@ -1,0 +1,79 @@
+From 16ceaaf22d8dd9ab49097168fffaaf300cd0eb93 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 6 Nov 2026 13:58:45 +0100
+Subject: [PATCH] apollo pcie: SMPS votes past duplicate cmd-db entries, refclk
+ + PHY aux clocks, no smpf2
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01VzhH6pxBJ4naMiihKoMfcq
+---
+ bsd/dev/apollo_pcie.c | 10 ++++++++--
+ bsd/dev/sweet_rpmh.c  |  4 ++++
+ 2 files changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index c5da7f2..136deeb 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -13,7 +13,7 @@
+  *   branch votes 0x52008 bits 0-5 (slv_axi, mstr_axi, cfg_ahb, aux, pipe, slv_q2a), refgen RCG 0x6f014 +
+  *   branch 0x6f02c, aggre NoC PCIe TBU 0x9000c, DDRSS PCIe SF TBU 0x8d058.
+  *   TLMM north tile 0x0f900000 (0x1000 per GPIO): WLAN_EN 20, PERST# 79, WAKE# 81.
+- *   RPMh: RC ldoa5 0.88 V, ldoa9 1.2 V; QCA6390 smpa6 0.95, smpf2 0.95, smpa4 1.8, smpa5 1.9, smpc8 1.35 V.
++ *   RPMh: RC ldoa5 0.88 V, ldoa9 1.2 V; QCA6390 smpa6 0.95 (aon and, on apollo, dig), smpa4 1.8, smpa5 1.9, smpc8 1.35 V.
+  */
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ #include <sys/param.h>
+@@ -174,7 +174,7 @@ pcie_main(void *arg __unused, wait_result_t w __unused)
+ 	vote_ldo("ldoa9", 1200);
+ 	vote_smps("smpa4", 1800);
+ 	vote_smps("smpa6", 950);
+-	vote_smps("smpf2", 952);
++	/* apollo dtbo fragment 125: vdd-wlan-dig is pm8150 S6 at 0.95 V, not PM8009 S2 (absent from cmd-db) */
+ 	vote_smps("smpa5", 1900);
+ 	vote_smps("smpc8", 1352);
+ 	gpio_out(GPIO_PERST, 0);
+@@ -201,12 +201,16 @@ pcie_main(void *arg __unused, wait_result_t w __unused)
+ 	gcc_wr(0x6b038 + 4, 0u);
+ 	gcc_wr(0x6b038, gcc_rd(0x6b038) | 1u);
+ 	gcc_wr(0x52008, gcc_rd(0x52008) | 0x3fu);       /* slv_axi mstr_axi cfg_ahb aux pipe slv_q2a */
++	gcc_wr(0x8c004, gcc_rd(0x8c004) | 1u);           /* gcc_pcie_wifi_clkref_en: refclk to the PHY */
++	gcc_wr(0x6f004, gcc_rd(0x6f004) | 1u);           /* gcc_pcie_phy_aux_clk */
+ 	gcc_wr(0x9000c, gcc_rd(0x9000c) | 1u);
+ 	gcc_wr(0x8d058, gcc_rd(0x8d058) | 1u);
+ 	delay(100);
+ 	printf("SWEET PCIE: clocks: vote %x aux %x cfg %x mstr %x slv %x q2a %x pipe %x refgen %x\n", gcc_rd(0x52008),
+ 	    gcc_rd(0x6b028), gcc_rd(0x6b024), gcc_rd(0x6b01c), gcc_rd(0x6b014), gcc_rd(0x6b010), gcc_rd(0x6b02c),
+ 	    gcc_rd(0x6f02c));
++	printf("SWEET PCIE: clkref %x phy_aux %x refgen rcg %x/%x\n", gcc_rd(0x8c004), gcc_rd(0x6f004),
++	    gcc_rd(0x6f014), gcc_rd(0x6f018));
+ 	gcc_wr(0x6b000, 1);                             /* PCIE_0 BCR */
+ 	gcc_wr(0x6c01c, 1);                             /* PCIE_0 PHY BCR */
+ 	pc_msleep(1);
+@@ -255,6 +259,8 @@ pcie_main(void *arg __unused, wait_result_t w __unused)
+ 	}
+ 	printf("SWEET PCIE: PHY %s (status %x), pipe clk branch %x\n", ready ? "ready" : "NOT READY", rd(g_phy, 0x814),
+ 	    gcc_rd(0x6b02c));
++	printf("SWEET PCIE: PHY com 170-17c %x %x %x %x, pcs 800 %x 840 %x 844 %x\n", rd(g_phy, 0x170), rd(g_phy, 0x174),
++	    rd(g_phy, 0x178), rd(g_phy, 0x17c), rd(g_phy, 0x800), rd(g_phy, 0x840), rd(g_phy, 0x844));
+ 	if (!ready || step < 5) {
+ 		return;
+ 	}
+diff --git a/bsd/dev/sweet_rpmh.c b/bsd/dev/sweet_rpmh.c
+index a19ef45..2824fb5 100644
+--- a/bsd/dev/sweet_rpmh.c
++++ b/bsd/dev/sweet_rpmh.c
+@@ -202,6 +202,10 @@ rh_lookup(const char *res, uint32_t *address)
+ 				printf("SWEET RPMH: invalid VRM/ARC/BCM entry for %s\n", res);
+ 				return EINVAL;
+ 			}
++			/* kona's cmd-db lists some SMPS twice (two aux entries, same address): one resource */
++			if (matches && *address == addr) {
++				continue;
++			}
+ 			*address = addr;
+ 			++matches;
+ 			printf("SWEET RPMH: %s addr=%#x slave=%u aux-version=%#x priority=%#x:%#x\n",
+-- 
+2.43.0
+
