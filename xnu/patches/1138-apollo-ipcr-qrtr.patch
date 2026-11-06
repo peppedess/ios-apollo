@@ -1,0 +1,238 @@
+From 38720e474da9f18f8c9f205bb6b37aa17de906bb Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 6 Nov 2026 17:17:33 +0100
+Subject: [PATCH] apollo pcie: Wi-Fi phase 3a, IPCR channels 20/21 (contexts,
+ START_CHAN, 16 RX buffers), QRTR HELLO, log every packet
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01VzhH6pxBJ4naMiihKoMfcq
+---
+ bsd/dev/apollo_pcie.c | 184 +++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 183 insertions(+), 1 deletion(-)
+
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 931f903..5350dc7 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -488,7 +488,7 @@ ath11k_sw_reset(void)
+  */
+ extern int sweet_gpu_pool_alloc(uint64_t bytes, uint64_t *pa);
+ 
+-#define MHI_CTRL_SIZE   0x10000u
++#define MHI_CTRL_SIZE   0x40000u        /* contexts, rings, MSI word, IPCR buffers; segments after */
+ #define SEG_LEN         0x80000u
+ #define CH_CTX          0x0000u         /* 128 x 44 */
+ #define ER_CTX          0x2000u         /* 2 x 44 */
+@@ -544,6 +544,7 @@ ctx_ring(uint32_t ctx, uint32_t ring, uint32_t elements, bool event, unsigned ir
+ 
+ /* the primary event ring's new elements, logged; returns the last EE seen in an EE event (or ~0) */
+ static uint32_t g_er0_rp;
++static volatile uint32_t g_cmd_cc = ~0u;
+ static uint32_t
+ er0_poll(void)
+ {
+@@ -560,6 +561,9 @@ er0_poll(void)
+ 		if (type == 0x40) {
+ 			ee = d0 >> 24;
+ 		}
++		if (type == 0x21) {
++			g_cmd_cc = d0 >> 24;
++		}
+ 		g_er0_rp = g_er0_rp + 16 >= ER0_RING + 32 * 16 ? ER0_RING : g_er0_rp + 16;
+ 	}
+ 	if (n) {
+@@ -594,6 +598,181 @@ bhie_load(uint32_t bhie, unsigned nseg)
+ 	return (st >> 30) == 2u ? 0 : -1;
+ }
+ 
++/*
++ * Wi-Fi phase 3a: QRTR over the IPCR channels (ath11k_mhi_channels_qca6390: 20 to the device, 21 from it, 64
++ * elements each, event ring 1, burst mode off, AMSS only; net/qrtr/mhi.c sends and receives whole QRTR packets
++ * with EOT). mhi_init_chan_ctxt (state ENABLED, ring), START_CHAN commands on the command ring (completion on
++ * event ring 0), 16 receive buffers on 21, then a QRTR HELLO from node 1's control port; every packet that
++ * comes back is logged (HELLO, NEW_SERVER with the WLFW service 0x45 are what phase 3 needs).
++ */
++#define CH20_RING       0x7000u         /* 64 x 16, 1 KiB-aligned */
++#define CH21_RING       0x7400u
++#define RXBUF           0x10000u        /* 16 x 8 KiB */
++#define RXBUF_SZ        0x2000u
++#define NRX             16u
++#define TXBUF           0x30000u        /* 16 KiB */
++#define QRTR_CTRL       0xfffffffeu
++static uint32_t g_chdb, g_cmd_wp = CMD_RING, g_er1_rp = ER1_RING, g_ch20_wp = CH20_RING, g_ch21_wp = CH21_RING;
++
++static uint32_t
++ring_next(uint32_t off, uint32_t base, uint32_t n)
++{
++	return off + 16 >= base + n * 16 ? base : off + 16;
++}
++
++static int
++mhi_cmd(uint32_t d1, const char *what)
++{
++	m_w64(g_cmd_wp, 0);
++	m_w32(g_cmd_wp + 8, 0);
++	m_w32(g_cmd_wp + 12, d1);
++	g_cmd_wp = ring_next(g_cmd_wp, CMD_RING, 128);
++	m_w64(CMD_CTX + 36, g_mpa + g_cmd_wp);
++	__asm__ volatile ("dsb sy" ::: "memory");
++	g_cmd_cc = ~0u;
++	mhi_db(0x70, g_mpa + g_cmd_wp);                                 /* CRDB */
++	for (int ms = 0; ms < 2000; ms += 10) {
++		(void)er0_poll();
++		if (g_cmd_cc != ~0u) {
++			printf("SWEET MHI: %s: completion code %u after %d ms\n", what, g_cmd_cc, ms);
++			return g_cmd_cc == 1u ? 0 : -1;
++		}
++		pc_msleep(10);
++	}
++	printf("SWEET MHI: %s: no completion\n", what);
++	return -1;
++}
++
++static void
++chan_ctx(unsigned ch, uint32_t ring, uint32_t type)
++{
++	uint32_t c = CH_CTX + 44 * ch;
++	m_w32(c + 0, 1u | (2u << 8));                                    /* ENABLED, BRSTMODE disable */
++	m_w32(c + 4, type);                                             /* 1 outbound, 2 inbound */
++	m_w32(c + 8, 1);                                                /* event ring 1 */
++	m_w64(c + 12, g_mpa + ring);
++	m_w64(c + 20, 64 * 16ull);
++	m_w64(c + 28, g_mpa + ring);
++	m_w64(c + 36, g_mpa + ring);
++}
++
++/* one transfer element (EOT, BEI as intmod != 0) at *wp, ring the channel doorbell */
++static void
++chan_queue(unsigned ch, uint32_t ring, uint32_t *wp, uint32_t buf, uint32_t len)
++{
++	m_w64(*wp, g_mpa + buf);
++	m_w32(*wp + 8, len & 0xffffu);
++	m_w32(*wp + 12, (2u << 16) | (1u << 10) | (1u << 9));
++	*wp = ring_next(*wp, ring, 64);
++	m_w64(CH_CTX + 44 * ch + 36, g_mpa + *wp);
++	__asm__ volatile ("dsb sy" ::: "memory");
++	mhi_db(g_chdb + 8 * ch, g_mpa + *wp);
++}
++
++static void
++qrtr_log(const uint8_t *p, uint32_t n)
++{
++	uint32_t h[8];
++	if (n < 32) {
++		printf("SWEET QRTR: short packet (%u bytes)\n", n);
++		return;
++	}
++	memcpy(h, p, 32);
++	printf("SWEET QRTR: v%u type %u %u:%#x -> %u:%#x size %u confirm %u", h[0], h[1], h[2], h[3], h[6], h[7], h[5], h[4]);
++	if (h[1] != 1 && n >= 52) {
++		uint32_t c[5];
++		memcpy(c, p + 32, 20);
++		printf(" | ctrl cmd %u svc %#x inst %#x node %u port %#x", c[0], c[1], c[2], c[3], c[4]);
++	} else if (n > 32) {
++		printf(" | data");
++		for (uint32_t i = 32; i < n && i < 32 + 24; i++) {
++			printf(" %02x", p[i]);
++		}
++	}
++	printf("\n");
++}
++
++static void
++qrtr_send_ctrl(uint32_t type, uint32_t dst_node)
++{
++	uint32_t pkt[13] = { 1, type, 1, QRTR_CTRL, 0, 20, dst_node, QRTR_CTRL, type, 0, 0, 0, 0 };
++	for (unsigned i = 0; i < 13; i++) {
++		m_w32(TXBUF + 4 * i, pkt[i]);
++	}
++	chan_queue(20, CH20_RING, &g_ch20_wp, TXBUF, sizeof(pkt));
++}
++
++/* event ring 1: transfer completions; inbound buffers are logged and queued again */
++static unsigned
++er1_poll(void)
++{
++	uint64_t dev_rp = m_r64(ER_CTX + 44 + 28);
++	unsigned n = 0;
++	while (g_mpa + g_er1_rp != dev_rp && n < 64) {
++		uint32_t e = g_er1_rp;
++		uint64_t ptr = m_r64(e);
++		uint32_t d0 = *(volatile uint32_t *)(g_mva + e + 8), d1 = *(volatile uint32_t *)(g_mva + e + 12);
++		uint32_t type = (d1 >> 16) & 0xffu, ch = d1 >> 24, code = d0 >> 24, len = d0 & 0xffffu;
++		if (type == 0x22 && ch == 21 && ptr >= g_mpa + CH21_RING && ptr < g_mpa + CH21_RING + 64 * 16) {
++			uint32_t tre = (uint32_t)(ptr - g_mpa);
++			uint32_t buf = (uint32_t)(m_r64(tre) - g_mpa);
++			uint8_t pkt[256];
++			uint32_t k = len < sizeof(pkt) ? len : sizeof(pkt);
++			for (uint32_t i = 0; i < k; i += 4) {
++				uint32_t w = *(volatile uint32_t *)(g_mva + buf + i);
++				memcpy(pkt + i, &w, k - i < 4 ? k - i : 4);
++			}
++			printf("SWEET MHI: rx ch21 code %u len %u: ", code, len);
++			qrtr_log(pkt, k);
++			if (len >= 52) {
++				uint32_t h1, src;
++				memcpy(&h1, pkt + 4, 4);
++				memcpy(&src, pkt + 8, 4);
++				if (h1 == 2) {
++					qrtr_send_ctrl(2, src);         /* answer the remote's HELLO */
++				}
++			}
++			chan_queue(21, CH21_RING, &g_ch21_wp, buf, RXBUF_SZ);
++		} else {
++			printf("SWEET MHI: er1 event %#x ch %u code %u len %u ptr %#llx\n", type, ch, code, len, ptr);
++		}
++		g_er1_rp = ring_next(g_er1_rp, ER1_RING, 256);
++		n++;
++	}
++	if (n) {
++		uint32_t wp = g_er1_rp == ER1_RING ? ER1_RING + 255 * 16 : g_er1_rp - 16;
++		m_w64(ER_CTX + 44 + 36, g_mpa + wp);
++		mhi_db(rd(g_bar, 0x20) + 8, g_mpa + wp);
++	}
++	return n;
++}
++
++static void
++ipcr_start(void)
++{
++	g_chdb = rd(g_bar, 0x18);
++	chan_ctx(20, CH20_RING, 1);
++	chan_ctx(21, CH21_RING, 2);
++	__asm__ volatile ("dsb sy" ::: "memory");
++	if (mhi_cmd((20u << 24) | (0x12u << 16), "START_CHAN 20") != 0 ||
++	    mhi_cmd((21u << 24) | (0x12u << 16), "START_CHAN 21") != 0) {
++		return;
++	}
++	printf("SWEET MHI: channel states 20 %u 21 %u\n", *(volatile uint32_t *)(g_mva + CH_CTX + 44 * 20) & 0xffu,
++	    *(volatile uint32_t *)(g_mva + CH_CTX + 44 * 21) & 0xffu);
++	for (unsigned i = 0; i < NRX; i++) {
++		chan_queue(21, CH21_RING, &g_ch21_wp, RXBUF + i * RXBUF_SZ, RXBUF_SZ);
++	}
++	qrtr_send_ctrl(2, 0xffffffffu);                                 /* HELLO */
++	printf("SWEET QRTR: HELLO sent from node 1\n");
++	for (int ms = 0; ms < 8000; ms += 20) {
++		(void)er0_poll();
++		(void)er1_poll();
++		pc_msleep(20);
++	}
++	printf("SWEET QRTR: done listening\n");
++}
++
+ /* the pool block: MHI control area + the whole amss20.bin in 512 KiB segments + vector table (once) */
+ static int
+ mhi_mem_prepare(void)
+@@ -738,6 +917,9 @@ mhi_bringup(uint32_t bhi)
+ 			(void)er0_poll();
+ 			printf("SWEET MHI: QCA6390 in mission mode (AMSS): ee %u mhi state %u\n", rd(g_bar, bhi + 0x28),
+ 			    (rd(g_bar, 0x48) >> 8) & 0xffu);
++			if (g_step >= 10) {
++				ipcr_start();
++			}
+ 			break;
+ 		}
+ 		if ((s >> 2) & 1u) {
+-- 
+2.43.0
+

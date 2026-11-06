@@ -26,7 +26,7 @@ can stay; everything under it is new.
    expect vendor 0x17cb device 0x1101. Risk: GCC/GDSC offsets, the refclk path.
 2. **MHI** (DONE in k12q, patches 1123-1137: BAR0, BHI SBL, MSI, MHI host, BHIe AMSS -> mission mode): BAR0 map, MHI register space, power up to the PBL, BHI download of amss.bin (+ m3 over MHI
    later), AMSS execution environment, channels up. Risk: SMMU (stream 0x1c00 must reach memory).
-3. **QMI over MHI** (userland, as wland's QMI): WLFW handshake (host cap, BDF download, M3 dump area, mode on).
+3. **QMI over MHI** (bring-up in the kernel first, 3a IPCR + QRTR from patch 1138; then wland's QMI): WLFW handshake (host cap, BDF download, M3 dump area, mode on).
 4. **ath11k data path** (CE rings over PCIe, HTC/WMI/HTT as wland does for ath10k): scan, join, TX/RX frames into
    /dev/wlan; en0, wifid and Settings come from the redfin side unchanged.
 
