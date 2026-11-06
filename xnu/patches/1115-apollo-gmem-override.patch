@@ -1,0 +1,30 @@
+From f151d3e621ce82f64194ebda6da32eac535ad936 Mon Sep 17 00:00:00 2001
+From: apollo <apollo@local>
+Date: Fri, 6 Nov 2026 09:05:50 +0100
+Subject: [PATCH] apollo: sweetgmemkb overrides the GMEM size Turnip is told
+
+---
+ iokit/Kernel/arm/SweetAccelerator.cpp | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/iokit/Kernel/arm/SweetAccelerator.cpp b/iokit/Kernel/arm/SweetAccelerator.cpp
+index 539ec30..fbf6ae3 100644
+--- a/iokit/Kernel/arm/SweetAccelerator.cpp
++++ b/iokit/Kernel/arm/SweetAccelerator.cpp
+@@ -739,6 +739,13 @@ SweetAcceleratorUserClient::v2Method(uint32_t method, const void *in, uint32_t i
+ 		 */
+ 		rp->chip_id = 0x06050002;
+ 		rp->gmem_bytes = 0x120000;
++		{
++			/* apollo 1115: sweetgmemkb=N tells Turnip a smaller GMEM (k6b/k6d: bands of noise, bins suspected) */
++			uint32_t kb = 0;
++			if (PE_parse_boot_argn("sweetgmemkb", &kb, sizeof(kb)) && kb >= 64 && kb <= 1152) {
++				rp->gmem_bytes = (uint64_t)kb << 10;
++			}
++		}
+ 		rp->gmem_base = 0x100000;
+ 		rp->uche_trap_base = 0x1fffffffff000ULL;
+ 		rp->va_start = fWinBase;
+-- 
+2.43.0
+

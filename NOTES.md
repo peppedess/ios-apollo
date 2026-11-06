@@ -365,4 +365,5 @@ all upstream patches. Kernels "0151"/"0152" in the logs = 0901/0902.
 - 1112 apollo-turnip-a650: v2 GetDeviceInfo reports FD650 (chip 0x06050002, GMEM 0x120000, hbb 16, UBWC 3) and model "Adreno 650"; k6a gave Turnip FD620 and backboardd stalled after 6 frames (black screen)
 - 1113 apollo-a650-macrotile: RBBM_NC_MODE_CNTL = 1 and Turnip macrotile_mode 1 (Linux A650 family); k6b rendered with noise in every UBWC texture
 - 1114 apollo-a650-redfin-swizzle: back to redfin's swizzle (hbb 14, macrotile 0) on GPU and Turnip, plus a readback log of the NC_MODE registers; k6c (8-channel) was noise everywhere, text gone too
+- 1115 apollo-gmem-override: boot-arg sweetgmemkb=N (64..1152) sets the GMEM size Turnip is told (default 1152 KB)
 - mkadt: apollo virtual-timer-intid 27 (kona DT timer PPIs 13/14/11/12; redfin's 19 left the timer silent: every sleep, the 30 s IORTC wait and the WDT pet thread hung, then the watchdog reset the phone)

@@ -211,3 +211,4 @@ made its pipelines, drew 6 frames ('b3a8' surfaces) at 25-26 s, then nothing (bl
 Turnip was given FD620's device info -> 1112.
 k6b (1112): Metal renders on the A650 (no stall), lock screen drawn but every texture as noise -> 1113 (8-channel macrotile).
 k6c (1113): worse, all noise (BGRA framebuffer now, 60 fps swaps) -> 1114 redfin swizzle + register readback.
+k6d (1114, redfin swizzle): same picture as k6b (bands of noise, garbled text) -> swizzle is not it; 1115 sweetgmemkb to test GMEM/bins.
