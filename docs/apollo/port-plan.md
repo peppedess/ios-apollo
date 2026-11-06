@@ -220,3 +220,10 @@ Next: 1116 cpufreq (EPSS), then GPU/DDR clocks, then GMEM (bins: noise top, blac
 710-2419 (ABL 710), prime 844-2841 (ABL 844); boot max writes read back. UI clearly smoother: up to ~25-30 shown
 fps scrolling, now GPU-bound (backboardd 20-50 ms GPU per frame in sysmem, 95 % busy in bursts).
 k8a (1117 sweetucgmem=0, TU_DEBUG=gmem): UI runs (up to ~35 shown fps, backboardd ~75 ms GPU per frame, GPU 99 % busy) but the screen stays black (k6 bins were noise + black); GPU pool full (876 MB) at 149 s. k8b = same with the range set, forced GMEM, for comparison.
+k8b (range set, forced GMEM): every bin noise + black again. So the UCHE GMEM range decides noise (GMEM read back
+through UCHE) vs black (sysmem at VA 0x100000 = nothing): the resolve path reads GMEM, but what the draws should
+have put there is not in it. Linux 6.12 comparison (a6xx_hw_init, a6xx_catalog): A650 = family GEN3 like the A620,
+gmem 1 MB + 128 KB, hwcg a650_hwcg, protect a650_protect, gmu_cgc_mode 0x20202 (A620 0x20200), HW_APRIV; Linux
+skips the UCHE GMEM range on the whole family. Suspects for GMEM contents not sticking: GX memory power/retention,
+clock gating (we leave hwcg off), APRIV. Plan: a kernel GMEM self-test (CP writes to GMEM via the UCHE range and
+reads back) to test those without rebuilding the root; meanwhile back to TU_DEBUG=sysmem.
