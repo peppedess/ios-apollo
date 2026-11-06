@@ -1,0 +1,281 @@
+From be24f455add0f32e67cd37758951eed9809499fd Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 6 Nov 2026 15:05:36 +0100
+Subject: [PATCH] apollo pcie: Wi-Fi phase 2c, MHI host: contexts, READY -> M0,
+ BHIe download of amss20.bin, event ring 0 polled
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01VzhH6pxBJ4naMiihKoMfcq
+---
+ bsd/dev/apollo_pcie.c | 247 ++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 236 insertions(+), 11 deletions(-)
+
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 28e9fbb..70f4a61 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -365,6 +365,239 @@ smmu_wlan_identity(void)
+ 	return 0;
+ }
+ 
++/*
++ * Wi-Fi phase 2c: the MHI host side, as little of Linux drivers/bus/mhi/host as gets the QCA6390 from SBL to its
++ * mission firmware (ath11k_mhi_config_qca6390: 128 channels, 2 event rings of 32 and 256 elements, the second with
++ * 1 ms moderation; sbl_size = seg_len = 512 KiB, fbc_download). Polled, no MSI.
++ *   mhi_fw_load_handler: after BHI, copy the whole amss20.bin into 512 KiB segments + a vector table (16-byte
++ *     {addr, size} entries), then mhi_ready_state_transition: wait MHICTRL.RESET clear and MHISTATUS.READY,
++ *     mhi_init_mmio (CCABAP/ECABAP/CRCBAP, MHICTRL/MHIDATA base 0 limit 4 GiB-1, MHICFG NER 2 NHWER 0), fill
++ *     each event ring (wp = last element) and ring its doorbell, MHICTRL state M0.
++ *   On EE SBL (event or BHI_EXECENV): mhi_download_amss_image -> mhi_fw_load_bhie: TXVECADDR/TXVECSIZE, TXVECDB =
++ *     sequence, TXVECSTATUS 31:30 = 2 (with that sequence) is done. Then the device boots AMSS (EE 2).
++ * Memory: one block of the GPU pool's HLOS RAM below 4 GiB (sweet_gpu_pool_alloc, as fastrpc's buffers), mapped
++ * uncached; the stream is in identity, so IOVA == PA.
++ */
++extern int sweet_gpu_pool_alloc(uint64_t bytes, uint64_t *pa);
++
++#define MHI_CTRL_SIZE   0x10000u
++#define SEG_LEN         0x80000u
++#define CH_CTX          0x0000u         /* 128 x 44 */
++#define ER_CTX          0x2000u         /* 2 x 44 */
++#define CMD_CTX         0x2100u         /* 1 x 44 */
++#define ER0_RING        0x2200u         /* 32 x 16, 512-aligned */
++#define ER1_RING        0x3000u         /* 256 x 16, 4 KiB-aligned */
++#define CMD_RING        0x4000u         /* 128 x 16, 2 KiB-aligned */
++#define VEC_TABLE       0x6000u
++static vm_offset_t g_mva;
++static uint64_t g_mpa;
++
++static void
++m_w64(uint32_t off, uint64_t v)
++{
++	*(volatile uint32_t *)(g_mva + off) = (uint32_t)v;
++	*(volatile uint32_t *)(g_mva + off + 4) = (uint32_t)(v >> 32);
++}
++
++static uint64_t
++m_r64(uint32_t off)
++{
++	uint32_t lo = *(volatile uint32_t *)(g_mva + off), hi = *(volatile uint32_t *)(g_mva + off + 4);
++	return (uint64_t)hi << 32 | lo;
++}
++
++static void
++m_w32(uint32_t off, uint32_t v)
++{
++	*(volatile uint32_t *)(g_mva + off) = v;
++}
++
++static void
++mhi_db(uint32_t off, uint64_t v)
++{
++	wr(g_bar, off + 4, (uint32_t)(v >> 32));
++	wr(g_bar, off, (uint32_t)v);
++}
++
++static void
++ctx_ring(uint32_t ctx, uint32_t ring, uint32_t elements, bool event, unsigned irq, unsigned intmod)
++{
++	if (event) {
++		m_w32(ctx + 0, intmod << 16);           /* INTMODT */
++		m_w32(ctx + 4, 1);                      /* ertype VALID */
++		m_w32(ctx + 8, irq);                    /* msivec */
++	}
++	m_w64(ctx + 12, g_mpa + ring);              /* rbase */
++	m_w64(ctx + 20, elements * 16ull);          /* rlen */
++	m_w64(ctx + 28, g_mpa + ring);              /* rp */
++	m_w64(ctx + 36, g_mpa + ring);              /* wp */
++}
++
++/* the primary event ring's new elements, logged; returns the last EE seen in an EE event (or ~0) */
++static uint32_t g_er0_rp;
++static uint32_t
++er0_poll(void)
++{
++	uint32_t ee = ~0u;
++	uint64_t dev_rp = m_r64(ER_CTX + 28);
++	unsigned n = 0;
++	while (g_mpa + g_er0_rp != dev_rp && n++ < 32) {
++		uint32_t e = g_er0_rp;
++		uint64_t ptr = m_r64(e);
++		uint32_t d0 = *(volatile uint32_t *)(g_mva + e + 8), d1 = *(volatile uint32_t *)(g_mva + e + 12);
++		uint32_t type = (d1 >> 16) & 0xffu;
++		printf("SWEET MHI: event %#x (%s) d0 %#x d1 %#x ptr %#llx\n", type,
++		    type == 0x20 ? "state" : type == 0x40 ? "EE" : type == 0x21 ? "cmd done" : "?", d0, d1, ptr);
++		if (type == 0x40) {
++			ee = d0 >> 24;
++		}
++		g_er0_rp = g_er0_rp + 16 >= ER0_RING + 32 * 16 ? ER0_RING : g_er0_rp + 16;
++	}
++	if (n) {
++		/* hand the consumed elements back: wp = the element before rp */
++		uint32_t wp = g_er0_rp == ER0_RING ? ER0_RING + 31 * 16 : g_er0_rp - 16;
++		m_w64(ER_CTX + 36, g_mpa + wp);
++		mhi_db(rd(g_bar, 0x20), g_mpa + wp);
++	}
++	return ee;
++}
++
++static int
++bhie_load(uint32_t bhie, unsigned nseg)
++{
++	uint32_t seq = ((uint32_t)mach_absolute_time() & 0x3fffffffu) | 1u;
++	wr(g_bar, bhie + 0x30, (uint32_t)((g_mpa + VEC_TABLE) >> 32));
++	wr(g_bar, bhie + 0x2c, (uint32_t)(g_mpa + VEC_TABLE));
++	wr(g_bar, bhie + 0x34, nseg * 16u);
++	wr(g_bar, bhie + 0x3c, (rd(g_bar, bhie + 0x3c) & ~0x3fffffffu) | seq);
++	uint32_t st = 0;
++	int ms;
++	for (ms = 0; ms < 3000; ms += 5) {
++		st = rd(g_bar, bhie + 0x44);
++		if ((st >> 30) == 2u || (st >> 30) == 3u) {
++			break;
++		}
++		pc_msleep(5);
++	}
++	printf("SWEET MHI: BHIe %s after %d ms: status %#x (seq %#x, sent %#x), ee %u\n",
++	    (st >> 30) == 2u ? "DONE" : (st >> 30) == 3u ? "ERROR" : "timeout", ms, st, st & 0x3fffffffu, seq,
++	    rd(g_bar, 0x100 + 0x28));
++	return (st >> 30) == 2u ? 0 : -1;
++}
++
++static void
++mhi_bringup(uint32_t bhi)
++{
++	uint32_t fwlen = 0;
++	const uint8_t *fw = wlan_firmware("amss20.bin", &fwlen);
++	uint32_t bhie = rd(g_bar, 0x2c);
++	unsigned nseg = (fwlen + SEG_LEN - 1) / SEG_LEN;
++	uint64_t size = MHI_CTRL_SIZE + (uint64_t)nseg * SEG_LEN;
++	if (!fw || bhie >= 0x1000u || sweet_gpu_pool_alloc(size, &g_mpa) != 0 || g_mpa + size > 0x100000000ull) {
++		printf("SWEET MHI: 2c: no firmware, BHIe offset %#x or pool memory (%#llx)\n", bhie, g_mpa);
++		return;
++	}
++	g_mva = ml_io_map((vm_offset_t)g_mpa, (vm_size_t)size);
++	if (!g_mva) {
++		printf("SWEET MHI: 2c: cannot map %#llx\n", g_mpa);
++		return;
++	}
++	for (uint32_t o = 0; o < MHI_CTRL_SIZE; o += 4) {
++		m_w32(o, 0);
++	}
++	/* firmware image: segments + vector table (mhi_alloc_bhie_table / mhi_firmware_copy) */
++	for (unsigned i = 0; i < nseg; i++) {
++		uint32_t off = MHI_CTRL_SIZE + i * SEG_LEN, n = fwlen - i * SEG_LEN < SEG_LEN ? fwlen - i * SEG_LEN : SEG_LEN;
++		for (uint32_t o = 0; o < SEG_LEN; o += 4) {
++			uint32_t w = 0;
++			if (o < n) {
++				memcpy(&w, fw + i * SEG_LEN + o, n - o < 4 ? n - o : 4);
++			}
++			m_w32(off + o, w);
++		}
++		m_w64(VEC_TABLE + 16 * i, g_mpa + off);
++		m_w64(VEC_TABLE + 16 * i + 8, n);
++	}
++	/* contexts: channels all disabled (type 0), event rings 0 (ctrl, irq 1) and 1 (irq 2, 1 ms), command ring */
++	ctx_ring(ER_CTX, ER0_RING, 32, true, 1, 0);
++	ctx_ring(ER_CTX + 44, ER1_RING, 256, true, 2, 1);
++	ctx_ring(CMD_CTX, CMD_RING, 128, false, 0, 0);
++	__asm__ volatile ("dsb sy" ::: "memory");
++	g_er0_rp = ER0_RING;
++	printf("SWEET MHI: 2c: %u KiB at %#llx: %u segments, vector table %#llx; BHIe at %#x\n", (unsigned)(size >> 10), g_mpa,
++	    nseg, g_mpa + VEC_TABLE, bhie);
++
++	/* mhi_ready_state_transition */
++	int ms;
++	uint32_t ctrl = 0, st = 0;
++	for (ms = 0; ms < 2000; ms += 25) {
++		ctrl = rd(g_bar, 0x38);
++		st = rd(g_bar, 0x48);
++		if (!(ctrl & 2u) && (st & 1u)) {
++			break;
++		}
++		pc_msleep(25);
++	}
++	printf("SWEET MHI: %s after %d ms: ctrl %#x status %#x (state %u syserr %u), ee %u\n", (st & 1u) ? "READY" : "not ready",
++	    ms, ctrl, st, (st >> 8) & 0xffu, (st >> 2) & 1u, rd(g_bar, bhi + 0x28));
++	if (!(st & 1u)) {
++		return;
++	}
++	uint32_t chdb = rd(g_bar, 0x18), erdb = rd(g_bar, 0x20);
++	wr(g_bar, 0x5c, (uint32_t)((g_mpa + CH_CTX) >> 32)); wr(g_bar, 0x58, (uint32_t)(g_mpa + CH_CTX));
++	wr(g_bar, 0x64, (uint32_t)((g_mpa + ER_CTX) >> 32)); wr(g_bar, 0x60, (uint32_t)(g_mpa + ER_CTX));
++	wr(g_bar, 0x6c, (uint32_t)((g_mpa + CMD_CTX) >> 32)); wr(g_bar, 0x68, (uint32_t)(g_mpa + CMD_CTX));
++	wr(g_bar, 0x84, 0); wr(g_bar, 0x80, 0);                         /* MHICTRLBASE = iova_start 0 */
++	wr(g_bar, 0x9c, 0); wr(g_bar, 0x98, 0);                         /* MHIDATABASE */
++	wr(g_bar, 0x8c, 0); wr(g_bar, 0x88, 0xffffffffu);               /* MHICTRLLIMIT = iova_stop */
++	wr(g_bar, 0xa4, 0); wr(g_bar, 0xa0, 0xffffffffu);               /* MHIDATALIMIT */
++	wr(g_bar, 0x10, (rd(g_bar, 0x10) & ~0xffff0000u) | (2u << 16)); /* MHICFG: NER 2, NHWER 0 */
++	/* event rings: all elements to the device (wp = last), doorbells */
++	m_w64(ER_CTX + 36, g_mpa + ER0_RING + 31 * 16);
++	m_w64(ER_CTX + 44 + 36, g_mpa + ER1_RING + 255 * 16);
++	__asm__ volatile ("dsb sy" ::: "memory");
++	mhi_db(erdb, g_mpa + ER0_RING + 31 * 16);
++	mhi_db(erdb + 8, g_mpa + ER1_RING + 255 * 16);
++	wr(g_bar, 0x38, (rd(g_bar, 0x38) & ~0xff00u) | (2u << 8));      /* MHICTRL state M0 */
++	printf("SWEET MHI: init mmio done (chdb %#x erdb %#x cfg %#x), M0 asked\n", chdb, erdb, rd(g_bar, 0x10));
++
++	/* SBL: EE event or BHI_EXECENV, then the AMSS over BHIe; then watch for mission mode */
++	bool sent = false, woke = false;
++	uint32_t last = ~0u;
++	for (ms = 0; ms <= 8000; ms += 20) {
++		uint32_t ev = er0_poll();
++		uint32_t ee = rd(g_bar, bhi + 0x28), s = rd(g_bar, 0x48);
++		uint32_t now = ee << 16 | (s & 0xffffu);
++		if (now != last) {
++			printf("SWEET MHI: +%d ms ee %u (%s) mhi state %u ready %u syserr %u\n", ms, ee, mhi_ee_name(ee),
++			    (s >> 8) & 0xffu, s & 1u, (s >> 2) & 1u);
++			last = now;
++		}
++		if (!woke && ((s >> 8) & 0xffu) == 2u) {
++			mhi_db(chdb + 8 * 127, 1);              /* mhi_assert_dev_wake: wake doorbell */
++			woke = true;
++		}
++		if (!sent && (ee == 1u || ev == 1u)) {
++			sent = true;
++			if (bhie_load(bhie, nseg) != 0) {
++				break;
++			}
++		}
++		if (ee == 2u && sent) {
++			pc_msleep(500);
++			(void)er0_poll();
++			printf("SWEET MHI: QCA6390 in mission mode (AMSS): ee %u mhi state %u\n", rd(g_bar, bhi + 0x28),
++			    (rd(g_bar, 0x48) >> 8) & 0xffu);
++			break;
++		}
++		if ((s >> 2) & 1u) {
++			printf("SWEET MHI: SYSERR, error code %#x\n", rd(g_bar, bhi + 0x30));
++			break;
++		}
++		pc_msleep(20);
++	}
++}
++
+ static void
+ bhi_load_sbl(uint32_t bhi)
+ {
+@@ -428,18 +661,10 @@ bhi_load_sbl(uint32_t bhi)
+ 	    st == 2u ? "SUCCESS" : st == 3u ? "ERROR" : "timeout", ms, rd(g_bar, bhi + 0x2c), rd(g_bar, bhi + 0x30),
+ 	    rd(g_bar, bhi + 0x34), rd(g_bar, bhi + 0x38), rd(g_bar, bhi + 0x3c), rd(g_bar, bhi + 0x28));
+ 	smmu_faults("after BHI");
+-	/* where it goes next: SBL waits for the BHIe image (phase 2c); watch the EE and MHI state for 3 s */
+-	uint32_t last = 0xffffffffu;
+-	for (ms = 0; ms <= 3000; ms += 50) {
+-		uint32_t now = (rd(g_bar, bhi + 0x28) << 16) | ((rd(g_bar, 0x48) >> 8) & 0xffu) | (rd(g_bar, 0x48) & 4u) << 6;
+-		if (now != last) {
+-			uint32_t e = now >> 16;
+-			printf("SWEET MHI: +%d ms ee %u (%s) mhi state %u syserr %u bhie-status %x\n", ms, e, mhi_ee_name(e),
+-			    now & 0xffu, (now >> 8) & 1u, rd(g_bar, 0x224 + 0x2c));
+-			last = now;
+-		}
+-		pc_msleep(50);
++	if (st != 2u || g_step < 9) {
++		return;
+ 	}
++	mhi_bringup(bhi);
+ }
+ 
+ static void
+-- 
+2.43.0
+
