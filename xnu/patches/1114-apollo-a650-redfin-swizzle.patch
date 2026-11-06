@@ -1,4 +1,4 @@
-From 2172738d0dfb15467a5e3cdf2747806bbb500fd3 Mon Sep 17 00:00:00 2001
+From dfbb5940cfd0edbfeba370195e3496428659897e Mon Sep 17 00:00:00 2001
 From: apollo <apollo@local>
 Date: Fri, 6 Nov 2026 08:59:15 +0100
 Subject: [PATCH] apollo: A650 uses redfin's UBWC swizzle (hbb 14), logs the
@@ -10,7 +10,7 @@ Subject: [PATCH] apollo: A650 uses redfin's UBWC swizzle (hbb 14), logs the
  2 files changed, 12 insertions(+), 11 deletions(-)
 
 diff --git a/bsd/dev/sweet_a6xx.c b/bsd/dev/sweet_a6xx.c
-index 83b415b..523ba8d 100644
+index 83b415b..cdbb7c3 100644
 --- a/bsd/dev/sweet_a6xx.c
 +++ b/bsd/dev/sweet_a6xx.c
 @@ -1628,16 +1628,14 @@ static int gpu_cp_init(struct a6_gpu *g, bool resume)
@@ -42,7 +42,7 @@ index 83b415b..523ba8d 100644
  	for (unsigned i = 0; i < sizeof(init) / sizeof(init[0]); i++)
  		wr32(GREG(init[i][0]), init[i][1]);
 +	/* apollo 1114: do the UBWC/swizzle registers keep what we wrote? (k6b/k6c: noise in every texture) */
-+	IOLog("SWEET GPU: nc_mode rb 8e08=%x sp ae02=%x tpl1 b604=%x uche 0e01=%x rbbm 0534=%x\n",
++	printf("SWEET GPU: nc_mode rb 8e08=%x sp ae02=%x tpl1 b604=%x uche 0e01=%x rbbm 0534=%x\n",
 +	    rd32(GREG(0x8e08)), rd32(GREG(0xae02)), rd32(GREG(0xb604)), rd32(GREG(0x0e01)), rd32(GREG(0x0534)));
  	if (a6_irq_mask)
  		a6_irq_enable(a6_irq_mask);	/* 0999: a soft reset cleared it */
