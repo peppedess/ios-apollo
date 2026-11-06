@@ -1,0 +1,16 @@
+2463-/Users/runner/work/ios-apollo/ios-apollo/dxb/xnu/bsd/dev/sweet_a6xx.c:1533:6: warning: mixing declarations and code is incompatible with standards before C99 [-Wdeclaration-after-statement]
+2464- 1533 |         int rc = gpu_cp_init(g, true);
+2465-      |             ^
+2466:/Users/runner/work/ios-apollo/ios-apollo/dxb/xnu/bsd/dev/sweet_a6xx.c:1652:2: error: call to undeclared function 'IOLog'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+2467- 1652 |         IOLog("SWEET GPU: nc_mode rb 8e08=%x sp ae02=%x tpl1 b604=%x uche 0e01=%x rbbm 0534=%x\n",
+2468-      |         ^
+2469-/Users/runner/work/ios-apollo/ios-apollo/dxb/xnu/bsd/dev/sweet_a6xx.c:1564:24: warning: mixing declarations and code is incompatible with standards before C99 [-Wdeclaration-after-statement]
+2470- 1564 |         static const uint32_t init[][2] = {
+2471-      |                               ^
+2472-/Users/runner/work/ios-apollo/ios-apollo/dxb/xnu/bsd/dev/sweet_a6xx.c:1738:11: warning: mixing declarations and code is incompatible with standards before C99 [-Wdeclaration-after-statement]
+2473- 1738 |         uint32_t n = 0;
+2474-      |                  ^
+2475-34 warnings and 1 error generated.
+2476-make[7]: *** [sweet_a6xx.o] Error 1
+2477-make[7]: Target `do_build_all' not remade because of errors.
+2478-make[6]: *** [build_all] Error 2

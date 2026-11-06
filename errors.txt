@@ -1,0 +1,10 @@
+2466:/Users/runner/work/ios-apollo/ios-apollo/dxb/xnu/bsd/dev/sweet_a6xx.c:1652:2: error: call to undeclared function 'IOLog'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+2475:34 warnings and 1 error generated.
+2476:make[7]: *** [sweet_a6xx.o] Error 1
+2478:make[6]: *** [build_all] Error 2
+2479:make[5]: *** [do_all] Error 2
+2481:make[4]: *** [build_all] Error 2
+2482:make[3]: *** [build_all_recurse_into_conf] Error 2
+2484:make[2]: *** [build_all_recurse_into_bsd] Error 2
+2486:make[1]: *** [build_all_bootstrap_DEVELOPMENT^ARM64^SWEET] Error 2
+2488:make: *** [install] Error 2
