@@ -227,3 +227,4 @@ gmem 1 MB + 128 KB, hwcg a650_hwcg, protect a650_protect, gmu_cgc_mode 0x20202 (
 skips the UCHE GMEM range on the whole family. Suspects for GMEM contents not sticking: GX memory power/retention,
 clock gating (we leave hwcg off), APRIV. Plan: a kernel GMEM self-test (CP writes to GMEM via the UCHE range and
 reads back) to test those without rebuilding the root; meanwhile back to TU_DEBUG=sysmem.
+Back to TU_DEBUG=sysmem (delta 12:12-12:33), k9a = 1117 kernel, sysmem, flamecpufreq=1: the usable configuration.
