@@ -1,8 +1,8 @@
 From 2656caabe44c9b5733da9795d6a9447a23d391f1 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 6 Nov 2026 17:03:12 +0100
-Subject: [PATCH] apollo pcie: enable the QCA6390's MSI (address in the pool
- block, all vectors, INTx off) before BHI; log the landing word
+Subject: [PATCH 1/2] apollo pcie: enable the QCA6390's MSI (address in the
+ pool block, all vectors, INTx off) before BHI; log the landing word
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01VzhH6pxBJ4naMiihKoMfcq
@@ -81,6 +81,41 @@ index 34513e2..5c99b77 100644
  	printf("SWEET MHI: SMMU setup next\n");
  	pc_msleep(2500);
  	(void)smmu_wlan_identity();
+-- 
+2.43.0
+
+
+From a2623dbc4c0ad8cffa46a708565737e7f4637cf7 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 6 Nov 2026 17:05:35 +0100
+Subject: [PATCH 2/2] apollo pcie: MSI_LAND defined with the other pool offsets
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01VzhH6pxBJ4naMiihKoMfcq
+---
+ bsd/dev/apollo_pcie.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 5c99b77..931f903 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -497,6 +497,7 @@ extern int sweet_gpu_pool_alloc(uint64_t bytes, uint64_t *pa);
+ #define ER1_RING        0x3000u         /* 256 x 16, 4 KiB-aligned */
+ #define CMD_RING        0x4000u         /* 128 x 16, 2 KiB-aligned */
+ #define VEC_TABLE       0x6000u
++#define MSI_LAND        0xf000u         /* the QCA6390's MSI writes land here */
+ static vm_offset_t g_mva;
+ static uint64_t g_mpa;
+ 
+@@ -754,7 +755,6 @@ mhi_bringup(uint32_t bhi)
+  * address = a word of our pool block (writes just land there, through the identity stream), data 0, as many
+  * vectors as it asks for, INTx off. The landing word is logged while waiting, so we see whether it signals.
+  */
+-#define MSI_LAND        0xf000u
+ static void
+ msi_enable(void)
+ {
 -- 
 2.43.0
 
