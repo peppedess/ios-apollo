@@ -1,0 +1,80 @@
+From c216ce11d7c5b8ae7a171d9dcfcab4f2e3ac4c1b Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 6 Nov 2026 14:21:57 +0100
+Subject: [PATCH] apollo pcie: SBL in pil_wlan_fw_region (0x86700000): XNU has
+ no RAM below 4 GiB
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01VzhH6pxBJ4naMiihKoMfcq
+---
+ bsd/dev/apollo_pcie.c | 40 ++++++++++++++++++++++++++++------------
+ 1 file changed, 28 insertions(+), 12 deletions(-)
+
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index cef6cb3..866a258 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -188,12 +188,13 @@ mhi_ee_name(uint32_t ee)
+ /*
+  * Wi-Fi phase 2b: the PBL takes the SBL over BHI (Linux drivers/bus/mhi/host/boot.c mhi_fw_load_bhi, ath11k
+  * sbl_size 512 KiB = the head of amss20.bin): image in physically contiguous memory below 4 GiB (ath11k's
+- * 32-bit DMA mask), IMGADDR/IMGSIZE, then a session id in IMGTXDB; BHI_STATUS bits 31:30 = 2 is success,
++ * 32-bit DMA mask; k12d: no kernel page there, so the reserved pil_wlan_fw_region), IMGADDR/IMGSIZE, then a session id in IMGTXDB; BHI_STATUS bits 31:30 = 2 is success,
+  * 3 error (ERRCODE/ERRDBG tell why). Afterwards the execution environment should move from PBL to SBL.
+  * The device reaches this memory at its physical address only if the apps SMMU passes stream 0x1c00 through;
+  * a failure here with an error code points at that.
+  */
+ #define SBL_SIZE        0x80000u
++#define WLAN_FW_PA      0x86700000u
+ static uint32_t g_step = 0xff;
+ 
+ static const uint8_t *
+@@ -222,19 +223,34 @@ bhi_load_sbl(uint32_t bhi)
+ 		return;
+ 	}
+ 	uint32_t len = fwlen < SBL_SIZE ? fwlen : SBL_SIZE;
+-	vm_offset_t va = 0;
+-	if (kmem_alloc_contig(kernel_map, &va, SBL_SIZE, PAGE_MASK, (ppnum_t)(atop_64(0x100000000ull) - 1), 0,
+-	    KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
+-		printf("SWEET MHI: no contiguous memory for the SBL\n");
++	/*
++	 * apollo's XNU only manages RAM above 4 GiB (mkadt --highmem), so no kernel page is reachable with the
++	 * 32-bit DMA ath11k gives the QCA6390. Use kona's pil_wlan_fw_region (0x86700000, 1 MiB, reserved in the
++	 * Android DT for the WCN39xx PIL and unused with a QCA6390), mapped uncached and filled word by word.
++	 */
++	uint64_t pa = WLAN_FW_PA;
++	vm_offset_t va = ml_io_map(WLAN_FW_PA, SBL_SIZE);
++	if (!va) {
++		printf("SWEET MHI: cannot map %#x\n", WLAN_FW_PA);
+ 		return;
+ 	}
+-	uint64_t pa = ptoa_64(pmap_find_phys(kernel_pmap, (addr64_t)va));
+-	memcpy((void *)va, fw, len);
+-	flush_dcache64((addr64_t)va, SBL_SIZE, FALSE);
+-	printf("SWEET MHI: amss20.bin %u bytes (head %02x%02x%02x%02x), SBL %u bytes at pa %#llx\n", fwlen, fw[0],
+-	    fw[1], fw[2], fw[3], len, pa);
+-	if (pa + SBL_SIZE > 0x100000000ull) {
+-		printf("SWEET MHI: SBL above 4 GiB, not loading\n");
++	for (uint32_t o = 0; o < SBL_SIZE; o += 4) {
++		uint32_t w = 0;
++		if (o < len) {
++			memcpy(&w, fw + o, len - o < 4 ? len - o : 4);
++		}
++		*(volatile uint32_t *)(va + o) = w;
++	}
++	__asm__ volatile ("dsb sy" ::: "memory");
++	uint32_t bad = 0;
++	for (uint32_t o = 0; o < len; o += 0x1000) {
++		uint32_t w;
++		memcpy(&w, fw + o, 4);
++		bad += (*(volatile uint32_t *)(va + o) != w);
++	}
++	printf("SWEET MHI: amss20.bin %u bytes (head %02x%02x%02x%02x), SBL %u bytes at pa %#llx, readback %u bad pages\n",
++	    fwlen, fw[0], fw[1], fw[2], fw[3], len, pa, bad);
++	if (bad) {
+ 		return;
+ 	}
+ 	wr(g_bar, bhi + 0x20, 0);                                       /* INTVEC: MSI vector 0 (we poll) */
+-- 
+2.43.0
+
