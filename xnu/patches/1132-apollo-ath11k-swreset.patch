@@ -1,0 +1,133 @@
+From 4c4b244f8fe23609f49abd0a58af807da9c2966f Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 6 Nov 2026 15:11:50 +0100
+Subject: [PATCH] apollo pcie: ath11k_pci_sw_reset before BHI (LTSSM, hot
+ reset, interrupts, QFPROM power, L1SS fix, warm entry, SoC global reset,
+ MHICTRL reset); READY wait 5 s
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01VzhH6pxBJ4naMiihKoMfcq
+---
+ bsd/dev/apollo_pcie.c | 92 ++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 91 insertions(+), 1 deletion(-)
+
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 70f4a61..300c856 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -365,6 +365,93 @@ smmu_wlan_identity(void)
+ 	return 0;
+ }
+ 
++/*
++ * ath11k_pci_power_up -> ath11k_pci_sw_reset(power_on) for the QCA6390 (Linux 6.12 ath11k/pci.c, pci.h,
++ * hw.c qca6390_regs, hw_params fix_l1ss): k12k's SBL (BHI "success", ERRCODE 0) never raised MHI READY nor left
++ * EE PBL; Linux does all this before it. Registers past 0x80000 go through the window register 0x310c
++ * (enable bit 30 | offset[24:19]), then BAR + 0x80000 + offset[18:0].
++ */
++static uint32_t
++win_rd(uint32_t off)
++{
++	if (off < 0x80000u) {
++		return rd(g_bar, off);
++	}
++	wr(g_bar, 0x310c, 0x40000000u | ((off >> 19) & 0x3fu));
++	(void)rd(g_bar, 0x310c);
++	return rd(g_bar, 0x80000u + (off & 0x7ffffu));
++}
++
++static void
++win_wr(uint32_t off, uint32_t v)
++{
++	if (off < 0x80000u) {
++		wr(g_bar, off, v);
++		return;
++	}
++	wr(g_bar, 0x310c, 0x40000000u | ((off >> 19) & 0x3fu));
++	(void)rd(g_bar, 0x310c);
++	wr(g_bar, 0x80000u + (off & 0x7ffffu), v);
++}
++
++static void
++set_link_reg(uint32_t off, uint32_t val, uint32_t mask)
++{
++	uint32_t v = win_rd(off);
++	for (int i = 0; i < 10 && (v & mask) != val; i++) {
++		win_wr(off, (v & ~mask) | val);
++		v = win_rd(off);
++		if ((v & mask) != val) {
++			delay(2000);
++		}
++	}
++	printf("SWEET MHI: link reg %#x = %#x%s\n", off, v, (v & mask) == val ? "" : " (NOT set)");
++}
++
++static void
++ath11k_sw_reset(void)
++{
++	pc_msleep(100);
++	/* enable_ltssm */
++	uint32_t v = win_rd(0x1e081b0);
++	for (int i = 0; v != 0x111u && i < 5; i++) {
++		if (v == 0xffffffffu) {
++			delay(5000);
++		}
++		win_wr(0x1e081b0, 0x111);
++		v = win_rd(0x1e081b0);
++	}
++	win_wr(0x1e402bc, win_rd(0x1e402bc) | 0x10u);                  /* GCC_GCC_PCIE_HOT_RST */
++	printf("SWEET MHI: sw reset: ltssm %#x hot_rst %#x\n", v, win_rd(0x1e402bc));
++	delay(5000);
++	win_wr(0x1e08228, 0xffffffffu);                                 /* PCIE_PCIE_INT_ALL_CLEAR */
++	win_wr(0x1f8031c, win_rd(0x1f8031c) & ~4u);                    /* WLAON_QFPROM_PWR_CTRL: VDD4BLOW off */
++	/* fix_l1ss */
++	set_link_reg(0x01e0c0ac, 0x10, 0xffffffffu);                   /* QSERDES_COM_SYSCLK_EN_SEL */
++	set_link_reg(0x01e0c628, 0x02, 0xffu);                          /* PCS_OSC_DTCT_CONFIG1 */
++	set_link_reg(0x01e0c62c, 0x52, 0xffu);                          /* CONFIG2 */
++	set_link_reg(0x01e0c634, 0xff, 0xffu);                          /* CONFIG4 */
++	/* clear_dbg_registers */
++	uint32_t cookie = win_rd(0x01f80500), warm = win_rd(0x1f80504);
++	delay(10000);
++	win_wr(0x1f80504, 0);                                           /* WLAON_WARM_SW_ENTRY */
++	delay(10000);
++	uint32_t cause = win_rd(0x01f8060c);                            /* SOC_RESET_CAUSE (read clears) */
++	printf("SWEET MHI: sw reset: q6 cookie %#x warm entry %#x -> %#x, reset cause %#x\n", cookie, warm,
++	    win_rd(0x1f80504), cause);
++	/* soc_global_reset */
++	uint32_t g = rd(g_bar, 0x3008);
++	wr(g_bar, 0x3008, g | 1u);
++	delay(10000);
++	wr(g_bar, 0x3008, g & ~1u);
++	delay(10000);
++	printf("SWEET MHI: sw reset: global reset %#x -> %#x\n", g, rd(g_bar, 0x3008));
++	/* ath11k_mhi_set_mhictrl_reset */
++	printf("SWEET MHI: sw reset: mhistatus %#x, MHICTRL <- RESET\n", rd(g_bar, 0x48));
++	wr(g_bar, 0x38, 2u);
++	delay(10000);
++}
++
+ /*
+  * Wi-Fi phase 2c: the MHI host side, as little of Linux drivers/bus/mhi/host as gets the QCA6390 from SBL to its
+  * mission firmware (ath11k_mhi_config_qca6390: 128 channels, 2 event rings of 32 and 256 elements, the second with
+@@ -530,7 +617,7 @@ mhi_bringup(uint32_t bhi)
+ 	/* mhi_ready_state_transition */
+ 	int ms;
+ 	uint32_t ctrl = 0, st = 0;
+-	for (ms = 0; ms < 2000; ms += 25) {
++	for (ms = 0; ms < 5000; ms += 25) {
+ 		ctrl = rd(g_bar, 0x38);
+ 		st = rd(g_bar, 0x48);
+ 		if (!(ctrl & 2u) && (st & 1u)) {
+@@ -730,6 +817,9 @@ mhi_probe(void)
+ 	    rd(g_bar, bhi + 0x44), rd(g_bar, bhi + 0x48), rd(g_bar, bhi + 0x4c), rd(g_bar, bhi + 0x50),
+ 	    rd(g_bar, bhi + 0x54), rd(g_bar, bhi + 0x58));
+ 	if (ee == 0 && g_step >= 8) {
++		ath11k_sw_reset();
++		printf("SWEET MHI: after reset: ee %u status %#x mhictrl %#x mhistatus %#x\n", rd(g_bar, bhi + 0x28),
++		    rd(g_bar, bhi + 0x2c), rd(g_bar, 0x38), rd(g_bar, 0x48));
+ 		bhi_load_sbl(bhi);
+ 	}
+ }
+-- 
+2.43.0
+
