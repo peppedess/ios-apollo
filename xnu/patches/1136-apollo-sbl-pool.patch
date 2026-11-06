@@ -1,0 +1,131 @@
+From 46f1bec14f0cfc100c5b637d7d6df71b85ca3a99 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 6 Nov 2026 16:57:00 +0100
+Subject: [PATCH] apollo pcie: SBL from segment 0 of the pool block
+ (sweetsblpil=1 for the PIL region)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01VzhH6pxBJ4naMiihKoMfcq
+---
+ bsd/dev/apollo_pcie.c | 76 +++++++++++++++++++++++++++++++------------
+ 1 file changed, 55 insertions(+), 21 deletions(-)
+
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index aa9945f..34513e2 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -593,22 +593,25 @@ bhie_load(uint32_t bhie, unsigned nseg)
+ 	return (st >> 30) == 2u ? 0 : -1;
+ }
+ 
+-static void
+-mhi_bringup(uint32_t bhi)
++/* the pool block: MHI control area + the whole amss20.bin in 512 KiB segments + vector table (once) */
++static int
++mhi_mem_prepare(void)
+ {
++	if (g_mva) {
++		return 0;
++	}
+ 	uint32_t fwlen = 0;
+ 	const uint8_t *fw = wlan_firmware("amss20.bin", &fwlen);
+-	uint32_t bhie = rd(g_bar, 0x2c);
+ 	unsigned nseg = (fwlen + SEG_LEN - 1) / SEG_LEN;
+ 	uint64_t size = MHI_CTRL_SIZE + (uint64_t)nseg * SEG_LEN;
+-	if (!fw || bhie >= 0x1000u || sweet_gpu_pool_alloc(size, &g_mpa) != 0 || g_mpa + size > 0x100000000ull) {
+-		printf("SWEET MHI: 2c: no firmware, BHIe offset %#x or pool memory (%#llx)\n", bhie, g_mpa);
+-		return;
++	if (!fw || sweet_gpu_pool_alloc(size, &g_mpa) != 0 || g_mpa + size > 0x100000000ull) {
++		printf("SWEET MHI: no firmware or pool memory below 4 GiB (%#llx)\n", g_mpa);
++		return -1;
+ 	}
+ 	g_mva = ml_io_map((vm_offset_t)g_mpa, (vm_size_t)size);
+ 	if (!g_mva) {
+-		printf("SWEET MHI: 2c: cannot map %#llx\n", g_mpa);
+-		return;
++		printf("SWEET MHI: cannot map %#llx\n", g_mpa);
++		return -1;
+ 	}
+ 	for (uint32_t o = 0; o < MHI_CTRL_SIZE; o += 4) {
+ 		m_w32(o, 0);
+@@ -626,14 +629,30 @@ mhi_bringup(uint32_t bhi)
+ 		m_w64(VEC_TABLE + 16 * i, g_mpa + off);
+ 		m_w64(VEC_TABLE + 16 * i + 8, n);
+ 	}
++	__asm__ volatile ("dsb sy" ::: "memory");
++	printf("SWEET MHI: pool block %u KiB at %#llx: %u segments, vector table %#llx\n", (unsigned)(size >> 10), g_mpa, nseg,
++	    g_mpa + VEC_TABLE);
++	return 0;
++}
++
++static void
++mhi_bringup(uint32_t bhi)
++{
++	uint32_t fwlen = 0;
++	(void)wlan_firmware("amss20.bin", &fwlen);
++	uint32_t bhie = rd(g_bar, 0x2c);
++	unsigned nseg = (fwlen + SEG_LEN - 1) / SEG_LEN;
++	if (bhie >= 0x1000u || mhi_mem_prepare() != 0) {
++		printf("SWEET MHI: 2c: BHIe offset %#x or no memory\n", bhie);
++		return;
++	}
+ 	/* contexts: channels all disabled (type 0), event rings 0 (ctrl, irq 1) and 1 (irq 2, 1 ms), command ring */
+ 	ctx_ring(ER_CTX, ER0_RING, 32, true, 1, 0);
+ 	ctx_ring(ER_CTX + 44, ER1_RING, 256, true, 2, 1);
+ 	ctx_ring(CMD_CTX, CMD_RING, 128, false, 0, 0);
+ 	__asm__ volatile ("dsb sy" ::: "memory");
+ 	g_er0_rp = ER0_RING;
+-	printf("SWEET MHI: 2c: %u KiB at %#llx: %u segments, vector table %#llx; BHIe at %#x\n", (unsigned)(size >> 10), g_mpa,
+-	    nseg, g_mpa + VEC_TABLE, bhie);
++	printf("SWEET MHI: 2c: BHIe at %#x, %u segments\n", bhie, nseg);
+ 
+ 	/*
+ 	 * mhi_ready_state_transition. k12l: nothing within 5 s, yet k12k had left the chip in SYS_ERR (MHISTATUS
+@@ -742,18 +761,33 @@ bhi_load_sbl(uint32_t bhi)
+ 	 * 32-bit DMA ath11k gives the QCA6390. Use kona's pil_wlan_fw_region (0x86700000, 1 MiB, reserved in the
+ 	 * Android DT for the WCN39xx PIL and unused with a QCA6390), mapped uncached and filled word by word.
+ 	 */
+-	uint64_t pa = WLAN_FW_PA;
+-	vm_offset_t va = ml_io_map(WLAN_FW_PA, SBL_SIZE);
+-	if (!va) {
+-		printf("SWEET MHI: cannot map %#x\n", WLAN_FW_PA);
+-		return;
+-	}
+-	for (uint32_t o = 0; o < SBL_SIZE; o += 4) {
+-		uint32_t w = 0;
+-		if (o < len) {
+-			memcpy(&w, fw + o, len - o < 4 ? len - o : 4);
++	/*
++	 * k12k-o: from 0x86700000 the PBL takes the transfer ("success") and then fails the image with ERRCODE
++	 * 0xef0e0003, still in PBL: what it read may not be what we wrote (that reserved region may be outside what the
++	 * hypervisor maps for the PCIe stream). Default now: segment 0 of the pool block (ordinary HLOS RAM below
++	 * 4 GiB, the same bytes BHIe sends later); sweetsblpil=1 goes back to the PIL region.
++	 */
++	uint32_t usepil = 0;
++	(void)PE_parse_boot_argn("sweetsblpil", &usepil, sizeof(usepil));
++	uint64_t pa;
++	vm_offset_t va;
++	if (!usepil && mhi_mem_prepare() == 0) {
++		pa = g_mpa + MHI_CTRL_SIZE;
++		va = g_mva + MHI_CTRL_SIZE;
++	} else {
++		pa = WLAN_FW_PA;
++		va = ml_io_map(WLAN_FW_PA, SBL_SIZE);
++		if (!va) {
++			printf("SWEET MHI: cannot map %#x\n", WLAN_FW_PA);
++			return;
++		}
++		for (uint32_t o = 0; o < SBL_SIZE; o += 4) {
++			uint32_t w = 0;
++			if (o < len) {
++				memcpy(&w, fw + o, len - o < 4 ? len - o : 4);
++			}
++			*(volatile uint32_t *)(va + o) = w;
+ 		}
+-		*(volatile uint32_t *)(va + o) = w;
+ 	}
+ 	__asm__ volatile ("dsb sy" ::: "memory");
+ 	uint32_t bad = 0;
+-- 
+2.43.0
+

@@ -250,3 +250,4 @@ k12k (1131): BHI success again (ERRCODE 0), 2c memory at 0xd3568000 (pool), but 
 k12l (1132): sw reset OK (link regs set; MHISTATUS 0xff04 = SYS_ERR from k12k's SBL), BHI success, no READY in 5 s. k12m: 1133 (15 s watch, SYS_ERR details).
 k12m (1133): after BHI success, 15 s with no change at all (MHISTATUS 0, EE PBL). BHI_STATUS low bits = our IMGTXDB session id, so the success is real; the SBL does not announce itself. k12n: 1134 (per-second chip/link dump).
 k12n (1134): BHI_STATUS turns 0xffffffff, ERRCODE 0xef0e0003 within a second of BHI success (SBL error); Q6 cookie 0, link and config fine. k12o: 1135 (ath11k clear_vector + BHI_STATUS clear).
+k12o (1135): BHIe/vector registers held random data (cleared); same ERRCODE 0xef0e0003 after BHI success. k12p: 1136 (SBL from pool RAM instead of the PIL region).
