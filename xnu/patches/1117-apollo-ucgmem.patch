@@ -1,0 +1,38 @@
+From a76fa186ea590e0f37c26e8b046a3c8e8b9a9789 Mon Sep 17 00:00:00 2001
+From: apollo <apollo@local>
+Date: Fri, 6 Nov 2026 11:39:30 +0100
+Subject: [PATCH] apollo: sweetucgmem=0 leaves the A650 UCHE GMEM range unset
+
+---
+ bsd/dev/sweet_a6xx.c | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/bsd/dev/sweet_a6xx.c b/bsd/dev/sweet_a6xx.c
+index cdbb7c3..55bd336 100644
+--- a/bsd/dev/sweet_a6xx.c
++++ b/bsd/dev/sweet_a6xx.c
+@@ -1648,6 +1648,21 @@ static int gpu_cp_init(struct a6_gpu *g, bool resume)
+ 	};
+ 	for (unsigned i = 0; i < sizeof(init) / sizeof(init[0]); i++)
+ 		wr32(GREG(init[i][0]), init[i][1]);
++#if A6_ADRENO == 650
++	{
++		/*
++		 * apollo 1117: Linux a6xx_hw_init leaves UCHE_GMEM_RANGE_MIN/MAX alone on the A650 family ("if
++		 * (!(adreno_is_a650_family(adreno_gpu) || adreno_is_a730(adreno_gpu)))"). k6b/k6d/k6e: every GMEM bin
++		 * came out as noise + black. Boot-arg sweetucgmem=0 clears the range again after the table.
++		 */
++		uint32_t ucg = 1;
++		(void)PE_parse_boot_argn("sweetucgmem", &ucg, sizeof(ucg));
++		if (!ucg) {
++			wr32(GREG(0x0e0b), 0); wr32(GREG(0x0e0c), 0); wr32(GREG(0x0e0d), 0); wr32(GREG(0x0e0e), 0);
++			printf("SWEET GPU: UCHE GMEM range left unset (sweetucgmem=0)\n");
++		}
++	}
++#endif
+ 	/* apollo 1114: do the UBWC/swizzle registers keep what we wrote? (k6b/k6c: noise in every texture) */
+ 	printf("SWEET GPU: nc_mode rb 8e08=%x sp ae02=%x tpl1 b604=%x uche 0e01=%x rbbm 0534=%x\n",
+ 	    rd32(GREG(0x8e08)), rd32(GREG(0xae02)), rd32(GREG(0xb604)), rd32(GREG(0x0e01)), rd32(GREG(0x0534)));
+-- 
+2.43.0
+
