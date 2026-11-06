@@ -1,0 +1,91 @@
+From a7294b1241f2dbb105927da08aeecb3d69cfd168 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 6 Nov 2026 14:33:52 +0100
+Subject: [PATCH] apollo pcie: try free SMRs top-down until one keeps the
+ QCA6390 stream
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01VzhH6pxBJ4naMiihKoMfcq
+---
+ bsd/dev/apollo_pcie.c | 42 ++++++++++++++++++++++++++++++++++--------
+ 1 file changed, 34 insertions(+), 8 deletions(-)
+
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index f529d04..35f7e72 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -258,13 +258,14 @@ smmu_wlan_identity(void)
+ 		return -1;
+ 	}
+ 	g_smmu1 = ml_io_map(SMMU_PA + psize, 0x1000);
+-	uint64_t used[4] = { 0 };
+-	uint32_t free_smr = ~0u;
++	uint64_t used[4] = { 0 }, freeset[2] = { 0 };
++	uint32_t nfree = 0;
+ 	for (uint32_t i = 0; i < nsmr; i++) {
+ 		uint32_t smr = rd(g_smmu0, 0x800 + 4 * i), s2cr = rd(g_smmu0, 0xc00 + 4 * i);
+ 		uint32_t id = smr & 0x7fff, mask = (smr >> 16) & 0x7fff;
+ 		if (!(smr >> 31)) {
+-			free_smr = free_smr == ~0u ? i : free_smr;
++			freeset[i / 64] |= 1ull << (i % 64);
++			nfree++;
+ 			continue;
+ 		}
+ 		if (((s2cr >> 16) & 3) == 0) {
+@@ -286,8 +287,8 @@ smmu_wlan_identity(void)
+ 			break;
+ 		}
+ 	}
+-	if (free_smr == ~0u || g_cb == ~0u) {
+-		printf("SWEET MHI: SMMU: no free SMR (%d) or bank (%d)\n", (int)free_smr, (int)g_cb);
++	if (!nfree || g_cb == ~0u) {
++		printf("SWEET MHI: SMMU: %u free SMRs, bank %d\n", nfree, (int)g_cb);
+ 		return -1;
+ 	}
+ 	g_cbp = page;
+@@ -298,14 +299,39 @@ smmu_wlan_identity(void)
+ 	wr(g_smmu1, 0x800 + 4 * g_cb, 1);                               /* CBA2R: AArch64 */
+ 	wr(g_smmu1, 4 * g_cb, 0x1f000);                                 /* CBAR: S1, S2 bypass */
+ 	wr(page, 0, 0xe0);                                              /* SCTLR: M = 0 */
+-	wr(g_smmu0, 0xc00 + 4 * free_smr, g_cb);                        /* S2CR: translate via the bank */
+-	wr(g_smmu0, 0x800 + 4 * free_smr, 1u << 31 | WLAN_SID_MASK << 16 | WLAN_SID);
++	/*
++	 * k12f: SMR5 (the first "free" one) read back 0 after the write while its S2CR kept the bank: some match
++	 * registers are not HLOS's to set (the hypervisor's). Try the free ones from the top down until one keeps
++	 * the value; a refused one gets its S2CR back to 0.
++	 */
++	uint32_t want = 1u << 31 | WLAN_SID_MASK << 16 | WLAN_SID, got_smr = ~0u, tries = 0;
++	for (int i = (int)nsmr - 1; i >= 0 && got_smr == ~0u && tries < 16; i--) {
++		if (!(freeset[i / 64] & (1ull << (i % 64)))) {
++			continue;
++		}
++		tries++;
++		uint32_t s2 = rd(g_smmu0, 0xc00 + 4 * i);
++		wr(g_smmu0, 0xc00 + 4 * i, g_cb);                       /* S2CR: translate via the bank */
++		wr(g_smmu0, 0x800 + 4 * i, want);
++		uint32_t back = rd(g_smmu0, 0x800 + 4 * i);
++		if (back == want) {
++			got_smr = (uint32_t)i;
++		} else {
++			printf("SWEET MHI: SMMU: SMR%d refused (%#x -> %#x)\n", i, want, back);
++			wr(g_smmu0, 0x800 + 4 * i, 0);
++			wr(g_smmu0, 0xc00 + 4 * i, s2);
++		}
++	}
+ 	wr(g_smmu0, 0x70, 0);                                           /* sTLBGSYNC */
+ 	for (int i = 0; i < 1000 && (rd(g_smmu0, 0x74) & 1u); i++) {
+ 		delay(10);
+ 	}
++	if (got_smr == ~0u) {
++		printf("SWEET MHI: SMMU: no match register took SID %#x (%u tried)\n", WLAN_SID, tries);
++		return -1;
++	}
+ 	printf("SWEET MHI: SMMU: SID %#x/%#x -> CB%u (translation off) via SMR%u: SMR %#x S2CR %#x CBAR %#x SCTLR %#x\n",
+-	    WLAN_SID, WLAN_SID_MASK, g_cb, free_smr, rd(g_smmu0, 0x800 + 4 * free_smr), rd(g_smmu0, 0xc00 + 4 * free_smr),
++	    WLAN_SID, WLAN_SID_MASK, g_cb, got_smr, rd(g_smmu0, 0x800 + 4 * got_smr), rd(g_smmu0, 0xc00 + 4 * got_smr),
+ 	    rd(g_smmu1, 4 * g_cb), rd(page, 0));
+ 	return 0;
+ }
+-- 
+2.43.0
+
