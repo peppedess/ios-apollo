@@ -13,7 +13,8 @@ W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 case "$K" in *.gz) gunzip -c "$K" > "$W/kernel";; *) cp "$K" "$W/kernel";; esac
 # mkpayload reads kernel symbols with `nm`: it must understand Mach-O (LLVM's nm, not GNU's)
 mkdir -p "$W/bin"; ln -s "$(command -v llvm-nm)" "$W/bin/nm"; export PATH="$W/bin:$PATH"
-python3 tools/mkadt.py "$W/apollo-hi.adt" --highmem ${NVTFW:+--nvtfw="$NVTFW"} >/dev/null
+# BACKLIGHT=1: D22AP's /product/backlight node (mkadt.py --backlight, redfin 0973) for CoreBrightness's panel luminance
+python3 tools/mkadt.py "$W/apollo-hi.adt" --highmem ${NVTFW:+--nvtfw="$NVTFW"} ${BACKLIGHT:+--backlight} >/dev/null
 args="debug=0xc serial=3 cpus=8 keepsyms=1 -enable_kprintf_spam -noprogress"
 args="$args rd=ufsroot0 ufsrw=0 rootrw=0 sweetlog=0 flamereboot=150 wdt=-1"
 args="$args sweetfb_noconsole=0 sweetfb_hz=60 sweetfb_thread=0"
