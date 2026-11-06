@@ -1,0 +1,55 @@
+From 2fd31b19f3fad6a942b5f24723208ae07a3cdc07 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 6 Nov 2026 16:49:06 +0100
+Subject: [PATCH] apollo pcie: ath11k_mhi_clear_vector (stale BHIe doorbells)
+ and BHI_STATUS clear before BHI
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01VzhH6pxBJ4naMiihKoMfcq
+---
+ bsd/dev/apollo_pcie.c | 22 ++++++++++++++++++++++
+ 1 file changed, 22 insertions(+)
+
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 06c2218..aa9945f 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -431,6 +431,27 @@ ath11k_sw_reset(void)
+ 	set_link_reg(0x01e0c628, 0x02, 0xffu);                          /* PCS_OSC_DTCT_CONFIG1 */
+ 	set_link_reg(0x01e0c62c, 0x52, 0xffu);                          /* CONFIG2 */
+ 	set_link_reg(0x01e0c634, 0xff, 0xffu);                          /* CONFIG4 */
++	/*
++	 * ath11k_mhi_clear_vector (left out until k12n): PCIE_TXVECDB 0x360, TXVECSTATUS 0x368, RXVECDB 0x394,
++	 * RXVECSTATUS 0x39c = 0. k12n: right after BHI success the SBL turned BHI_STATUS to error (ERRCODE
++	 * 0xef0e0003); a stale BHIe doorbell from an earlier session would send it after a vector table that is
++	 * not there. Log what they held; clear the same four at the BHIe offset the chip reports too.
++	 */
++	{
++		static const uint32_t vec[4] = { 0x360, 0x368, 0x394, 0x39c };
++		uint32_t bhie = rd(g_bar, 0x2c);
++		printf("SWEET MHI: sw reset: vectors 360 %#x 368 %#x 394 %#x 39c %#x | bhie %#x: txdb %#x txst %#x rxdb %#x rxst %#x\n",
++		    rd(g_bar, 0x360), rd(g_bar, 0x368), rd(g_bar, 0x394), rd(g_bar, 0x39c), bhie,
++		    bhie < 0x1000u ? rd(g_bar, bhie + 0x3c) : 0, bhie < 0x1000u ? rd(g_bar, bhie + 0x44) : 0,
++		    bhie < 0x1000u ? rd(g_bar, bhie + 0x70) : 0, bhie < 0x1000u ? rd(g_bar, bhie + 0x78) : 0);
++		for (int i = 0; i < 4; i++) {
++			wr(g_bar, vec[i], 0);
++		}
++		if (bhie < 0x1000u && bhie != 0x324u) {
++			wr(g_bar, bhie + 0x3c, 0); wr(g_bar, bhie + 0x44, 0);
++			wr(g_bar, bhie + 0x70, 0); wr(g_bar, bhie + 0x78, 0);
++		}
++	}
+ 	/* clear_dbg_registers */
+ 	uint32_t cookie = win_rd(0x01f80500), warm = win_rd(0x1f80504);
+ 	delay(10000);
+@@ -751,6 +772,7 @@ bhi_load_sbl(uint32_t bhi)
+ 	(void)smmu_wlan_identity();
+ 	printf("SWEET MHI: BHI next\n");
+ 	pc_msleep(2500);
++	wr(g_bar, bhi + 0x2c, 0);                                       /* BHI_STATUS = 0 (mhi_fw_load_bhi) */
+ 	wr(g_bar, bhi + 0x20, 0);                                       /* INTVEC: MSI vector 0 (we poll) */
+ 	wr(g_bar, bhi + 0x0c, (uint32_t)(pa >> 32));                    /* IMGADDR_HIGH */
+ 	wr(g_bar, bhi + 0x08, (uint32_t)pa);                            /* IMGADDR_LOW */
+-- 
+2.43.0
+

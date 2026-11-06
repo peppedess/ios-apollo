@@ -249,3 +249,4 @@ k12j (1130): **BHI SUCCESS** (45 ms, ERRDBG = 0x86700000 / 0x80000). SMR5 <- 0x8
 k12k (1131): BHI success again (ERRCODE 0), 2c memory at 0xd3568000 (pool), but "not ready after 2000 ms": MHICTRL 0, MHISTATUS 0, EE PBL: the SBL never came up. k12l: 1132 (ath11k_pci_sw_reset sequence before BHI).
 k12l (1132): sw reset OK (link regs set; MHISTATUS 0xff04 = SYS_ERR from k12k's SBL), BHI success, no READY in 5 s. k12m: 1133 (15 s watch, SYS_ERR details).
 k12m (1133): after BHI success, 15 s with no change at all (MHISTATUS 0, EE PBL). BHI_STATUS low bits = our IMGTXDB session id, so the success is real; the SBL does not announce itself. k12n: 1134 (per-second chip/link dump).
+k12n (1134): BHI_STATUS turns 0xffffffff, ERRCODE 0xef0e0003 within a second of BHI success (SBL error); Q6 cookie 0, link and config fine. k12o: 1135 (ath11k clear_vector + BHI_STATUS clear).
