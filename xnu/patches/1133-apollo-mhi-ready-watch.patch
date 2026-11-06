@@ -1,0 +1,55 @@
+From 9d9e28852b441131d086a0333943baea1f6b5532 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 6 Nov 2026 16:32:49 +0100
+Subject: [PATCH] apollo pcie: wait 15 s for MHI READY, log every MHISTATUS/EE
+ change, BHI error registers on SYS_ERR
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01VzhH6pxBJ4naMiihKoMfcq
+---
+ bsd/dev/apollo_pcie.c | 23 ++++++++++++++++++++---
+ 1 file changed, 20 insertions(+), 3 deletions(-)
+
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 300c856..b0f27f4 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -614,15 +614,32 @@ mhi_bringup(uint32_t bhi)
+ 	printf("SWEET MHI: 2c: %u KiB at %#llx: %u segments, vector table %#llx; BHIe at %#x\n", (unsigned)(size >> 10), g_mpa,
+ 	    nseg, g_mpa + VEC_TABLE, bhie);
+ 
+-	/* mhi_ready_state_transition */
++	/*
++	 * mhi_ready_state_transition. k12l: nothing within 5 s, yet k12k had left the chip in SYS_ERR (MHISTATUS
++	 * 0xff04 found at the next boot), so the SBL does run and fails at some point. cnss gives it 10 s
++	 * (mhi,timeout). Wait 15 s, log every change of MHISTATUS / EE, and on SYS_ERR the BHI error registers.
++	 */
+ 	int ms;
+-	uint32_t ctrl = 0, st = 0;
+-	for (ms = 0; ms < 5000; ms += 25) {
++	uint32_t ctrl = 0, st = 0, lastst = ~0u, lastee = ~0u;
++	for (ms = 0; ms < 15000; ms += 25) {
+ 		ctrl = rd(g_bar, 0x38);
+ 		st = rd(g_bar, 0x48);
++		uint32_t ee = rd(g_bar, bhi + 0x28);
++		if (st != lastst || ee != lastee) {
++			printf("SWEET MHI: +%d ms mhistatus %#x (state %u syserr %u ready %u) ctrl %#x ee %u (%s)\n", ms, st,
++			    (st >> 8) & 0xffu, (st >> 2) & 1u, st & 1u, ctrl, ee, mhi_ee_name(ee));
++			lastst = st;
++			lastee = ee;
++		}
+ 		if (!(ctrl & 2u) && (st & 1u)) {
+ 			break;
+ 		}
++		if ((st >> 2) & 1u) {
++			printf("SWEET MHI: SYS_ERR: BHI status %#x err %#x dbg %x %x %x, q6 cookie %#x warm %#x cause %#x\n",
++			    rd(g_bar, bhi + 0x2c), rd(g_bar, bhi + 0x30), rd(g_bar, bhi + 0x34), rd(g_bar, bhi + 0x38),
++			    rd(g_bar, bhi + 0x3c), win_rd(0x01f80500), win_rd(0x1f80504), win_rd(0x01f8060c));
++			return;
++		}
+ 		pc_msleep(25);
+ 	}
+ 	printf("SWEET MHI: %s after %d ms: ctrl %#x status %#x (state %u syserr %u), ee %u\n", (st & 1u) ? "READY" : "not ready",
+-- 
+2.43.0
+
