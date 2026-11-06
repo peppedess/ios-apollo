@@ -232,3 +232,4 @@ k10a (1118, sweetwled=1 sweetbl=1): SPMI to PM8150L SID 5 works (WLED APIDs 0x62
 but 1118 had the wrong offsets (0x51/0x52 are SRC_SEL/WIDTH_SEL; brightness is 0x53/0x54 = 0x099 from ABL at boot).
 CoreBrightness only sent "brightness" 512, then 1/0 and IOMFBBrightnessLevel 0-0.49 nits (auto-brightness with no
 real ambient light sensor?). -> 1119.
+k10b (1119, sweetwledtest=60): **WLED brightness works** (panel dims at boot, every write reads back). iOS side: CoreBrightness sends IOMFBBrightnessLevel 0-1 nits / brightness 0-1 whatever the slider (auto-brightness off): L_minimum, no panel luminance (redfin 0973). k10c: BACKLIGHT=1 (mkadt --backlight).
