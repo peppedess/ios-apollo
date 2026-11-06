@@ -228,3 +228,7 @@ skips the UCHE GMEM range on the whole family. Suspects for GMEM contents not st
 clock gating (we leave hwcg off), APRIV. Plan: a kernel GMEM self-test (CP writes to GMEM via the UCHE range and
 reads back) to test those without rebuilding the root; meanwhile back to TU_DEBUG=sysmem.
 Back to TU_DEBUG=sysmem (delta 12:12-12:33), k9a = 1117 kernel, sysmem, flamecpufreq=1: the usable configuration.
+k10a (1118, sweetwled=1 sweetbl=1): SPMI to PM8150L SID 5 works (WLED APIDs 0x62/0x63 owned by EE 0, writes complete),
+but 1118 had the wrong offsets (0x51/0x52 are SRC_SEL/WIDTH_SEL; brightness is 0x53/0x54 = 0x099 from ABL at boot).
+CoreBrightness only sent "brightness" 512, then 1/0 and IOMFBBrightnessLevel 0-0.49 nits (auto-brightness with no
+real ambient light sensor?). -> 1119.

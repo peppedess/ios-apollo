@@ -1,0 +1,125 @@
+From b08d6e5368d420b00b093d1850fc7bd2e358fd8c Mon Sep 17 00:00:00 2001
+From: apollo <apollo@local>
+Date: Fri, 6 Nov 2026 12:51:46 +0100
+Subject: [PATCH] apollo: WLED5 brightness at 0x53/0x54 (not SRC_SEL/WIDTH),
+ sweetwledtest, more brightness logs
+
+---
+ bsd/dev/sweet_spmi.c                  | 45 +++++++++++++++++----------
+ iokit/Kernel/arm/SweetFramebuffer.cpp |  4 +--
+ 2 files changed, 31 insertions(+), 18 deletions(-)
+
+diff --git a/bsd/dev/sweet_spmi.c b/bsd/dev/sweet_spmi.c
+index bf4b035..f4155da 100644
+--- a/bsd/dev/sweet_spmi.c
++++ b/bsd/dev/sweet_spmi.c
+@@ -209,10 +209,11 @@ sp_chnl_va(uint16_t apid)
+ }
+ 
+ /*
+- * apollo 1118: the WLED5 sink brightness registers (Linux qcom-wled.c WLED5: MOD_A_BRIGHTNESS_LSB/MSB 0x51/0x52,
+- * MOD_B 0x61/0x62, MOD_SYNC_BIT 0x65) on PM8150L SID 5, with boot-arg sweetwled=1. Logged sparingly.
++ * apollo 1118/1119: the WLED5 sink brightness registers (Linux qcom-wled.c: MOD_A_SRC_SEL 0x51, WIDTH_SEL 0x52,
++ * BRIGHTNESS_LSB/MSB 0x53/0x54, MOD_B 0x61..0x64, MOD_SYNC_BIT 0x65) on PM8150L SID 5, with boot-arg sweetwled=1.
++ * Only the brightness and sync registers are writable. Logged sparingly.
+  */
+-static const uint16_t sp_wled_ok[] = { 0xd951, 0xd952, 0xd961, 0xd962, 0xd965 };
++static const uint16_t sp_wled_ok[] = { 0xd953, 0xd954, 0xd963, 0xd964, 0xd965 };
+ static int sp_wled_enabled = -1;
+ 
+ int
+@@ -313,31 +314,42 @@ sweet_wled_probe(void)
+ 		printf("SWEET WLED: no SPMI\n");
+ 		return -1;
+ 	}
+-	static const uint16_t regs[] = { 0xd808, 0xd846, 0xd84d, 0xd84e, 0xd850, 0xd851, 0xd852, 0xd853, 0xd855,
+-		0xd860, 0xd861, 0xd862, 0xd865 };
++	/* ctrl 0xd808 status, 0xd846 module enable, 0xd84d/e; sink 0xd950-0xd954 (A), 0xd960-0xd964 (B), 0xd965 sync */
++	static const uint16_t regs[] = { 0xd808, 0xd846, 0xd84d, 0xd84e, 0xd950, 0xd951, 0xd952, 0xd953, 0xd954,
++		0xd960, 0xd961, 0xd962, 0xd963, 0xd964, 0xd965 };
+ 	uint8_t v[16] = { 0 };
+ 	int bad = 0;
+-	char line[200];
++	char line[240];
+ 	int len = snprintf(line, sizeof(line), "SWEET WLED:");
+ 	for (unsigned i = 0; i < sizeof(regs) / sizeof(regs[0]); ++i) {
+-		uint16_t r = (uint16_t)(regs[i] < 0xd850 ? regs[i] : regs[i] + 0x100);  /* 0xd85x/0xd86x: sink 0xd9 */
+-		if (sweet_spmi_read(5, r, &v[i]) != 0) {
++		if (sweet_spmi_read(5, regs[i], &v[i]) != 0) {
+ 			bad++;
+ 		}
+-		len += snprintf(line + len, sizeof(line) - len, " %04x=%02x", r, v[i]);
++		len += snprintf(line + len, sizeof(line) - len, " %04x=%02x", regs[i], v[i]);
+ 	}
+ 	printf("%s%s\n", line, bad ? " (some reads failed)" : "");
+ 	if (bad == (int)(sizeof(regs) / sizeof(regs[0]))) {
+ 		return -1;
+ 	}
+-	/* sink 0xd950 MOD_A_EN bit 7, 0xd960 MOD_B_EN bit 7; A unless only B is on */
++	/*
++	 * 1119: indices: 4 A_EN, 5 A_SRC_SEL, 6 A_WIDTH, 7/8 A_LSB/MSB, 9 B_EN, 10 B_SRC_SEL, 11 B_WIDTH, 12/13 B_LSB/MSB.
++	 * 1118 used 0x51/0x52 as the brightness: it wrote SRC_SEL and WIDTH_SEL (read back unchanged after, 0).
++	 */
+ 	bool a_on = (v[4] & 0x80) != 0, b_on = (v[9] & 0x80) != 0;
+ 	wled_mod = (!a_on && b_on) ? 1 : 0;
+-	uint8_t width = wled_mod ? 0 : v[8];	/* 0xd955 MOD_A_BRIGHTNESS_WIDTH_SEL: 1 = 15 bit */
++	uint8_t src = wled_mod ? v[10] : v[5], width = wled_mod ? v[11] : v[6];
+ 	wled_max = (width & 1) ? 0x7fffu : 0xfffu;
+-	printf("SWEET WLED: module %c (A %s, B %s), %u-bit, now %#x\n", wled_mod ? 'B' : 'A', a_on ? "on" : "off",
+-	    b_on ? "on" : "off", wled_max == 0x7fffu ? 15 : 12,
+-	    wled_mod ? (v[10] | (v[11] << 8)) : (v[5] | (v[6] << 8)));
++	printf("SWEET WLED: module %c (A %s, B %s), source %u (%s), %u-bit, now %#x\n", wled_mod ? 'B' : 'A',
++	    a_on ? "on" : "off", b_on ? "on" : "off", src & 3, (src & 3) == 3 ? "external PWM: brightness registers ignored" :
++	    (src & 3) == 0 ? "registers" : "?", wled_max == 0x7fffu ? 15 : 12,
++	    wled_mod ? (v[12] | (v[13] << 8)) : (v[7] | (v[8] << 8)));
++	/* boot-arg sweetwledtest=N (1..1023): set that level now, to see the panel follow */
++	unsigned test = 0;
++	PE_parse_boot_argn("sweetwledtest", &test, sizeof(test));
++	if (test >= 1 && test <= 1023) {
++		printf("SWEET WLED: sweetwledtest=%u\n", test);
++		(void)sweet_wled_set(test);
++	}
+ 	return 0;
+ }
+ 
+@@ -350,12 +362,13 @@ sweet_wled_set(unsigned level)
+ 	}
+ 	unsigned w = (unsigned)(((uint64_t)level * wled_max) / 1023u);
+ 	w = w < 2 ? 2 : w > wled_max ? wled_max : w;
+-	unsigned lsb = wled_mod ? 0xd961u : 0xd951u;
++	unsigned lsb = wled_mod ? 0xd963u : 0xd953u;
+ 	int rc = sweet_spmi_write(5, lsb, (uint8_t)(w & 0xff));
+ 	rc |= sweet_spmi_write(5, lsb + 1, (uint8_t)(w >> 8));
++	/* Linux wled5_sync_toggle: the module's sync bit to 0, then 1 */
+ 	uint8_t bit = wled_mod ? 2 : 1;
+-	rc |= sweet_spmi_write(5, 0xd965, bit);
+ 	rc |= sweet_spmi_write(5, 0xd965, 0);
++	rc |= sweet_spmi_write(5, 0xd965, bit);
+ 	return rc;
+ }
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 160a7b4..b2fcb59 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -674,7 +674,7 @@ AppleCLCD::setProperties(OSObject *properties)
+ 	uint64_t v = n->unsigned64BitValue();
+ 	setProperty("IOMFBBrightnessLevel", v, 32);
+ 	static uint32_t logs;
+-	if (logs++ < 8) {
++	if (logs++ < 40) {      /* apollo 1119: 40 (was 8) */
+ 		char name[32];
+ 		proc_selfname(name, sizeof(name));
+ 		IOLog("SWEET BL: %s sets IOMFBBrightnessLevel %llu.%02llu nits\n", name, v >> 16, ((v & 0xffff) * 100) >> 16);
+@@ -769,7 +769,7 @@ AppleARMBacklight::setProperties(OSObject *properties)
+ 	int32_t v = (int32_t)b->unsigned32BitValue();
+ 	uint32_t level = v < 0 ? 0 : (uint32_t)v > SWEET_BL_MAX ? SWEET_BL_MAX : (uint32_t)v;
+ 	static uint32_t logs;
+-	if (logs++ < 8) {
++	if (logs++ < 40) {      /* apollo 1119: 40 (was 8), the slider's values */
+ 		IOLog("SWEET BL: backlight brightness %u\n", level);
+ 	}
+ 	fFB->blSet(level);
+-- 
+2.43.0
+
