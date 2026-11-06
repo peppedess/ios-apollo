@@ -216,3 +216,6 @@ k6e (sweetgmemkb=512): 11 bands instead of 5 -> the bands are Turnip's GMEM bins
 k6d/k6f with TU_DEBUG=sysmem (/var/local/mtl2-env): **Metal renders correctly** (home screen, dock blur), stable for
 30 min; but slow: backboardd 35-75 ms of GPU per frame (redfin 10-15 ms) and the CPUs still at ABL's clocks.
 Next: 1116 cpufreq (EPSS), then GPU/DDR clocks, then GMEM (bins: noise top, black bottom).
+**k7a (1116, flamecpufreq=1): cpufreq works on kona EPSS.** Tables: silver 300-1804 MHz (ABL left 1420), gold
+710-2419 (ABL 710), prime 844-2841 (ABL 844); boot max writes read back. UI clearly smoother: up to ~25-30 shown
+fps scrolling, now GPU-bound (backboardd 20-50 ms GPU per frame in sysmem, 95 % busy in bursts).
