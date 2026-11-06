@@ -178,6 +178,22 @@ def add_gpufw_to_adt(adt_blob, fw_dir):
     return adt.serialize(root)
 
 
+WLAN_FW = ('amss20.bin', 'm3.bin', 'regdb.bin', 'bd_j3s.elf')
+
+
+def add_wlanfw_to_adt(adt_blob, fw_dir):
+    """Return the ADT with /chosen/wlanfw,<file> = the QCA6390 firmware present in fw_dir (bsd/dev/apollo_pcie.c)."""
+    root, _ = adt.parse(adt_blob)
+    chosen = next(c for c in root.children if c.name == 'chosen')
+    chosen.props = [p for p in chosen.props if not p[0].startswith('wlanfw,')]
+    names = [n for n in WLAN_FW if os.path.exists(os.path.join(fw_dir, n))]
+    if 'amss20.bin' not in names:
+        raise SystemExit('wlanfw: no amss20.bin in ' + fw_dir)
+    for name in names:
+        chosen.props.append(('wlanfw,' + name, 0, open(os.path.join(fw_dir, name), 'rb').read()))
+    return adt.serialize(root)
+
+
 def adt_dram(adt_blob):
     """Kernel-managed RAM <base, size> from the ADT's /chosen dram-base/dram-size."""
     root, _ = adt.parse(adt_blob)
@@ -186,7 +202,7 @@ def adt_dram(adt_blob):
             struct.unpack('<Q', chosen.prop('dram-size'))[0])
 
 
-def build(kernel_path, adt_path, cmdline, ramdisk_path=None, poke_path=None, gpufw_dir=None):
+def build(kernel_path, adt_path, cmdline, ramdisk_path=None, poke_path=None, gpufw_dir=None, wlanfw_dir=None):
     buf = bytearray(open(kernel_path, 'rb').read())
     m = parse_macho(buf)
     nfix = apply_chained_fixups(buf, m)
@@ -204,6 +220,8 @@ def build(kernel_path, adt_path, cmdline, ramdisk_path=None, poke_path=None, gpu
         adt_blob = add_poke_to_adt(adt_blob, open(poke_path).read())
     if gpufw_dir:
         adt_blob = add_gpufw_to_adt(adt_blob, gpufw_dir)
+    if wlanfw_dir:
+        adt_blob = add_wlanfw_to_adt(adt_blob, wlanfw_dir)
     # The ADT decides where the kernel's RAM is (mkadt.py --highmem).
     PHYS_BASE, MEM_SIZE = adt_dram(adt_blob)
     pieces = [(s['vmaddr'], s['vmsize'], buf[s['fileoff']:s['fileoff'] + s['filesize']]) for s in segs]
@@ -253,8 +271,9 @@ if __name__ == '__main__':
     ap.add_argument('--ramdisk', help='root image for md0 (boot with rd=md0)')
     ap.add_argument('--poke', help='register script for bsd/dev/sweet_poke.c (/chosen/sweet-poke)')
     ap.add_argument('--gpufw', help='Adreno firmware directory for bsd/dev/sweet_gpu.c (/chosen/gpufw,*)')
+    ap.add_argument('--wlanfw', help='QCA6390 firmware directory for bsd/dev/apollo_pcie.c (/chosen/wlanfw,*)')
     a = ap.parse_args()
-    blob, info = build(a.kernel, a.adt, a.cmdline, a.ramdisk, a.poke, a.gpufw)
+    blob, info = build(a.kernel, a.adt, a.cmdline, a.ramdisk, a.poke, a.gpufw, a.wlanfw)
     open(a.out, 'wb').write(blob)
     for k, v in info.items():
         if k != 'segs':

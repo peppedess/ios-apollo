@@ -34,7 +34,9 @@ for a in sys.argv[1:]:
 print(" ".join(seen.values()))' $args)
 # GPUFW=DIR: Adreno 650 firmware (a650_sqe.fw, a650_gmu.bin, a650_zap.mdt/.b02 from the phone's vendor/firmware;
 # never in git) goes into /chosen/gpufw,* for sweetgpu=1 (patch 1110)
-python3 -I tools/mkpayload.py "$W/kernel" "$W/apollo-hi.adt" "$W/payload" --cmdline "$args" ${GPUFW:+--gpufw "$GPUFW"}
+# WLANFW=DIR: QCA6390 firmware (amss20.bin [+ m3.bin regdb.bin bd_j3s.elf], from modem image/qca6390; never in git)
+# goes into /chosen/wlanfw,* for sweetpcie=1 (patch 1124)
+python3 -I tools/mkpayload.py "$W/kernel" "$W/apollo-hi.adt" "$W/payload" --cmdline "$args" ${GPUFW:+--gpufw "$GPUFW"} ${WLANFW:+--wlanfw "$WLANFW"}
 SHIM_CFLAGS="-DSHIM_NO_UFS_WRITE" SHIM_KERNEL=raw DTB="$DTB" bash shim/build.sh "$W/payload" "$OUT"
 # Shrink the AVB padding (fastboot boot needs no full 128 MiB partition image; the bridge takes <100 MB per file)
 AVB=${AVBTOOL:-python3 downloads/avb/avbtool.py}
