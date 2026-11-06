@@ -210,3 +210,4 @@ k6a with metal2: first boot refused every Metal device (ShaderCache Permission d
 made its pipelines, drew 6 frames ('b3a8' surfaces) at 25-26 s, then nothing (black screen, spindump at 51 s):
 Turnip was given FD620's device info -> 1112.
 k6b (1112): Metal renders on the A650 (no stall), lock screen drawn but every texture as noise -> 1113 (8-channel macrotile).
+k6c (1113): worse, all noise (BGRA framebuffer now, 60 fps swaps) -> 1114 redfin swizzle + register readback.

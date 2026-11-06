@@ -1,0 +1,68 @@
+From 2172738d0dfb15467a5e3cdf2747806bbb500fd3 Mon Sep 17 00:00:00 2001
+From: apollo <apollo@local>
+Date: Fri, 6 Nov 2026 08:59:15 +0100
+Subject: [PATCH] apollo: A650 uses redfin's UBWC swizzle (hbb 14), logs the
+ NC_MODE registers
+
+---
+ bsd/dev/sweet_a6xx.c                  | 19 ++++++++++---------
+ iokit/Kernel/arm/SweetAccelerator.cpp |  4 ++--
+ 2 files changed, 12 insertions(+), 11 deletions(-)
+
+diff --git a/bsd/dev/sweet_a6xx.c b/bsd/dev/sweet_a6xx.c
+index 83b415b..523ba8d 100644
+--- a/bsd/dev/sweet_a6xx.c
++++ b/bsd/dev/sweet_a6xx.c
+@@ -1628,16 +1628,14 @@ static int gpu_cp_init(struct a6_gpu *g, bool resume)
+ 		 */
+ #if A6_ADRENO == 650
+ 		/*
+-		 * apollo 1110: kona DT highest-bank-bit 16 (lower_bit 3), ubwc-mode 4, min-access-length 32 (mal 0);
+-		 * a650 rgb565_predicator (bit 11), AMSBC, uavflagprd_inv 2 (as kgsl a6xx_start / Mesa FD650).
++		 * apollo 1114: redfin's UBWC/bank-swizzle setup (highest bank bit 14, 4-channel macrotiles, AMSBC,
++		 * uavflagprd_inv 2), which Turnip is told too (SweetAccelerator). The swizzle is a layout convention the
++		 * GPU and Turnip's CPU tiling only have to agree on. kona's own values gave noise in every texture:
++		 * k6b (hbb 16, macrotile 0, 1110) and k6c (hbb 16, 8-channel, 1113) - something in the A650 does not
++		 * take them the way Turnip lays the data out.
+ 		 */
+-		{ 0x8e08, (1u << 11) | (1u << 4) | (3u << 1) }, { 0xb604, 3u << 1 }, { 0xae02, (2u << 4) | (3u << 1) },
+-		/*
+-		 * apollo 1113: RBBM_NC_MODE_CNTL = 1, 8-channel macrotiles, as Linux a6xx_calc_ubwc_config gives the A650
+-		 * family (macrotile_mode = true with hbb 16); Turnip is told the same (SweetAccelerator). k6b with 0: the
+-		 * GPU rendered, but every UBWC texture came out as noise.
+-		 */
+-		{ 0x0e01, 3u << 21 }, { 0x0534, 1 },
++		{ 0x8e08, (1u << 4) | (1u << 1) }, { 0xb604, 1u << 1 }, { 0xae02, (2u << 4) | (1u << 1) },
++		{ 0x0e01, 1u << 21 }, { 0x0534, 0 },
+ #else
+ 		{ 0x8e08, (1u << 4) | (1u << 1) }, { 0xb604, 1u << 1 }, { 0xae02, (2u << 4) | (1u << 1) },
+ 		{ 0x0e01, 1u << 21 }, { 0x0534, 0 },
+@@ -1650,6 +1648,9 @@ static int gpu_cp_init(struct a6_gpu *g, bool resume)
+ 	};
+ 	for (unsigned i = 0; i < sizeof(init) / sizeof(init[0]); i++)
+ 		wr32(GREG(init[i][0]), init[i][1]);
++	/* apollo 1114: do the UBWC/swizzle registers keep what we wrote? (k6b/k6c: noise in every texture) */
++	IOLog("SWEET GPU: nc_mode rb 8e08=%x sp ae02=%x tpl1 b604=%x uche 0e01=%x rbbm 0534=%x\n",
++	    rd32(GREG(0x8e08)), rd32(GREG(0xae02)), rd32(GREG(0xb604)), rd32(GREG(0x0e01)), rd32(GREG(0x0534)));
+ 	if (a6_irq_mask)
+ 		a6_irq_enable(a6_irq_mask);	/* 0999: a soft reset cleared it */
+ 
+diff --git a/iokit/Kernel/arm/SweetAccelerator.cpp b/iokit/Kernel/arm/SweetAccelerator.cpp
+index c3c2dda..539ec30 100644
+--- a/iokit/Kernel/arm/SweetAccelerator.cpp
++++ b/iokit/Kernel/arm/SweetAccelerator.cpp
+@@ -743,9 +743,9 @@ SweetAcceleratorUserClient::v2Method(uint32_t method, const void *in, uint32_t i
+ 		rp->uche_trap_base = 0x1fffffffff000ULL;
+ 		rp->va_start = fWinBase;
+ 		rp->va_size = fWinSize;
+-		rp->highest_bank_bit = 16;
++		rp->highest_bank_bit = 14;	/* apollo 1114: redfin's swizzle, = sweet_a6xx.c's NC_MODE_CNTL values */
+ 		rp->ubwc_swizzle = 0x6;
+-		rp->macrotile_mode = 1;	/* apollo 1113: 8-channel, = RBBM_NC_MODE_CNTL in sweet_a6xx.c */
++		rp->macrotile_mode = 0;	/* apollo 1114: 4-channel, = RBBM_NC_MODE_CNTL in sweet_a6xx.c */
+ 		rp->ubwc_version = 3;
+ 		rp->flags = NativeAdrenoDeviceClientIova;
+ 		return kIOReturnSuccess;
+-- 
+2.43.0
+
