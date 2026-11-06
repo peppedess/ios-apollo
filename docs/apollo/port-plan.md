@@ -236,3 +236,4 @@ k10b (1119, sweetwledtest=60): **WLED brightness works** (panel dims at boot, ev
 k10c (BACKLIGHT=1): no change: CoreBrightness sends 404, then 0-0.49 nits at 19-22 s and nothing for the slider afterwards. Needs CoreBrightness's own log (shell over USB). 1120: sweetwledfix=N.
 k11a: sweetwledfix=512 (half brightness held) + BACKLIGHT=1, sysmem Metal, cpufreq: the current daily image. Wi-Fi plan: docs/apollo/wifi-plan.md.
 k12a (1121, sweetpcie=1): boots normally. RC LDO votes OK; SMPS votes refused (cmd-db duplicates); GDSC on, cfg/aux/mstr/slv clocks on, pipe off; PHY NOT READY (status 0x69). k12b: 1122 (refclk 0x8c004, phy aux 0x6f004, SMPS duplicates accepted).
+k12b (1122): **PCIe link up, Wi-Fi phase 1 done.** All six RPMh votes OK; PHY ready (status 0xa6); RC 17cb:010b; LTSSM 0x11 (L0) in ~210 ms, link status 0xb012; endpoint 1:0.0 = 17cb:1101 class ff0000 (QCA6390), BAR0 64-bit. iOS boots normally to SpringBoard. Next: phase 2 (MHI, BHI of amss.bin).

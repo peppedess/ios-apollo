@@ -21,7 +21,7 @@ can stay; everything under it is new.
 
 ## Phases (each ends in a log line that says yes or no)
 
-1. **Link up** (kernel, sweetpcie=1): RPMh votes for the five supplies + the RC's 0p9/1p8, WLAN_EN high, GDSC and
+1. **Link up** (DONE in k12b, patches 1121-1122) (kernel, sweetpcie=1): RPMh votes for the five supplies + the RC's 0p9/1p8, WLAN_EN high, GDSC and
    GCC clocks on, PHY reset + the DT sequence, PERST# release, LTSSM to L0, then config read of bus 1:
    expect vendor 0x17cb device 0x1101. Risk: GCC/GDSC offsets, the refclk path.
 2. **MHI** (kernel): BAR0 map, MHI register space, power up to the PBL, BHI download of amss.bin (+ m3 over MHI
