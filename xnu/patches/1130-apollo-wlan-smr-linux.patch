@@ -1,0 +1,63 @@
+From 6d667094c8399d345ed65f45040f05ae3e8541d6 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 6 Nov 2026 14:56:17 +0100
+Subject: [PATCH] apollo pcie: SMRs as Linux writes them (one per SID, mask 0,
+ lowest free)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01VzhH6pxBJ4naMiihKoMfcq
+---
+ bsd/dev/apollo_pcie.c | 31 +++++++++++++++++++++++--------
+ 1 file changed, 23 insertions(+), 8 deletions(-)
+
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 3e9b226..28e9fbb 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -317,20 +317,35 @@ smmu_wlan_identity(void)
+ 	 * registers are not HLOS's to set (the hypervisor's). Try the free ones from the top down until one keeps
+ 	 * the value; a refused one gets its S2CR back to 0.
+ 	 */
+-	uint32_t want = 1u << 31 | WLAN_SID_MASK << 16 | WLAN_SID, got_smr = ~0u, tries = 0;
+-	for (int i = (int)nsmr - 1; i >= 0 && got_smr == ~0u && tries < 2; i--) {
+-		if (!(freeset[i / 64] & (1ull << (i % 64)))) {
+-			continue;
++	/*
++	 * k12f-i: 0x80011c00 (SID 0x1c00, mask 1) never stuck, in SMR5 or the top ones, while ABL's five (SMR0-4,
++	 * e.g. 0x84020820) read fine. Linux writes one SMR per iommu-map entry with mask 0, lowest free index first;
++	 * a hypervisor that checks SMR writes against the streams it lets HLOS have may want exactly that. Try
++	 * 0x1c01 (the QCA6390) and 0x1c00 (the RC) that way, then the masked pair again.
++	 */
++	static const uint32_t wants[3] = { 1u << 31 | 0x1c01u, 1u << 31 | 0x1c00u, 1u << 31 | 1u << 16 | 0x1c00u };
++	uint32_t got_smr = ~0u, tries = 0, got = 0;
++	for (unsigned w = 0; w < 3 && got < 2; w++) {
++		if (w == 2 && got) {
++			break;
++		}
++		int i;
++		for (i = 0; i < (int)nsmr && !(freeset[i / 64] & (1ull << (i % 64))); i++) {
++		}
++		if (i >= (int)nsmr) {
++			break;
+ 		}
+ 		tries++;
+ 		uint32_t s2 = rd(g_smmu0, 0xc00 + 4 * i);
+ 		wr(g_smmu0, 0xc00 + 4 * i, g_cb);                       /* S2CR: translate via the bank */
+-		wr(g_smmu0, 0x800 + 4 * i, want);
++		wr(g_smmu0, 0x800 + 4 * i, wants[w]);
+ 		uint32_t back = rd(g_smmu0, 0x800 + 4 * i);
+-		if (back == want) {
+-			got_smr = (uint32_t)i;
++		printf("SWEET MHI: SMMU: SMR%d <- %#x reads %#x, S2CR %#x\n", i, wants[w], back, rd(g_smmu0, 0xc00 + 4 * i));
++		if (back == wants[w]) {
++			freeset[i / 64] &= ~(1ull << (i % 64));
++			got_smr = got_smr == ~0u ? (uint32_t)i : got_smr;
++			got++;
+ 		} else {
+-			printf("SWEET MHI: SMMU: SMR%d refused (%#x -> %#x)\n", i, want, back);
+ 			wr(g_smmu0, 0x800 + 4 * i, 0);
+ 			wr(g_smmu0, 0xc00 + 4 * i, s2);
+ 		}
+-- 
+2.43.0
+
