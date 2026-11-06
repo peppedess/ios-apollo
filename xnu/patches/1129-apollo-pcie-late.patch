@@ -1,0 +1,59 @@
+From d70cb649a41bbb16620e628cc55672d2a578f114 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 6 Nov 2026 14:51:28 +0100
+Subject: [PATCH] apollo pcie: start 20 s late, pause one log flush before the
+ PARF SID table, the SMMU and BHI
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01VzhH6pxBJ4naMiihKoMfcq
+---
+ bsd/dev/apollo_pcie.c | 18 +++++++++++++++++-
+ 1 file changed, 17 insertions(+), 1 deletion(-)
+
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 5d3726a..3e9b226 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -389,7 +389,11 @@ bhi_load_sbl(uint32_t bhi)
+ 	if (bad) {
+ 		return;
+ 	}
++	printf("SWEET MHI: SMMU setup next\n");
++	pc_msleep(2500);
+ 	(void)smmu_wlan_identity();
++	printf("SWEET MHI: BHI next\n");
++	pc_msleep(2500);
+ 	wr(g_bar, bhi + 0x20, 0);                                       /* INTVEC: MSI vector 0 (we poll) */
+ 	wr(g_bar, bhi + 0x0c, (uint32_t)(pa >> 32));                    /* IMGADDR_HIGH */
+ 	wr(g_bar, bhi + 0x08, (uint32_t)pa);                            /* IMGADDR_LOW */
+@@ -513,6 +517,11 @@ static void
+ config_sid(void)
+ {
+ 	static const uint16_t bdf[2] = { 0x000, 0x100 }, sidoff[2] = { 0, 1 };
++	printf("SWEET PCIE: BDF-to-SID table: reading PARF 0x2000 (%#x %#x)\n", 0u, 0u);
++	pc_msleep(2500);
++	uint32_t t0 = rd(g_parf, 0x2000), t21 = rd(g_parf, 0x2000 + 4 * 21);
++	printf("SWEET PCIE: BDF-to-SID table now: [0] %#x [21] %#x; clearing\n", t0, t21);
++	pc_msleep(2500);
+ 	for (unsigned i = 0; i < 256; i++) {
+ 		wr(g_parf, 0x2000 + 4 * i, 0);
+ 	}
+@@ -539,7 +548,14 @@ pcie_main(void *arg __unused, wait_result_t w __unused)
+ 	uint32_t step = 0xff;
+ 	(void)PE_parse_boot_argn("sweetpciestep", &step, sizeof(step));
+ 	g_step = step;
+-	printf("SWEET PCIE: start (sweetpciestep=%u)\n", step);
++	/*
++	 * k12h died before the first UFS log flush (nothing of that boot in the log): start late, so the log is being
++	 * written to UFS by then, and wait one flush period before each risky step (sweetpciedelay, default 20 s).
++	 */
++	uint32_t late = 20;
++	(void)PE_parse_boot_argn("sweetpciedelay", &late, sizeof(late));
++	pc_msleep(late * 1000u);
++	printf("SWEET PCIE: start (sweetpciestep=%u, after %u s)\n", step, late);
+ 
+ 	/* 1. power: the RC's PHY rails, the QCA6390's rails, then WLAN_EN (cnss: rails, 10 ms, WLAN_EN, 100 ms) */
+ 	vote_ldo("ldoa5", 880);
+-- 
+2.43.0
+
