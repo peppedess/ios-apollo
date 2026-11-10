@@ -1,0 +1,317 @@
+From 7b4f5dce661299001b5d7be78036b71314a9c0cc Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 11 Nov 2026 00:02:18 +0100
+Subject: [PATCH] apollo pcie: Wi-Fi phase 3b, WLFW ind_register, host_cap,
+ request_mem/respond_mem from the pool, fw_mem_ready
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01VzhH6pxBJ4naMiihKoMfcq
+---
+ bsd/dev/apollo_pcie.c | 259 ++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 247 insertions(+), 12 deletions(-)
+
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 5350dc7..073d98e 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -692,14 +692,132 @@ qrtr_log(const uint8_t *p, uint32_t n)
+ 	printf("\n");
+ }
+ 
++/* four 8 KiB transmit slots used in turn (the device has read a slot long before it comes round again) */
++static uint32_t g_txslot;
++static uint32_t
++tx_slot(void)
++{
++	return TXBUF + (g_txslot++ & 3u) * 0x2000u;
++}
++
+ static void
+-qrtr_send_ctrl(uint32_t type, uint32_t dst_node)
++qrtr_send_ctrl2(uint32_t type, uint32_t dst_node, uint32_t node, uint32_t port)
+ {
+-	uint32_t pkt[13] = { 1, type, 1, QRTR_CTRL, 0, 20, dst_node, QRTR_CTRL, type, 0, 0, 0, 0 };
++	uint32_t pkt[13] = { 1, type, 1, QRTR_CTRL, 0, 20, dst_node, QRTR_CTRL, type, 0, 0, node, port };
++	uint32_t buf = tx_slot();
+ 	for (unsigned i = 0; i < 13; i++) {
+-		m_w32(TXBUF + 4 * i, pkt[i]);
++		m_w32(buf + 4 * i, pkt[i]);
++	}
++	chan_queue(20, CH20_RING, &g_ch20_wp, buf, sizeof(pkt));
++}
++
++static void
++qrtr_send_ctrl(uint32_t type, uint32_t dst_node)
++{
++	qrtr_send_ctrl2(type, dst_node, 0, 0);
++}
++
++/*
++ * Wi-Fi phase 3b: WLFW (QMI service 0x45 on the chip, k12r: node 7 port 1) as ath11k qmi.c does for the QCA6390:
++ * ind_register (0x20), host_cap (0x34), the firmware's request_mem indication (0x35) answered by respond_mem
++ * (0x36) with blocks of the pool, then its fw_mem_ready indication (0x37). QMI = 7-byte header (type, txn, id,
++ * length) + TLVs inside QRTR DATA packets from our port 1:0x4000.
++ */
++#define WLFW_PORT       0x4000u
++static uint32_t g_wlfw_node, g_wlfw_port;
++static uint16_t g_txn = 1;
++static struct {
++	uint16_t want_id;
++	volatile int got;
++	uint16_t result, error;
++	volatile int memreq, memready;
++	uint8_t mem[1024];
++	uint32_t memlen;
++} g_q;
++
++static void
++wlfw_send(uint16_t id, const uint8_t *tlv, uint32_t n)
++{
++	static uint8_t b[2048];
++	uint32_t h[8] = { 1, 1, 1, WLFW_PORT, 0, 7 + n, g_wlfw_node, g_wlfw_port };
++	if (n > sizeof(b) - 48) {
++		return;
++	}
++	memset(b, 0, sizeof(b));
++	memcpy(b, h, 32);
++	b[32] = 0;
++	b[33] = (uint8_t)g_txn; b[34] = (uint8_t)(g_txn >> 8);
++	b[35] = (uint8_t)id; b[36] = (uint8_t)(id >> 8);
++	b[37] = (uint8_t)n; b[38] = (uint8_t)(n >> 8);
++	memcpy(b + 39, tlv, n);
++	g_txn++;
++	uint32_t len = (32 + 7 + n + 3) & ~3u, buf = tx_slot();
++	for (uint32_t i = 0; i < len; i += 4) {
++		uint32_t w;
++		memcpy(&w, b + i, 4);
++		m_w32(buf + i, w);
++	}
++	g_q.want_id = id;
++	g_q.got = 0;
++	chan_queue(20, CH20_RING, &g_ch20_wp, buf, len);
++}
++
++static const uint8_t *
++tlv_find(const uint8_t *p, uint32_t n, uint8_t t, uint32_t *len)
++{
++	while (n >= 3) {
++		uint32_t l = p[1] | (uint32_t)p[2] << 8;
++		if (l + 3 > n) {
++			break;
++		}
++		if (p[0] == t) {
++			*len = l;
++			return p + 3;
++		}
++		p += 3 + l;
++		n -= 3 + l;
++	}
++	return NULL;
++}
++
++/* a QRTR DATA payload for our port: QMI response or indication */
++static void
++wlfw_rx(const uint8_t *q, uint32_t n)
++{
++	if (n < 7) {
++		return;
++	}
++	uint32_t type = q[0], id = q[3] | (uint32_t)q[4] << 8, len = q[5] | (uint32_t)q[6] << 8, l = 0;
++	if (len > n - 7) {
++		len = n - 7;
++	}
++	const uint8_t *t = q + 7;
++	if (type == 2) {
++		const uint8_t *r = tlv_find(t, len, 2, &l);
++		uint16_t res = 0xffff, err = 0xffff;
++		if (r && l >= 4) {
++			res = (uint16_t)(r[0] | r[1] << 8);
++			err = (uint16_t)(r[2] | r[3] << 8);
++		}
++		printf("SWEET WLFW: response %#x: result %u error %u (%u bytes)\n", id, res, err, len);
++		if (id == g_q.want_id) {
++			g_q.result = res;
++			g_q.error = err;
++			g_q.got = 1;
++		}
++	} else if (type == 4) {
++		printf("SWEET WLFW: indication %#x (%u bytes)\n", id, len);
++		if (id == 0x35) {
++			const uint8_t *m = tlv_find(t, len, 1, &l);
++			if (m && l <= sizeof(g_q.mem)) {
++				memcpy(g_q.mem, m, l);
++				g_q.memlen = l;
++				g_q.memreq = 1;
++			}
++		} else if (id == 0x37) {
++			g_q.memready = 1;
++		}
+ 	}
+-	chan_queue(20, CH20_RING, &g_ch20_wp, TXBUF, sizeof(pkt));
+ }
+ 
+ /* event ring 1: transfer completions; inbound buffers are logged and queued again */
+@@ -716,7 +834,7 @@ er1_poll(void)
+ 		if (type == 0x22 && ch == 21 && ptr >= g_mpa + CH21_RING && ptr < g_mpa + CH21_RING + 64 * 16) {
+ 			uint32_t tre = (uint32_t)(ptr - g_mpa);
+ 			uint32_t buf = (uint32_t)(m_r64(tre) - g_mpa);
+-			uint8_t pkt[256];
++			static uint8_t pkt[4096];
+ 			uint32_t k = len < sizeof(pkt) ? len : sizeof(pkt);
+ 			for (uint32_t i = 0; i < k; i += 4) {
+ 				uint32_t w = *(volatile uint32_t *)(g_mva + buf + i);
+@@ -724,12 +842,27 @@ er1_poll(void)
+ 			}
+ 			printf("SWEET MHI: rx ch21 code %u len %u: ", code, len);
+ 			qrtr_log(pkt, k);
+-			if (len >= 52) {
+-				uint32_t h1, src;
+-				memcpy(&h1, pkt + 4, 4);
+-				memcpy(&src, pkt + 8, 4);
+-				if (h1 == 2) {
+-					qrtr_send_ctrl(2, src);         /* answer the remote's HELLO */
++			if (k >= 32) {
++				uint32_t h[8];
++				memcpy(h, pkt, 32);
++				if (h[1] == 2 && k >= 52) {
++					qrtr_send_ctrl(2, h[2]);        /* answer the remote's HELLO */
++				}
++				if (h[1] == 4 && k >= 52) {
++					uint32_t c[5];
++					memcpy(c, pkt + 32, 20);
++					if (c[1] == 0x45u) {
++						g_wlfw_node = c[3];
++						g_wlfw_port = c[4];
++					}
++				}
++				if (h[1] == 1) {
++					if (h[4]) {                     /* confirm_rx: RESUME_TX for our port */
++						qrtr_send_ctrl2(7, h[2], h[6], h[7]);
++					}
++					if (h[7] == WLFW_PORT && h[5] <= k - 32) {
++						wlfw_rx(pkt + 32, h[5]);
++					}
+ 				}
+ 			}
+ 			chan_queue(21, CH21_RING, &g_ch21_wp, buf, RXBUF_SZ);
+@@ -747,6 +880,100 @@ er1_poll(void)
+ 	return n;
+ }
+ 
++static int
++wlfw_wait(volatile int *flag, int timeout_ms, const char *what)
++{
++	for (int ms = 0; ms < timeout_ms; ms += 10) {
++		(void)er0_poll();
++		(void)er1_poll();
++		if (*flag) {
++			return 0;
++		}
++		pc_msleep(10);
++	}
++	printf("SWEET WLFW: %s: nothing in %d ms\n", what, timeout_ms);
++	return -1;
++}
++
++static void
++wlfw_handshake(void)
++{
++	printf("SWEET WLFW: service at %u:%#x\n", g_wlfw_node, g_wlfw_port);
++	/* ind_register: fw_ready, client id, request_mem, fw_mem_ready, fw_init_done, cal_done */
++	static const uint8_t ind[] = {
++		0x10, 1, 0, 1,  0x15, 4, 0, 0x4c, 0x45, 0x4e, 0x4b,  0x16, 1, 0, 1,  0x17, 1, 0, 1,  0x18, 1, 0, 1,
++		0x1b, 1, 0, 1,
++	};
++	wlfw_send(0x20, ind, sizeof(ind));
++	if (wlfw_wait(&g_q.got, 3000, "ind_register") != 0 || g_q.result != 0) {
++		return;
++	}
++	/*
++	 * host_cap: 1 client, nm_modem 0x1e (host C-state, internal sleep clock, PCIe global reset, PME D3cold: the
++	 * QCA6390 hw_params), BDF and M3 support, M3 cache, cal not done, mem_cfg_mode 0
++	 */
++	static const uint8_t cap[] = {
++		0x10, 4, 0, 1, 0, 0, 0,  0x13, 1, 0, 0x1e,  0x14, 1, 0, 1,  0x16, 1, 0, 1,  0x17, 1, 0, 1,  0x1a, 1, 0, 0,
++		0x1c, 1, 0, 0,
++	};
++	wlfw_send(0x34, cap, sizeof(cap));
++	if (wlfw_wait(&g_q.got, 3000, "host_cap") != 0 || g_q.result != 0) {
++		return;
++	}
++	for (int round = 0; round < 3; round++) {
++		if (wlfw_wait(&g_q.memreq, 5000, "request_mem") != 0) {
++			return;
++		}
++		g_q.memreq = 0;
++		/* request: count, then { size u32, type u32, cfg count u8, cfg[] of 13 bytes } */
++		static uint8_t rsp[3 + 1 + 52 * 17];
++		const uint8_t *m = g_q.mem;
++		uint32_t cnt = m[0], off = 1, o = 4, fail = 0;
++		uint64_t total = 0;
++		for (uint32_t i = 0; i < cnt && i < 52 && off + 9 <= g_q.memlen; i++) {
++			uint32_t size, type;
++			memcpy(&size, m + off, 4);
++			memcpy(&type, m + off + 4, 4);
++			off += 9 + 13u * m[off + 8];
++			uint64_t pa = 0;
++			if (fail || sweet_gpu_pool_alloc((size + 0xfffu) & ~0xfffull, &pa) != 0 || pa + size > 0x100000000ull) {
++				printf("SWEET WLFW: segment %u: %u bytes type %u: NO MEMORY\n", i, size, type);
++				fail = 1;
++				continue;
++			}
++			vm_offset_t va = ml_io_map((vm_offset_t)pa, (size + 0xfffu) & ~0xfffu);
++			for (uint32_t z = 0; va && z < size; z += 4) {
++				*(volatile uint32_t *)(va + z) = 0;
++			}
++			printf("SWEET WLFW: segment %u: %u bytes type %u at %#llx\n", i, size, type, pa);
++			memcpy(rsp + o, &pa, 8);
++			memcpy(rsp + o + 8, &size, 4);
++			memcpy(rsp + o + 12, &type, 4);
++			rsp[o + 16] = 0;
++			o += 17;
++			total += size;
++		}
++		if (fail) {
++			o = 4;                                          /* "delayed": no segments, it asks again smaller */
++			cnt = 0;
++		}
++		rsp[0] = 1;
++		rsp[1] = (uint8_t)(o - 3); rsp[2] = (uint8_t)((o - 3) >> 8);
++		rsp[3] = (uint8_t)cnt;
++		printf("SWEET WLFW: respond_mem: %u segments, %llu KiB\n", cnt, total >> 10);
++		wlfw_send(0x36, rsp, o);
++		if (wlfw_wait(&g_q.got, 3000, "respond_mem") != 0) {
++			return;
++		}
++		if (!fail) {
++			break;
++		}
++	}
++	if (wlfw_wait(&g_q.memready, 5000, "fw_mem_ready") == 0) {
++		printf("SWEET WLFW: firmware memory ready\n");
++	}
++}
++
+ static void
+ ipcr_start(void)
+ {
+@@ -765,7 +992,15 @@ ipcr_start(void)
+ 	}
+ 	qrtr_send_ctrl(2, 0xffffffffu);                                 /* HELLO */
+ 	printf("SWEET QRTR: HELLO sent from node 1\n");
+-	for (int ms = 0; ms < 8000; ms += 20) {
++	for (int ms = 0; ms < 3000 && !g_wlfw_port; ms += 20) {
++		(void)er0_poll();
++		(void)er1_poll();
++		pc_msleep(20);
++	}
++	if (g_wlfw_port && g_step >= 11) {
++		wlfw_handshake();
++	}
++	for (int ms = 0; ms < 5000; ms += 20) {
+ 		(void)er0_poll();
+ 		(void)er1_poll();
+ 		pc_msleep(20);
+-- 
+2.43.0
+
