@@ -1,0 +1,222 @@
+From dd4fe517750438d4572ae86d683a5d17dc1a7b4a Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 11 Nov 2026 00:21:27 +0100
+Subject: [PATCH] apollo pcie: Wi-Fi phase 3c, WLFW target cap, board data
+ download, M3 info, fw_init_done / fw_ready
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01VzhH6pxBJ4naMiihKoMfcq
+---
+ bsd/dev/apollo_pcie.c | 152 ++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 146 insertions(+), 6 deletions(-)
+
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 073d98e..ddc0df6 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -730,26 +730,30 @@ static struct {
+ 	uint16_t want_id;
+ 	volatile int got;
+ 	uint16_t result, error;
+-	volatile int memreq, memready;
++	volatile int memreq, memready, initdone, fwready;
+ 	uint8_t mem[1024];
+ 	uint32_t memlen;
++	uint8_t rsp[512];
++	uint32_t rsplen;
+ } g_q;
+ 
+ static void
+ wlfw_send(uint16_t id, const uint8_t *tlv, uint32_t n)
+ {
+-	static uint8_t b[2048];
++	static uint8_t b[6400];
+ 	uint32_t h[8] = { 1, 1, 1, WLFW_PORT, 0, 7 + n, g_wlfw_node, g_wlfw_port };
+ 	if (n > sizeof(b) - 48) {
+ 		return;
+ 	}
+-	memset(b, 0, sizeof(b));
++	memset(b + 32 + 7 + n, 0, 4);
+ 	memcpy(b, h, 32);
+ 	b[32] = 0;
+ 	b[33] = (uint8_t)g_txn; b[34] = (uint8_t)(g_txn >> 8);
+ 	b[35] = (uint8_t)id; b[36] = (uint8_t)(id >> 8);
+ 	b[37] = (uint8_t)n; b[38] = (uint8_t)(n >> 8);
+-	memcpy(b + 39, tlv, n);
++	if (n) {
++		memcpy(b + 39, tlv, n);
++	}
+ 	g_txn++;
+ 	uint32_t len = (32 + 7 + n + 3) & ~3u, buf = tx_slot();
+ 	for (uint32_t i = 0; i < len; i += 4) {
+@@ -801,6 +805,8 @@ wlfw_rx(const uint8_t *q, uint32_t n)
+ 		}
+ 		printf("SWEET WLFW: response %#x: result %u error %u (%u bytes)\n", id, res, err, len);
+ 		if (id == g_q.want_id) {
++			g_q.rsplen = len < sizeof(g_q.rsp) ? len : sizeof(g_q.rsp);
++			memcpy(g_q.rsp, t, g_q.rsplen);
+ 			g_q.result = res;
+ 			g_q.error = err;
+ 			g_q.got = 1;
+@@ -816,6 +822,10 @@ wlfw_rx(const uint8_t *q, uint32_t n)
+ 			}
+ 		} else if (id == 0x37) {
+ 			g_q.memready = 1;
++		} else if (id == 0x38) {
++			g_q.initdone = 1;
++		} else if (id == 0x21) {
++			g_q.fwready = 1;
+ 		}
+ 	}
+ }
+@@ -895,6 +905,132 @@ wlfw_wait(volatile int *flag, int timeout_ms, const char *what)
+ 	return -1;
+ }
+ 
++/*
++ * Wi-Fi phase 3c (ath11k_qmi_event_load_bdf for the QCA6390: no regdb, ELF board file, no separate cal data):
++ * target capabilities 0x24 (chip, board, SoC ids, firmware version), board data 0x25 in 6144-byte pieces
++ * (file_id = board id, type 1 ELF; Xiaomi's cnss2 uses bd_j3s.elf on apollo, bdwlan.elf is the fallback),
++ * M3 firmware address 0x3c (m3.bin copied into the pool), then the fw_init_done (0x38) and fw_ready (0x21)
++ * indications.
++ */
++static int
++wlfw_req(uint16_t id, const uint8_t *tlv, uint32_t n, const char *what)
++{
++	wlfw_send(id, tlv, n);
++	if (wlfw_wait(&g_q.got, 5000, what) != 0) {
++		return -1;
++	}
++	if (g_q.result != 0) {
++		printf("SWEET WLFW: %s refused: result %u error %u\n", what, g_q.result, g_q.error);
++		return -1;
++	}
++	return 0;
++}
++
++static void
++wlfw_board(void)
++{
++	uint32_t l = 0, board_id = 0xff;
++	if (wlfw_req(0x24, NULL, 0, "cap") != 0) {
++		return;
++	}
++	const uint8_t *v;
++	uint32_t a = 0, b = 0;
++	if ((v = tlv_find(g_q.rsp, g_q.rsplen, 0x10, &l)) && l >= 8) {
++		memcpy(&a, v, 4); memcpy(&b, v + 4, 4);
++		printf("SWEET WLFW: chip id %#x family %#x\n", a, b);
++	}
++	if ((v = tlv_find(g_q.rsp, g_q.rsplen, 0x11, &l)) && l >= 4) {
++		memcpy(&board_id, v, 4);
++	}
++	if ((v = tlv_find(g_q.rsp, g_q.rsplen, 0x12, &l)) && l >= 4) {
++		memcpy(&a, v, 4);
++		printf("SWEET WLFW: board id %#x soc id %#x\n", board_id, a);
++	}
++	if ((v = tlv_find(g_q.rsp, g_q.rsplen, 0x13, &l)) && l >= 4) {
++		char ts[40] = { 0 };
++		memcpy(&a, v, 4);
++		memcpy(ts, v + 4, l - 4 < 39 ? l - 4 : 39);
++		printf("SWEET WLFW: fw version %#x built %s\n", a, ts);
++	}
++	if ((v = tlv_find(g_q.rsp, g_q.rsplen, 0x14, &l))) {
++		char id[130] = { 0 };
++		memcpy(id, v, l < 129 ? l : 129);
++		printf("SWEET WLFW: fw build id %s\n", id);
++	}
++	if ((v = tlv_find(g_q.rsp, g_q.rsplen, 0x19, &l))) {
++		printf("SWEET WLFW: eeprom cal data advertised\n");
++	}
++
++	uint32_t bdlen = 0;
++	const char *bdname = "bd_j3s.elf";
++	const uint8_t *bd = wlan_firmware(bdname, &bdlen);
++	if (!bd) {
++		bdname = "bdwlan.elf";
++		bd = wlan_firmware(bdname, &bdlen);
++	}
++	if (!bd) {
++		return;
++	}
++	if (bdlen > 256u * 1024u) {
++		bdlen = 256u * 1024u;
++	}
++	printf("SWEET WLFW: board file %s, %u bytes (%02x%02x%02x%02x)\n", bdname, bdlen, bd[0], bd[1], bd[2], bd[3]);
++	static uint8_t t[6144 + 64];
++	uint32_t remaining = bdlen, seg = 0;
++	uint8_t type = bdlen >= 4 && bd[0] == 0x7f && bd[1] == 'E' && bd[2] == 'L' && bd[3] == 'F' ? 1 : 0;
++	while (remaining) {
++		uint32_t dl = remaining > 6144 ? 6144 : remaining, o = 0;
++		t[o++] = 0x01; t[o++] = 1; t[o++] = 0; t[o++] = 1;
++		t[o++] = 0x10; t[o++] = 4; t[o++] = 0; memcpy(t + o, &board_id, 4); o += 4;
++		t[o++] = 0x11; t[o++] = 4; t[o++] = 0; memcpy(t + o, &remaining, 4); o += 4;
++		t[o++] = 0x12; t[o++] = 4; t[o++] = 0; memcpy(t + o, &seg, 4); o += 4;
++		t[o++] = 0x13; t[o++] = (uint8_t)(dl + 2); t[o++] = (uint8_t)((dl + 2) >> 8);
++		t[o++] = (uint8_t)dl; t[o++] = (uint8_t)(dl >> 8);
++		memcpy(t + o, bd + (bdlen - remaining), dl); o += dl;
++		t[o++] = 0x14; t[o++] = 1; t[o++] = 0; t[o++] = remaining == dl;
++		t[o++] = 0x15; t[o++] = 1; t[o++] = 0; t[o++] = type;
++		if (wlfw_req(0x25, t, o, "bdf_download") != 0) {
++			printf("SWEET WLFW: board data stopped at segment %u\n", seg);
++			return;
++		}
++		remaining -= dl;
++		seg++;
++	}
++	printf("SWEET WLFW: board data sent, %u segments, type %u\n", seg, type);
++
++	uint32_t m3len = 0;
++	const uint8_t *m3 = wlan_firmware("m3.bin", &m3len);
++	uint64_t m3pa = 0;
++	if (!m3 || sweet_gpu_pool_alloc((m3len + 0xfffu) & ~0xfffull, &m3pa) != 0 || m3pa + m3len > 0x100000000ull) {
++		printf("SWEET WLFW: no m3.bin or no memory for it\n");
++		return;
++	}
++	vm_offset_t m3va = ml_io_map((vm_offset_t)m3pa, (m3len + 0xfffu) & ~0xfffu);
++	if (!m3va) {
++		return;
++	}
++	for (uint32_t i = 0; i < m3len; i += 4) {
++		uint32_t w = 0;
++		memcpy(&w, m3 + i, m3len - i < 4 ? m3len - i : 4);
++		*(volatile uint32_t *)(m3va + i) = w;
++	}
++	__asm__ volatile ("dsb sy" ::: "memory");
++	uint8_t mi[18] = { 0x01, 8, 0 };
++	memcpy(mi + 3, &m3pa, 8);
++	mi[11] = 0x02; mi[12] = 4; mi[13] = 0;
++	memcpy(mi + 14, &m3len, 4);
++	printf("SWEET WLFW: m3.bin %u bytes at %#llx\n", m3len, m3pa);
++	if (wlfw_req(0x3c, mi, sizeof(mi), "m3_info") != 0) {
++		return;
++	}
++	if (wlfw_wait(&g_q.initdone, 10000, "fw_init_done") == 0) {
++		printf("SWEET WLFW: firmware init done\n");
++	}
++	if (wlfw_wait(&g_q.fwready, 10000, "fw_ready") == 0) {
++		printf("SWEET WLFW: FIRMWARE READY\n");
++	}
++}
++
+ static void
+ wlfw_handshake(void)
+ {
+@@ -969,8 +1105,12 @@ wlfw_handshake(void)
+ 			break;
+ 		}
+ 	}
+-	if (wlfw_wait(&g_q.memready, 5000, "fw_mem_ready") == 0) {
+-		printf("SWEET WLFW: firmware memory ready\n");
++	if (wlfw_wait(&g_q.memready, 5000, "fw_mem_ready") != 0) {
++		return;
++	}
++	printf("SWEET WLFW: firmware memory ready\n");
++	if (g_step >= 12) {
++		wlfw_board();
+ 	}
+ }
+ 
+-- 
+2.43.0
+

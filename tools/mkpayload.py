@@ -178,7 +178,7 @@ def add_gpufw_to_adt(adt_blob, fw_dir):
     return adt.serialize(root)
 
 
-WLAN_FW = ('amss20.bin', 'm3.bin', 'regdb.bin', 'bd_j3s.elf')
+WLAN_FW = ('amss20.bin', 'm3.bin', 'regdb.bin', 'bd_j3s.elf', 'bdwlan.elf')
 
 
 def add_wlanfw_to_adt(adt_blob, fw_dir):

@@ -17,7 +17,7 @@ echo "== modem"
 mdir -/ -b -i "$D/backup/modem.img" ::/ 2>/dev/null | grep -i -e amss -e 'm3\.' -e bdwlan -e regdb -e qca6390 | head -40
 mkdir -p "$D/recon/wlan"
 find x-vendor \( -iname 'amss*' -o -iname 'm3*.bin' -o -iname 'bdwlan*' -o -iname 'regdb*' -o -iname 'Data.msc' -o -iname 'WCNSS_qcom_cfg.ini' \) -exec cp -v {} "$D/recon/wlan/" \;
-for f in $(mdir -/ -b -i "$D/backup/modem.img" ::/ 2>/dev/null | grep -i -e amss -e bdwlan -e regdb -e '/m3\.'); do
+for f in $(mdir -/ -b -i "$D/backup/modem.img" ::/ 2>/dev/null | grep -i -e amss -e bdwlan -e regdb -e '/m3\.' -e '/bd_j3s'); do
 	mcopy -n -o -i "$D/backup/modem.img" "$f" "$D/recon/wlan/modem-$(basename "$f")" 2>&1
 done
 ls -la "$D/recon/wlan"
