@@ -1,0 +1,49 @@
+From 714ef5d12b170acb893b50790ac5d9a3777a81ee Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 11 Nov 2026 00:30:28 +0100
+Subject: [PATCH] apollo pcie: RESUME_TX in the client layout;
+ sweetpciereboot=1 resets to fastboot after the test
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01VzhH6pxBJ4naMiihKoMfcq
+---
+ bsd/dev/apollo_pcie.c | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index ddc0df6..d1eaa50 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -704,6 +704,13 @@ static void
+ qrtr_send_ctrl2(uint32_t type, uint32_t dst_node, uint32_t node, uint32_t port)
+ {
+ 	uint32_t pkt[13] = { 1, type, 1, QRTR_CTRL, 0, 20, dst_node, QRTR_CTRL, type, 0, 0, node, port };
++	if (type == 7) {
++		/* RESUME_TX carries a client {node, port} right after the command (k12t: sent in the server layout, the
++		 * firmware never resumed and stopped answering after its 10th message to our port) */
++		pkt[9] = node;
++		pkt[10] = port;
++		pkt[11] = pkt[12] = 0;
++	}
+ 	uint32_t buf = tx_slot();
+ 	for (unsigned i = 0; i < 13; i++) {
+ 		m_w32(buf + 4 * i, pkt[i]);
+@@ -1146,6 +1153,15 @@ ipcr_start(void)
+ 		pc_msleep(20);
+ 	}
+ 	printf("SWEET QRTR: done listening\n");
++	/* sweetpciereboot=1 (test images): back to fastboot by itself once the log is on UFS (as SWEET CMD reboot) */
++	uint32_t rb = 0;
++	(void)PE_parse_boot_argn("sweetpciereboot", &rb, sizeof(rb));
++	if (rb) {
++		printf("SWEET PCIE: test over, rebooting (PSCI SYSTEM_RESET)\n");
++		pc_msleep(5000);
++		register uint64_t x0 __asm__("x0") = 0x84000009ULL;
++		__asm__ volatile ("smc #0" : "+r"(x0) : : "x1", "x2", "x3", "memory");
++	}
+ }
+ 
+ /* the pool block: MHI control area + the whole amss20.bin in 512 KiB segments + vector table (once) */
+-- 
+2.43.0
+
