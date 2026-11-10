@@ -1,0 +1,163 @@
+From a39a4ed789991c1fcc33b4df8930b80fb6647df4 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 11 Nov 2026 00:51:18 +0100
+Subject: [PATCH] apollo pcie: Wi-Fi phase 4b, WMI service ready parsed and
+ WMI_INIT sent, wait for WMI ready
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01VzhH6pxBJ4naMiihKoMfcq
+---
+ bsd/dev/apollo_pcie.c | 104 ++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 99 insertions(+), 5 deletions(-)
+
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index c9e506b..35c5e8a 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -949,6 +949,9 @@ static uint32_t g_txn_buf;
+ static struct {
+ 	volatile int ready, resp;
+ 	uint32_t credits, credit_size, resp_svc, resp_status, resp_eid;
++	uint32_t wmi_eid, htt_eid;
++	volatile int svc_ready, wmi_ready;
++	uint32_t rf_chains, num_mem_reqs;
+ } g_htc;
+ 
+ static uint32_t
+@@ -1070,14 +1073,37 @@ htc_rx(uint32_t pipe, const uint8_t *p, uint32_t n)
+ 	if (n >= 16) {
+ 		memcpy(&m1, p + 12, 4);
+ 	}
++	if (eid != 0) {
++		/*
++		 * WMI control (endpoint 1): [cmd_id][TLV header: tag 31:16, len 15:0][body]. The events that matter
++		 * here are SERVICE_READY (1, tag 0x20: num_rf_chains at body + 36, num_mem_reqs at + 72) and READY (2,
++		 * tag 0x23), which answers our INIT.
++		 */
++		uint32_t tag = m1 >> 16, tlen = m1 & 0xffffu;
++		printf("SWEET WMI: ep %u event %#x tag %#x len %u (%u bytes)\n", eid, m0, tag, tlen, n);
++		if (eid == g_htc.wmi_eid && m0 == 1u && n >= 16 + 76) {
++			memcpy(&g_htc.rf_chains, p + 16 + 36, 4);
++			memcpy(&g_htc.num_mem_reqs, p + 16 + 72, 4);
++			printf("SWEET WMI: service ready: %u RF chains, %u memory requests\n", g_htc.rf_chains,
++			    g_htc.num_mem_reqs);
++			g_htc.svc_ready = 1;
++		}
++		if (eid == g_htc.wmi_eid && m0 == 2u) {
++			uint8_t mac[6] = { 0 };
++			if (n >= 16 + 30) {
++				memcpy(mac, p + 16 + 24, 6);
++			}
++			printf("SWEET WMI: READY: MAC %02x:%02x:%02x:%02x:%02x:%02x\n", mac[0], mac[1], mac[2], mac[3],
++			    mac[4], mac[5]);
++			g_htc.wmi_ready = 1;
++		}
++		return;
++	}
+ 	printf("SWEET CE%u: rx %u bytes: HTC ep %u flags %#x len %u | %08x %08x", pipe, n, eid, flags, len, m0, m1);
+ 	for (uint32_t i = 16; i < n && i < 48; i++) {
+ 		printf("%s%02x", (i & 3) ? "" : " ", p[i]);
+ 	}
+ 	printf("\n");
+-	if (eid != 0) {
+-		return;
+-	}
+ 	uint32_t id = m0 & 0xffffu;
+ 	if (id == 1) {                                                  /* READY */
+ 		g_htc.credits = m0 >> 16;
+@@ -1089,6 +1115,11 @@ htc_rx(uint32_t pipe, const uint8_t *p, uint32_t n)
+ 		g_htc.resp_svc = m0 >> 16;
+ 		g_htc.resp_status = m1 & 0xffu;
+ 		g_htc.resp_eid = (m1 >> 8) & 0xffu;
++		if (g_htc.resp_svc == 0x100u) {
++			g_htc.wmi_eid = g_htc.resp_eid;
++		} else if (g_htc.resp_svc == 0x300u) {
++			g_htc.htt_eid = g_htc.resp_eid;
++		}
+ 		printf("SWEET HTC: service %#x: status %u endpoint %u max message %u\n", g_htc.resp_svc, g_htc.resp_status,
+ 		    g_htc.resp_eid, m1 >> 16);
+ 		g_htc.resp = 1;
+@@ -1127,6 +1158,65 @@ ce_poll(void)
+ 	}
+ }
+ 
++/*
++ * Wi-Fi phase 4b: WMI_INIT (ath11k_wmi_cmd_init + ath11k_init_wmi_config_qca6390 + ath11k_wmi_copy_resource_config),
++ * which is what the firmware waits for after its service-ready events. Message: [cmd_id 1][INIT_CMD tag 0x4e,
++ * 32 bytes: ABI version zeroed, 0 memory chunks][RESOURCE_CONFIG tag 0x4f, 292 bytes][ARRAY_STRUCT tag 0x13,
++ * empty]. single_pdev_only, so no hw-mode TLV. The answer is WMI_READY (event 2) with the adapter's MAC address.
++ */
++#define RC(field, value)        cfg[field] = (value)
++static int wifi_wait(volatile int *flag, int timeout_ms, const char *what);
++
++static void
++wmi_init(void)
++{
++	static uint8_t msg[4 + 32 + 292 + 4];
++	uint32_t *w = (uint32_t *)msg;
++	memset(msg, 0, sizeof(msg));
++	w[0] = 1;                                                       /* WMI_INIT_CMDID */
++	w[1] = (0x4eu << 16) | 28u;                                     /* WMI_TAG_INIT_CMD */
++	w[8] = 0;                                                       /* num_host_mem_chunks */
++	uint32_t *cfg = w + 9;                                          /* cfg[0] = its TLV header */
++	RC(0, (0x4fu << 16) | 288u);
++	uint32_t chains = g_htc.rf_chains ? g_htc.rf_chains : 2u;
++	uint32_t mask = (1u << chains) - 1u;
++	RC(1, 3);                                                       /* num_vdevs (2 + 1) */
++	RC(2, 16);                                                      /* num_peers */
++	RC(3, 3);                                                       /* num_offload_peers */
++	RC(4, 3);                                                       /* num_offload_reorder_buffs */
++	RC(5, 2);                                                       /* num_peer_keys */
++	RC(6, 32);                                                      /* num_tids */
++	RC(7, 16);                                                      /* ast_skid_limit */
++	RC(8, mask);                                                    /* tx_chain_mask */
++	RC(9, mask);                                                    /* rx_chain_mask */
++	RC(10, 100); RC(11, 100); RC(12, 100); RC(13, 40);              /* rx_timeout_pri[4] */
++	RC(14, 1);                                                      /* rx_decap_mode: native wifi */
++	RC(15, 4);                                                      /* scan_max_pending_req */
++	RC(16, 3);                                                      /* bmiss_offload_max_vdev */
++	RC(17, 3);                                                      /* roam_offload_max_vdev */
++	RC(18, 8);                                                      /* roam_offload_max_ap_profiles */
++	RC(22, 1024);                                                   /* tx_dbg_log_size */
++	RC(29, 2);                                                      /* gtk_offload_max_vdev */
++	RC(30, 0x400);                                                  /* num_msdu_desc */
++	RC(31, 0xa);                                                    /* max_frag_entries */
++	RC(32, 1);                                                      /* num_tdls_vdevs */
++	RC(33, 8);                                                      /* num_tdls_conn_table_entries */
++	RC(34, 2);                                                      /* beacon_tx_offload_max_vdev */
++	RC(35, 0x20);                                                   /* num_multicast_filter_entries */
++	RC(36, 0x16);                                                   /* num_wow_filters */
++	RC(45, 1u << 5);                                                /* flag1: BSS_CHANNEL_INFO_64 */
++	RC(56, 1);                                                      /* use_pdev_id */
++	cfg[73] = (0x13u << 16);                                        /* ARRAY_STRUCT, no memory chunks */
++	printf("SWEET WMI: INIT (%u bytes, %u chains, mask %#x)\n", (unsigned)sizeof(msg), chains, mask);
++	htc_send(&g_ce3, g_htc.wmi_eid, msg, sizeof(msg));
++	if (wifi_wait(&g_htc.wmi_ready, 10000, "WMI ready") != 0) {
++		return;
++	}
++	printf("SWEET WMI: FIRMWARE UP (WMI ready)\n");
++	volatile int never = 0;
++	(void)wifi_wait(&never, 3000, "after WMI ready");
++}
++
+ static int
+ wifi_wait(volatile int *flag, int timeout_ms, const char *what)
+ {
+@@ -1214,8 +1304,12 @@ wifi_start(void)
+ 	m[0] = 5; m[1] = 0; m[2] = 0;
+ 	htc_send(&g_ce0, 0, (const uint8_t *)m, 12);
+ 	printf("SWEET HTC: setup complete sent\n");
+-	volatile int never = 0;
+-	(void)wifi_wait(&never, 5000, "listening after setup");
++	if (wifi_wait(&g_htc.svc_ready, 5000, "WMI service ready") != 0 || g_step < 14) {
++		volatile int never = 0;
++		(void)wifi_wait(&never, 3000, "listening");
++		return;
++	}
++	wmi_init();
+ }
+ 
+ /*
+-- 
+2.43.0
+
