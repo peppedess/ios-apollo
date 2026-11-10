@@ -1,0 +1,349 @@
+From dcb916c52746803e6b0090085cce46437f965e8e Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 11 Nov 2026 00:43:49 +0100
+Subject: [PATCH] apollo pcie: Wi-Fi phase 4a, wlan_cfg/wlan_mode, CE SRNG
+ rings (CE0/3 out, CE1/2/5 in), HTC ready + connect WMI/HTT + setup complete
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01VzhH6pxBJ4naMiihKoMfcq
+---
+ bsd/dev/apollo_pcie.c | 315 +++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 311 insertions(+), 4 deletions(-)
+
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index d1eaa50..c9e506b 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -912,6 +912,312 @@ wlfw_wait(volatile int *flag, int timeout_ms, const char *what)
+ 	return -1;
+ }
+ 
++/*
++ * Wi-Fi phase 4a: firmware start and the copy engines, after ath11k (core.c ath11k_core_qmi_firmware_ready, ce.c,
++ * hal.c with qca6390_regs, htc.c), without shadow registers (as ath11k before 5.11 ran the QCA6390): QMI wlan_cfg
++ * 0x23 (target CE pipes + service map of hw.c) and wlan_mode 0x22 (mission); SRNG rings for CE0 (host->target HTC
++ * control, 16 entries), CE3 (host->target WMI, 32), CE1/CE2/CE5 (target->host: buffer ring + status ring, 32
++ * entries, 31 x 2 KiB buffers each); the firmware's HTC READY, then HTC connect of WMI control and HTT, setup
++ * complete, and everything that arrives afterwards (the WMI service-ready events) logged. Polled.
++ *   SRC ring R0 (base B): +0 base lsb, +4 msb | words << 8, +8 entry words, +0x10 misc (bit 6 enable, bit 1
++ *   no loop count), +0x1c/+0x20 address where the hardware publishes its tail, +0x30/+0x34 interrupt setup;
++ *   R2 = B + 0x400: head (ours), +4 tail. DST (status) ring R0 = CE dst base + 0x58: +8 ring id << 8 | entry
++ *   words, +0x14/+0x18 address of its head, +0x24 interrupt setup; R2 = dst base + 0x408: head, +4 tail (ours).
++ *   CE n: src 0xa00000 + n * 0x2000, dst 0xa01000 + n * 0x2000; DEST_CTRL (dst + 0xb0) bits 15:0 = buffer size.
++ */
++#define CE_BLOCK        0x40000u
++#define CE_RDP          0x0000u
++#define CE_TXBUF        0x2000u         /* 8 x 2 KiB */
++#define CE_RXBUF        0x8000u         /* 3 pipes x 31 x 2 KiB, 0x10000 apart */
++static vm_offset_t g_cva;
++static uint64_t g_cpa;
++struct ce_src {
++	uint32_t n, ring, r0, r2, id, hp;
++};
++struct ce_dst {
++	uint32_t pipe, ring, st, r0, r2, sr0, sr2, id, sid, hp, stp, buf;
++	uint32_t slot[32];
++};
++static struct ce_src g_ce0 = { 16, 0x0400, 0xa00000, 0xa00400, 32, 0 };
++static struct ce_src g_ce3 = { 32, 0x0800, 0xa06000, 0xa06400, 35, 0 };
++static struct ce_dst g_cer[3] = {
++	{ 1, 0x1000, 0x1200, 0xa03000, 0xa03400, 0xa03058, 0xa03408, 57, 81, 0, 0, CE_RXBUF },
++	{ 2, 0x1400, 0x1600, 0xa05000, 0xa05400, 0xa05058, 0xa05408, 58, 82, 0, 0, CE_RXBUF + 0x10000 },
++	{ 5, 0x1800, 0x1a00, 0xa0b000, 0xa0b400, 0xa0b058, 0xa0b408, 61, 85, 0, 0, CE_RXBUF + 0x20000 },
++};
++static uint32_t g_txn_buf;
++static struct {
++	volatile int ready, resp;
++	uint32_t credits, credit_size, resp_svc, resp_status, resp_eid;
++} g_htc;
++
++static uint32_t
++c_r32(uint32_t off)
++{
++	return *(volatile uint32_t *)(g_cva + off);
++}
++
++static void
++c_w32(uint32_t off, uint32_t v)
++{
++	*(volatile uint32_t *)(g_cva + off) = v;
++}
++
++static void
++ce_src_init(struct ce_src *c)
++{
++	uint64_t pa = g_cpa + c->ring, tp = g_cpa + CE_RDP + 4 * c->id;
++	win_wr(c->r0 + 0x00, (uint32_t)pa);
++	win_wr(c->r0 + 0x04, (uint32_t)(pa >> 32) | (4u * c->n) << 8);
++	win_wr(c->r0 + 0x08, 4);
++	win_wr(c->r0 + 0x30, 4);                                         /* batch 1 entry, no timer */
++	win_wr(c->r0 + 0x34, 0);
++	win_wr(c->r0 + 0x1c, (uint32_t)tp);
++	win_wr(c->r0 + 0x20, (uint32_t)(tp >> 32));
++	win_wr(c->r2 + 0, 0);
++	win_wr(c->r2 + 4, 0);
++	c_w32(CE_RDP + 4 * c->id, 0);
++	win_wr(c->r0 + 0x10, (1u << 1) | (1u << 6));
++	c->hp = 0;
++}
++
++static void
++ce_dst_init(struct ce_dst *c)
++{
++	uint64_t pa = g_cpa + c->ring, tp = g_cpa + CE_RDP + 4 * c->id;
++	/* the buffer ring: a source ring of 2-word entries */
++	win_wr(c->r0 + 0x00, (uint32_t)pa);
++	win_wr(c->r0 + 0x04, (uint32_t)(pa >> 32) | (2u * 32u) << 8);
++	win_wr(c->r0 + 0x08, 2);
++	win_wr(c->r0 + 0x30, 0);
++	win_wr(c->r0 + 0x34, 0);
++	win_wr(c->r0 + 0x1c, (uint32_t)tp);
++	win_wr(c->r0 + 0x20, (uint32_t)(tp >> 32));
++	win_wr(c->r2 + 0, 0);
++	win_wr(c->r2 + 4, 0);
++	c_w32(CE_RDP + 4 * c->id, 0);
++	win_wr(c->r0 + 0x10, (1u << 1) | (1u << 6));
++	win_wr(c->r0 + 0xb0, (win_rd(c->r0 + 0xb0) & ~0xffffu) | 2048u);
++	/* the status ring: a destination ring of 4-word entries */
++	pa = g_cpa + c->st;
++	uint64_t hp = g_cpa + CE_RDP + 4 * c->sid;
++	win_wr(c->sr0 + 0x00, (uint32_t)pa);
++	win_wr(c->sr0 + 0x04, (uint32_t)(pa >> 32) | (4u * 32u) << 8);
++	win_wr(c->sr0 + 0x08, c->sid << 8 | 4u);
++	win_wr(c->sr0 + 0x24, 4);                                        /* batch 1 entry */
++	win_wr(c->sr0 + 0x14, (uint32_t)hp);
++	win_wr(c->sr0 + 0x18, (uint32_t)(hp >> 32));
++	win_wr(c->sr2 + 0, 0);
++	win_wr(c->sr2 + 4, 0);
++	c_w32(CE_RDP + 4 * c->sid, 0);
++	win_wr(c->sr0 + 0x10, 1u << 6);
++	/* 31 buffers */
++	for (uint32_t i = 0; i < 31; i++) {
++		uint64_t b = g_cpa + c->buf + i * 0x800u;
++		c->slot[i] = c->buf + i * 0x800u;
++		c_w32(c->ring + 8 * i, (uint32_t)b);
++		c_w32(c->ring + 8 * i + 4, (uint32_t)(b >> 32) & 0xffu);
++	}
++	__asm__ volatile ("dsb sy" ::: "memory");
++	c->hp = 31 * 2;
++	c->stp = 0;
++	win_wr(c->r2 + 0, c->hp);
++}
++
++static void
++ce_send(struct ce_src *c, const uint8_t *data, uint32_t len)
++{
++	uint32_t buf = CE_TXBUF + (g_txn_buf++ & 7u) * 0x800u;
++	uint64_t pa = g_cpa + buf;
++	for (uint32_t i = 0; i < len; i += 4) {
++		uint32_t w = 0;
++		memcpy(&w, data + i, len - i < 4 ? len - i : 4);
++		c_w32(buf + i, w);
++	}
++	uint32_t d = c->ring + 4 * c->hp;
++	c_w32(d + 0, (uint32_t)pa);
++	c_w32(d + 4, ((uint32_t)(pa >> 32) & 0xffu) | len << 16);
++	c_w32(d + 8, g_txn_buf & 0xffffu);
++	c_w32(d + 12, 0);
++	__asm__ volatile ("dsb sy" ::: "memory");
++	c->hp = (c->hp + 4) % (4 * c->n);
++	win_wr(c->r2 + 0, c->hp);
++}
++
++static void
++htc_send(struct ce_src *c, uint32_t eid, const uint8_t *payload, uint32_t len)
++{
++	static uint8_t f[512];
++	uint32_t h = eid | len << 16;
++	memset(f, 0, 8);
++	memcpy(f, &h, 4);
++	memcpy(f + 8, payload, len);
++	ce_send(c, f, 8 + len);
++}
++
++static void
++htc_rx(uint32_t pipe, const uint8_t *p, uint32_t n)
++{
++	uint32_t h = 0, m0 = 0, m1 = 0;
++	if (n < 8) {
++		return;
++	}
++	memcpy(&h, p, 4);
++	uint32_t eid = h & 0xffu, flags = (h >> 8) & 0xffu, len = h >> 16;
++	if (n >= 12) {
++		memcpy(&m0, p + 8, 4);
++	}
++	if (n >= 16) {
++		memcpy(&m1, p + 12, 4);
++	}
++	printf("SWEET CE%u: rx %u bytes: HTC ep %u flags %#x len %u | %08x %08x", pipe, n, eid, flags, len, m0, m1);
++	for (uint32_t i = 16; i < n && i < 48; i++) {
++		printf("%s%02x", (i & 3) ? "" : " ", p[i]);
++	}
++	printf("\n");
++	if (eid != 0) {
++		return;
++	}
++	uint32_t id = m0 & 0xffffu;
++	if (id == 1) {                                                  /* READY */
++		g_htc.credits = m0 >> 16;
++		g_htc.credit_size = m1 & 0xffffu;
++		printf("SWEET HTC: READY: %u credits of %u bytes, %u endpoints\n", g_htc.credits, g_htc.credit_size,
++		    (m1 >> 16) & 0xffu);
++		g_htc.ready = 1;
++	} else if (id == 3) {                                           /* CONNECT_SERVICE_RESP */
++		g_htc.resp_svc = m0 >> 16;
++		g_htc.resp_status = m1 & 0xffu;
++		g_htc.resp_eid = (m1 >> 8) & 0xffu;
++		printf("SWEET HTC: service %#x: status %u endpoint %u max message %u\n", g_htc.resp_svc, g_htc.resp_status,
++		    g_htc.resp_eid, m1 >> 16);
++		g_htc.resp = 1;
++	}
++}
++
++static void
++ce_poll(void)
++{
++	for (unsigned k = 0; k < 3; k++) {
++		struct ce_dst *c = &g_cer[k];
++		uint32_t hp = c_r32(CE_RDP + 4 * c->sid), guard = 0;
++		while (c->stp != hp && hp < 4 * 32 && guard++ < 32) {
++			static uint8_t pkt[2048];
++			uint32_t idx = c->stp / 4, len = c_r32(c->st + 4 * c->stp) >> 16, buf = c->slot[idx];
++			if (len > sizeof(pkt)) {
++				len = sizeof(pkt);
++			}
++			for (uint32_t i = 0; i < len; i += 4) {
++				uint32_t w = c_r32(buf + i);
++				memcpy(pkt + i, &w, len - i < 4 ? len - i : 4);
++			}
++			htc_rx(c->pipe, pkt, len);
++			c->stp = (c->stp + 4) % (4 * 32);
++			win_wr(c->sr2 + 4, c->stp);
++			/* the buffer goes back at the head of the buffer ring */
++			uint32_t h = c->hp / 2;
++			uint64_t b = g_cpa + buf;
++			c->slot[h] = buf;
++			c_w32(c->ring + 8 * h, (uint32_t)b);
++			c_w32(c->ring + 8 * h + 4, (uint32_t)(b >> 32) & 0xffu);
++			__asm__ volatile ("dsb sy" ::: "memory");
++			c->hp = (c->hp + 2) % (2 * 32);
++			win_wr(c->r2 + 0, c->hp);
++		}
++	}
++}
++
++static int
++wifi_wait(volatile int *flag, int timeout_ms, const char *what)
++{
++	for (int ms = 0; ms < timeout_ms; ms += 10) {
++		(void)er0_poll();
++		(void)er1_poll();
++		ce_poll();
++		if (*flag) {
++			return 0;
++		}
++		pc_msleep(10);
++	}
++	printf("SWEET HTC: %s: nothing in %d ms (CE status heads %u %u %u, CE0 tail %u)\n", what, timeout_ms,
++	    c_r32(CE_RDP + 4 * 81), c_r32(CE_RDP + 4 * 82), c_r32(CE_RDP + 4 * 85), c_r32(CE_RDP + 4 * 32));
++	return -1;
++}
++
++static int wlfw_req(uint16_t id, const uint8_t *tlv, uint32_t n, const char *what);
++
++static void
++wifi_start(void)
++{
++	if (sweet_gpu_pool_alloc(CE_BLOCK, &g_cpa) != 0 || g_cpa + CE_BLOCK > 0x100000000ull ||
++	    !(g_cva = ml_io_map((vm_offset_t)g_cpa, CE_BLOCK))) {
++		printf("SWEET CE: no memory\n");
++		return;
++	}
++	for (uint32_t o = 0; o < CE_BLOCK; o += 4) {
++		c_w32(o, 0);
++	}
++	/* wlan_cfg: host version "WIN", 9 target pipes, 15 service map entries (hw.c, QCA6390), no shadow registers */
++	static const uint32_t tgt[9][5] = {
++		{ 0, 2, 32, 2048, 0 }, { 1, 1, 32, 2048, 0 }, { 2, 1, 32, 2048, 0 }, { 3, 2, 32, 2048, 0 },
++		{ 4, 2, 256, 256, 8 }, { 5, 1, 32, 2048, 0 }, { 6, 3, 32, 16384, 0 }, { 7, 4, 0, 0, 8 },
++		{ 8, 3, 32, 16384, 0 },
++	};
++	static const uint32_t svc[15][3] = {
++		{ 0x104, 2, 3 }, { 0x104, 1, 2 }, { 0x102, 2, 3 }, { 0x102, 1, 2 }, { 0x101, 2, 3 }, { 0x101, 1, 2 },
++		{ 0x103, 2, 3 }, { 0x103, 1, 2 }, { 0x100, 2, 3 }, { 0x100, 1, 2 }, { 0x001, 2, 0 }, { 0x001, 1, 2 },
++		{ 0x300, 2, 4 }, { 0x300, 1, 1 }, { 0, 0, 0 },
++	};
++	static uint8_t t[512];
++	uint32_t o = 0;
++	t[o++] = 0x10; t[o++] = 3; t[o++] = 0; t[o++] = 'W'; t[o++] = 'I'; t[o++] = 'N';
++	t[o++] = 0x11; t[o++] = (uint8_t)(1 + sizeof(tgt)); t[o++] = 0; t[o++] = 9;
++	memcpy(t + o, tgt, sizeof(tgt)); o += sizeof(tgt);
++	t[o++] = 0x12; t[o++] = (uint8_t)(1 + sizeof(svc)); t[o++] = 0; t[o++] = 15;
++	memcpy(t + o, svc, sizeof(svc)); o += sizeof(svc);
++	if (wlfw_req(0x23, t, o, "wlan_cfg") != 0) {
++		return;
++	}
++	static const uint8_t mode[] = { 0x01, 4, 0, 0, 0, 0, 0,  0x10, 1, 0, 0 };
++	if (wlfw_req(0x22, mode, sizeof(mode), "wlan_mode") != 0) {
++		return;
++	}
++	printf("SWEET WLFW: mission mode on\n");
++
++	win_wr(0x3004, 1);                                              /* ath11k_pci_force_wake */
++	delay(5000);
++	ce_src_init(&g_ce0);
++	ce_src_init(&g_ce3);
++	for (unsigned k = 0; k < 3; k++) {
++		ce_dst_init(&g_cer[k]);
++	}
++	printf("SWEET CE: rings at %#llx: CE0 base %#x misc %#x, CE1 dst base %#x ctrl %#x head %u, status base %#x misc %#x\n",
++	    g_cpa, win_rd(0xa00000), win_rd(0xa00010), win_rd(0xa03000), win_rd(0xa030b0), win_rd(0xa03400),
++	    win_rd(0xa03058), win_rd(0xa03068));
++	if (wifi_wait(&g_htc.ready, 5000, "ready") != 0) {
++		return;
++	}
++	/* connect WMI control (1 credit, as ath11k gives the QCA6390) and HTT (no credit flow), then setup complete */
++	uint32_t m[3];
++	m[0] = 2u | 0x100u << 16; m[1] = 1u << 8;
++	g_htc.resp = 0;
++	htc_send(&g_ce0, 0, (const uint8_t *)m, 8);
++	if (wifi_wait(&g_htc.resp, 3000, "connect WMI") != 0) {
++		return;
++	}
++	m[0] = 2u | 0x300u << 16; m[1] = 0x8;
++	g_htc.resp = 0;
++	htc_send(&g_ce0, 0, (const uint8_t *)m, 8);
++	if (wifi_wait(&g_htc.resp, 3000, "connect HTT") != 0) {
++		return;
++	}
++	m[0] = 5; m[1] = 0; m[2] = 0;
++	htc_send(&g_ce0, 0, (const uint8_t *)m, 12);
++	printf("SWEET HTC: setup complete sent\n");
++	volatile int never = 0;
++	(void)wifi_wait(&never, 5000, "listening after setup");
++}
++
+ /*
+  * Wi-Fi phase 3c (ath11k_qmi_event_load_bdf for the QCA6390: no regdb, ELF board file, no separate cal data):
+  * target capabilities 0x24 (chip, board, SoC ids, firmware version), board data 0x25 in 6144-byte pieces
+@@ -1030,11 +1336,12 @@ wlfw_board(void)
+ 	if (wlfw_req(0x3c, mi, sizeof(mi), "m3_info") != 0) {
+ 		return;
+ 	}
+-	if (wlfw_wait(&g_q.initdone, 10000, "fw_init_done") == 0) {
+-		printf("SWEET WLFW: firmware init done\n");
++	if (wlfw_wait(&g_q.initdone, 10000, "fw_init_done") != 0) {
++		return;
+ 	}
+-	if (wlfw_wait(&g_q.fwready, 10000, "fw_ready") == 0) {
+-		printf("SWEET WLFW: FIRMWARE READY\n");
++	printf("SWEET WLFW: firmware init done\n");
++	if (g_step >= 13) {
++		wifi_start();
+ 	}
+ }
+ 
+-- 
+2.43.0
+
