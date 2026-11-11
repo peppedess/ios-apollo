@@ -1,0 +1,32 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 5f37449..9c52221 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -1864,10 +1864,26 @@ wmi_init(void)
+ 		}
+ 	}
+ 	gdsc_peek("before INIT");
++	/*
++	 * Let the chip sleep again. ath11k writes PCIE_SOC_WAKE_PCIE_LOCAL_REG only in power_down; we have been
++	 * holding it asserted since mission mode, which keeps the chip out of its low-power states. The
++	 * firmware's own sequence at INIT collapses the WCSS power domain (_whal_pmm_wlan_pwr_seq_hwdtim_sleep,
++	 * polling WCSS_CC_WCSS_WLAN1_GDSCR), and a domain the host is holding awake never gets there. Stay off
++	 * the bus while it sequences, then take the wake back for our own register polling.
++	 */
++	uint32_t wake = 0;
++	(void)PE_parse_boot_argn("sweetwake", &wake, sizeof(wake));
+ 	printf("SWEET WMI: INIT (variant %u, %u bytes, %u chains, mask %#x): vdevs %u peers %u tids %u msdu %u frag %u wow %u pdev_id %u\n",
+ 	    var, len, chains, mask, cfg[1], cfg[2], cfg[6], cfg[29], cfg[30], cfg[35], cfg[54]);
++	if (!wake) {
++		win_wr(0x3004, 0);
++	}
+ 	htc_send(&g_ce3, g_htc.wmi_eid, frame, len);
+-	pc_msleep(50);
++	pc_msleep(400);
++	if (!wake) {
++		win_wr(0x3004, 1);
++		delay(5000);
++	}
+ 	gdsc_peek("after INIT");
+ 	printf("SWEET WMI: after INIT: CE3 head %u tail %u (hardware %u), firmware %s\n",
+ 	    win_rd(g_ce3.r2), win_rd(g_ce3.r2 + 4), c_r32(CE_RDP + 4 * g_ce3.id), g_sysfail ? "DEAD" : "alive");

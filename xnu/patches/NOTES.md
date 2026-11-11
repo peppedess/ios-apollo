@@ -134,3 +134,17 @@ already vote. So all five WLAN rails are on and the WCSS still will not power up
 * `gdsc_peek` reads 0xc30004 and its neighbours through the BAR window before and after INIT. The Q6 polls
   0xe0c30004 for PWR_ON and its peripheral window starts at 0xe0000000, so the same register should be
   readable from the host — and then we can see whether SW_COLLAPSE is even clearing.
+
+## 1162-apollo-release-soc-wake.patch
+
+The strings around the assert name the whole power sequence: `_whal_pmm_wlan_pwr_seq_hwdtim_sleep___RAM`,
+`whal_power_enter_lightsleep___RAM`, `WCSS_CC_WCSS_WLAN1_GDSCR/PWR_ON`, `WCSS_CC_WCSS_MAC0_MAC_CBCR/CLK_OFF`
+— and a `ccpm` power manager voting `wcss_cx`/`wcss_mx`. So the step that times out is the firmware taking
+the WCSS power domain through a transition, and the host can block exactly that: we have been holding
+`PCIE_SOC_WAKE_PCIE_LOCAL_REG` (0x3004) asserted ever since mission mode, while ath11k writes it only in
+`ath11k_pci_power_down`. A chip the host is holding awake cannot collapse that domain, and the poll times
+out after the ~95 ms we have been seeing.
+
+Release it before INIT, stay off the bus for 400 ms while the firmware sequences, then take it back for our
+own register polling. `sweetwake=1` restores the old behaviour. The GDSC peek from 1161 is behind
+`sweetgdsc=1` and off: 0xc30004 is not mapped in the host's view and reading it hung the phone.
