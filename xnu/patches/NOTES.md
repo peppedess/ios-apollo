@@ -122,3 +122,15 @@ k13l: `smpf2 lookup matches=0`. The rail is named in apollo's own device tree, a
 resolves it through cmd-db the same way, so either this board really has no PM8009 or we are reading only
 part of the dictionary — "rfclka2", which an sm8250 should have, is missing too, which points at the
 second. `sweetrpmhdump=1` lists every cmd-db header and every resource name with its address.
+
+## 1161-apollo-hpm-and-gdsc-peek.patch
+
+The cmd-db dump settles the rail question: this board has no PM8009 resources at all (no smpf*, no ldof*,
+and no rfclka2 either), and apollo's overlay fragment 132 moves `vdd-wlan-dig` onto pm8150_s6, which we
+already vote. So all five WLAN rails are on and the WCSS still will not power up. Two things:
+
+* The rail votes now set PMIC5 mode 7 (forced PWM) as well as the voltage, the way cnss2's load-current
+  request does. A rail in auto or PFM may not carry the inrush of a power domain coming up.
+* `gdsc_peek` reads 0xc30004 and its neighbours through the BAR window before and after INIT. The Q6 polls
+  0xe0c30004 for PWR_ON and its peripheral window starts at 0xe0000000, so the same register should be
+  readable from the host — and then we can see whether SW_COLLAPSE is even clearing.
