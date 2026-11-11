@@ -163,3 +163,11 @@ leaves both that bit and HOST_CSTATE clear. `sweetnm` sets the field, default 0x
 
 Releasing PCIE_SOC_WAKE around INIT (1162) changed nothing on its own, and forcing the rails into PWM
 (1161) changed nothing either; both stay in.
+
+## 1164-apollo-aspm-l1.patch
+
+nm_modem 0x18 changed nothing, so the sleep clock is not it either. Next: the link. ath11k turns L0s and L1
+off for the firmware download and puts them back in `ath11k_pci_start`, right before WMI, and the comment
+there says leaving ASPM disabled causes "MHI M2 problems" — the low-power path. We never enabled ASPM at
+all, and the firmware dies in a light-sleep sequence. Enable L1 on both ends (endpoint first) and L1.1/1.2
+where both ends offer them, after mission mode and before HTC. `sweetaspm=0` turns it off again.

@@ -1,0 +1,88 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 61403dd..7ea5aa1 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -1963,6 +1963,12 @@ wifi_start(void)
+ 	}
+ 	printf("SWEET WLFW: mission mode on\n");
+ 
++	uint32_t aspm = 1;
++	(void)PE_parse_boot_argn("sweetaspm", &aspm, sizeof(aspm));
++	if (aspm) {
++		aspm_enable();
++	}
++
+ 	win_wr(0x3004, 1);                                              /* ath11k_pci_force_wake */
+ 	delay(5000);
+ 	ce_src_init(&g_ce0);
+@@ -2501,6 +2507,70 @@ msi_enable(void)
+ 	printf("SWEET MHI: no MSI capability\n");
+ }
+ 
++/*
++ * ASPM. ath11k turns L0s and L1 off for the firmware download and puts them back before it starts WMI,
++ * with a comment in ath11k_pci_start about MHI M2 breaking otherwise. We never enabled them at all, and
++ * what kills us is the firmware's light-sleep sequence: a link that cannot leave L0 keeps the chip out of
++ * the low-power states that sequence is waiting for. Enable L1 (and L1.1/L1.2 where the link supports
++ * them) on both ends, endpoint first, as the spec requires.
++ */
++static void
++aspm_enable(void)
++{
++	uint32_t ecap = 0, rcap = 0;
++	uint32_t cap = rd(g_cfg, 0x34) & 0xfcu;
++	for (int n = 0; cap && n < 48; n++) {
++		uint32_t h = rd(g_cfg, cap);
++		if ((h & 0xffu) == 0x10u) {
++			ecap = cap;
++			break;
++		}
++		cap = (h >> 8) & 0xfcu;
++	}
++	cap = rd(g_dbi, 0x34) & 0xfcu;
++	for (int n = 0; cap && n < 48; n++) {
++		uint32_t h = rd(g_dbi, cap);
++		if ((h & 0xffu) == 0x10u) {
++			rcap = cap;
++			break;
++		}
++		cap = (h >> 8) & 0xfcu;
++	}
++	if (!ecap || !rcap) {
++		printf("SWEET PCIE: no PCIe capability (endpoint %#x, root %#x)\n", ecap, rcap);
++		return;
++	}
++	/* L1 substates live in an extended capability (id 0x1e); enable 1.1 and 1.2 only if both ends offer them */
++	uint32_t eoff = 0x100, el1ss = 0, rl1ss = 0;
++	for (int n = 0; eoff && n < 64; n++) {
++		uint32_t h = rd(g_cfg, eoff);
++		if ((h & 0xffffu) == 0x001eu) {
++			el1ss = eoff;
++			break;
++		}
++		eoff = h >> 20;
++	}
++	uint32_t roff = 0x100;
++	for (int n = 0; roff && n < 64; n++) {
++		uint32_t h = rd(g_dbi, roff);
++		if ((h & 0xffffu) == 0x001eu) {
++			rl1ss = roff;
++			break;
++		}
++		roff = h >> 20;
++	}
++	if (el1ss && rl1ss) {
++		uint32_t both = rd(g_cfg, el1ss + 4) & rd(g_dbi, rl1ss + 4) & 0xfu;
++		wr(g_cfg, el1ss + 8, (rd(g_cfg, el1ss + 8) & ~0xfu) | both);
++		wr(g_dbi, rl1ss + 8, (rd(g_dbi, rl1ss + 8) & ~0xfu) | both);
++		printf("SWEET PCIE: L1 substates %#x enabled\n", both);
++	}
++	wr(g_cfg, ecap + 0x10, (rd(g_cfg, ecap + 0x10) & ~3u) | 2u);
++	wr(g_dbi, rcap + 0x10, (rd(g_dbi, rcap + 0x10) & ~3u) | 2u);
++	printf("SWEET PCIE: ASPM L1 on: endpoint link control %#x, root %#x\n",
++	    rd(g_cfg, ecap + 0x10) & 0xffffu, rd(g_dbi, rcap + 0x10) & 0xffffu);
++}
++
+ static void
+ bhi_load_sbl(uint32_t bhi)
+ {
