@@ -1,0 +1,37 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index cb77ba8..7148c23 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -138,6 +138,21 @@ vote_ldo(const char *res, unsigned mv)
+ 	return e;
+ }
+ 
++/*
++ * RPMh clock buffers (clk-rpmh.c: a VRM clock is enabled by writing 1 at the resource's enable offset).
++ * The qca6390-pmu binding takes RPMH_RF_CLK2 as its "xo": the chip's digital side runs off the PCIe
++ * reference clock we gate on in GCC, but the radio needs this one, which is why everything worked until
++ * the firmware tried to bring the PHY up at WMI_INIT.
++ */
++static int
++vote_clk(const char *res)
++{
++	const uint32_t o[1] = { 4 }, v[1] = { 1 };
++	int e = sweet_rpmh_write(res, 1, o, v);
++	printf("SWEET PCIE: rpmh clock %s -> %d\n", res, e);
++	return e;
++}
++
+ static int
+ vote_smps(const char *res, unsigned mv)
+ {
+@@ -2617,6 +2632,10 @@ pcie_main(void *arg __unused, wait_result_t w __unused)
+ 	/* apollo dtbo fragment 125: vdd-wlan-dig is pm8150 S6 at 0.95 V, not PM8009 S2 (absent from cmd-db) */
+ 	vote_smps("smpa5", 1900);
+ 	vote_smps("smpc8", 1352);
++	vote_clk("rfclka2");                            /* RPMH_RF_CLK2: the QCA6390 PMU's "xo" */
++	vote_clk("rfclka1");
++	vote_clk("rfclka3");
++	vote_clk("lnbclka2");
+ 	gpio_out(GPIO_PERST, 0);
+ 	pc_msleep(10);
+ 	gpio_out(GPIO_WLAN_EN, 1);

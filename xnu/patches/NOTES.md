@@ -61,3 +61,14 @@ and hardware tail all read 4, so the descriptor was consumed. INIT itself is wha
 bisects the message — 1 sends the INIT command TLV alone (36 bytes, no resource config, no chunk array),
 which answers whether merely dispatching WMI_INIT is fatal; 2 sends the whole frame padded to the 336 bytes
 ath11k sends; 3 leaves off the chunk array.
+
+## 1156-apollo-rf-clock.patch
+
+k13h is the answer: WMI_INIT with nothing but its 32-byte command TLV — no resource config, no chunk array —
+kills the firmware the same way, 95 ms later. The message is irrelevant; what fails is what the firmware
+does when it gets it, which is bring the radio up. Everything before that is digital and works.
+
+The QCA6390 PMU takes RPMH_RF_CLK2 as its "xo" (the `qcom,qca6390-pmu` binding), a 38.4 MHz buffer from the
+PMIC that the SoC's PCIe reference clock does not replace: the digital side boots without it and the RF PLL
+never locks. Vote it, and its neighbours, before WLAN_EN. An RPMh VRM clock is enabled by writing 1 at the
+resource's enable offset, the same offset the regulator votes use.
