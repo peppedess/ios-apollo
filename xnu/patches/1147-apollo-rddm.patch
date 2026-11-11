@@ -1,0 +1,103 @@
+From b18b86d701706de4a0e49f429dda4be7e7fee263 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 11 Nov 2026 10:41:01 +0100
+Subject: [PATCH] apollo pcie: download the RDDM RAM dump on a firmware assert
+ and print the text in it
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01VzhH6pxBJ4naMiihKoMfcq
+---
+ bsd/dev/apollo_pcie.c | 72 +++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 72 insertions(+)
+
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 8af7d04..20f4ff7 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -744,11 +744,83 @@ static struct {
+ } g_seg[4];
+ static unsigned g_nseg;
+ 
++/*
++ * The QCA6390 answers a firmware assert by entering RDDM (execution environment 3) with a RAM dump ready. Linux
++ * (mhi_download_rddm_image) hands it a BHIe receive vector and the device writes the dump into it; the Q6's
++ * crash reason is plain text inside. Same registers as the transmit side, 0x60/0x68/0x70/0x78 off the BHIe base.
++ */
++#define RDDM_SIZE       0x100000u
++static void
++wlan_rddm(void)
++{
++	uint32_t bhie = rd(g_bar, 0x2c);
++	uint64_t pa = 0;
++	if (bhie >= 0x1000u || sweet_gpu_pool_alloc(RDDM_SIZE + 0x1000u, &pa) != 0 ||
++	    pa + RDDM_SIZE + 0x1000u > 0x100000000ull) {
++		printf("SWEET MHI: no memory for the RAM dump\n");
++		return;
++	}
++	vm_offset_t va = ml_io_map((vm_offset_t)pa, RDDM_SIZE + 0x1000u);
++	if (!va) {
++		return;
++	}
++	for (uint32_t o = 0; o < RDDM_SIZE + 0x1000u; o += 4) {
++		*(volatile uint32_t *)(va + o) = 0;
++	}
++	/* one vector entry at the end: {address, size} of the dump area */
++	uint64_t vec = pa + RDDM_SIZE;
++	*(volatile uint64_t *)(va + RDDM_SIZE) = pa;
++	*(volatile uint64_t *)(va + RDDM_SIZE + 8) = RDDM_SIZE;
++	__asm__ volatile ("dsb sy" ::: "memory");
++	wr(g_bar, bhie + 0x64, (uint32_t)(vec >> 32));
++	wr(g_bar, bhie + 0x60, (uint32_t)vec);
++	wr(g_bar, bhie + 0x68, 16);
++	uint32_t seq = ((uint32_t)mach_absolute_time() & 0x3fffffffu) | 1u;
++	wr(g_bar, bhie + 0x70, (rd(g_bar, bhie + 0x70) & ~0x3fffffffu) | seq);
++	uint32_t st = 0;
++	int ms;
++	for (ms = 0; ms < 5000; ms += 20) {
++		st = rd(g_bar, bhie + 0x78);
++		if ((st >> 30) == 2u || (st >> 30) == 3u) {
++			break;
++		}
++		pc_msleep(20);
++	}
++	printf("SWEET MHI: RAM dump %s after %d ms (status %#x)\n", (st >> 30) == 2u ? "received" : "not received", ms, st);
++	if ((st >> 30) != 2u) {
++		return;
++	}
++	unsigned shown = 0, n = 0;
++	char run[128];
++	for (uint32_t o = 0; o < RDDM_SIZE && shown < 24; o++) {
++		uint8_t ch = *(volatile uint8_t *)(va + o);
++		if (ch >= 0x20 && ch < 0x7f) {
++			if (n < sizeof(run) - 1) {
++				run[n++] = (char)ch;
++			}
++			continue;
++		}
++		if (n >= 10) {
++			run[n] = 0;
++			printf("SWEET MHI: dump + %#x: \"%s\"\n", o - n, run);
++			shown++;
++		}
++		n = 0;
++	}
++	if (!shown) {
++		printf("SWEET MHI: no text in the dump (first words %08x %08x %08x %08x)\n", *(volatile uint32_t *)va,
++		    *(volatile uint32_t *)(va + 4), *(volatile uint32_t *)(va + 8), *(volatile uint32_t *)(va + 12));
++	}
++}
++
+ static void
+ wlan_crash_dump(void)
+ {
+ 	printf("SWEET MHI: crash state: ee %u mhistatus %#x bhi status %#x err %#x\n", rd(g_bar, 0x100 + 0x28),
+ 	    rd(g_bar, 0x48), rd(g_bar, 0x100 + 0x2c), rd(g_bar, 0x100 + 0x30));
++	if (rd(g_bar, 0x100 + 0x28) == 3u) {
++		wlan_rddm();
++	}
+ 	for (unsigned k = 0; k < g_nseg; k++) {
+ 		if (!g_seg[k].va) {
+ 			continue;
+-- 
+2.43.0
+
