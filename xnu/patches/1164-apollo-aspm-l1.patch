@@ -1,11 +1,12 @@
 diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
-index 61403dd..7ea5aa1 100644
+index 61403dd..9cb74fd 100644
 --- a/bsd/dev/apollo_pcie.c
 +++ b/bsd/dev/apollo_pcie.c
-@@ -1963,6 +1963,12 @@ wifi_start(void)
+@@ -1963,6 +1963,13 @@ wifi_start(void)
  	}
  	printf("SWEET WLFW: mission mode on\n");
  
++	static void aspm_enable(void);
 +	uint32_t aspm = 1;
 +	(void)PE_parse_boot_argn("sweetaspm", &aspm, sizeof(aspm));
 +	if (aspm) {
@@ -15,7 +16,7 @@ index 61403dd..7ea5aa1 100644
  	win_wr(0x3004, 1);                                              /* ath11k_pci_force_wake */
  	delay(5000);
  	ce_src_init(&g_ce0);
-@@ -2501,6 +2507,70 @@ msi_enable(void)
+@@ -2501,6 +2508,70 @@ msi_enable(void)
  	printf("SWEET MHI: no MSI capability\n");
  }
  
