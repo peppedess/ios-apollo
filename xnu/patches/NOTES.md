@@ -100,3 +100,18 @@ Round each segment up to its own power of two.
 
 The RAM dump is behind `sweetrddm=1` now: pulling it over BHIe has ended the log, and twice panicked the
 kernel, in every run since the firmware started crashing this way.
+
+## 1159-apollo-wlan-dig-rail.patch
+
+The assert is readable after all. Exactly one place in amss20.bin loads the immediate 502 (`r0 = #502` at
+0x156bfb4, in the segment at 0x14fa000), and disassembling around it with llvm-mc's Hexagon backend shows a
+register poll helper being called with a mask of 0x80000000 on 0xe0c30004 and, as its name argument, the
+string at 0x15a4a32: **"WCSS_CC_WCSS_WLAN1_GDSCR/PWR_ON"**, inside a routine whose own name string sits
+right before it, `_whal_pmm_wlan_pwr_seq_hwdtim_sleep___RAM`. The helper returns -1 and the next packet is
+the assert. So WMI_INIT is where the firmware powers up the WCSS, and its GDSC never reports PWR_ON.
+
+apollo's `qcom,cnss-qca6390@b0000000` node names the rails: vdd-wlan-aon pm8150_s6, **vdd-wlan-dig
+pm8009_s2 ("smpf2")**, vdd-wlan-io pm8150_s4, vdd-wlan-rfa1 pm8150_s5 (1.9 V), vdd-wlan-rfa2 pm8150a_s8
+(1.35 V). We had read an earlier dtbo as saying the digital rail was S6 and never turned PM8009 S2 on. The
+always-on domain runs without it, which is why everything up to and including the firmware's QMI and WMI
+handshakes worked; the WCSS core does not.

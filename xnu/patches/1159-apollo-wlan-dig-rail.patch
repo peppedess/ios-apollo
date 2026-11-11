@@ -1,0 +1,22 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index e222e2d..5d2782e 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2672,7 +2672,16 @@ pcie_main(void *arg __unused, wait_result_t w __unused)
+ 	vote_ldo("ldoa9", 1200);
+ 	vote_smps("smpa4", 1800);
+ 	vote_smps("smpa6", 950);
+-	/* apollo dtbo fragment 125: vdd-wlan-dig is pm8150 S6 at 0.95 V, not PM8009 S2 (absent from cmd-db) */
++	/*
++	 * apollo's own qcom,cnss-qca6390 node names its rails: vdd-wlan-aon pm8150_s6 (0.95 V), vdd-wlan-dig
++	 * pm8009_s2 = "smpf2" (0.95 V), vdd-wlan-io pm8150_s4 (1.8), vdd-wlan-rfa1 pm8150_s5 (1.9),
++	 * vdd-wlan-rfa2 pm8150a_s8 (1.35). We had been treating S6 as both aon and dig and never turning
++	 * PM8009 S2 on, which leaves the chip's WCSS core unpowered: everything in the always-on domain works,
++	 * and the firmware dies at WMI_INIT polling WCSS_CC_WCSS_WLAN1_GDSCR for PWR_ON — which is exactly
++	 * what the assert at cmnos_thread.c line 502 turned out to be, once the one site in the image that
++	 * loads 502 was disassembled.
++	 */
++	vote_smps("smpf2", 950);
+ 	vote_smps("smpa5", 1900);
+ 	vote_smps("smpc8", 1352);
+ 	vote_clk("rfclka2");                            /* RPMH_RF_CLK2: the QCA6390 PMU's "xo" */
