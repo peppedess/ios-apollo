@@ -13,3 +13,23 @@ the full one — `cmnos_thread.c`, `Asserted in:0x1503340:0x1530258, line#502` �
 * HTC header: `NEED_CREDIT_UPDATE` on the credit-controlled WMI endpoint and the per-endpoint sequence
   number in the second word, as `ath11k_htc_prepare_tx_skb` writes them.
 * The crash record is now dumped as words around the `Asserted in:` string, not only as text.
+
+## 1152-apollo-dp-rings.patch
+
+k13d settled the question the idle probe was built for: the firmware sits happily for 15 s after the
+service-ready events and dies 95 ms after WMI_INIT, with the same `cmnos_thread.c` line 502 assert for every
+resource config. So the message is not what it is missing — the host's data path is. ath11k builds the whole
+HAL ring set (`ath11k_dp_alloc`, then `ath11k_dp_pdev_reo_setup`) *before* `ath11k_wmi_cmd_init`, and at INIT
+the firmware brings up its own data path on top of it.
+
+`sweetdp=1` builds that set, after ath11k with the QCA6390 register map:
+
+* a 3 MiB ring block and a 4 MiB bank of 32768 128-byte link descriptors from the GPU pool, plus the
+  head/tail array the hardware writes (`hal->rdp`), indexed by ring id;
+* the WBM idle link ring (32767 entries) filled with every link descriptor — no scatter list is needed at
+  this size — and its head rung;
+* `wbm_rel`, `tcl_cmd`, `tcl_status`, `tcl_data0` (its entries pre-filled with empty TCL_DATA_CMD TLVs),
+  `tx_comp0`, `reo_reinject`, `rx_rel`, `reo_except`, `reo_cmd` (entries numbered), `reo_status`;
+* `ath11k_hw_ipq8074_reo_setup` (fragments to REO2SW1, aging on, the hash-to-ring map in all four
+  DEST_RING_CTRL registers) and the 48 DSCP-to-TID tables;
+* the four REO destination rings last, as `ath11k_dp_pdev_reo_setup` does.

@@ -1,0 +1,321 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index ad28e1a..2193845 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -828,6 +828,19 @@ wlan_rddm(void)
+ 			}
+ 			ctx[192] = 0;
+ 			printf("SWEET MHI: assert %u at %u+%#x: %s\n", hits, i, o, ctx);
++			/*
++			 * The crash record around the "Asserted in:" string holds the faulting thread's name and
++			 * its registers; print the words so the next run can be read without guessing.
++			 */
++			for (unsigned r = 0; r < (hits < 2 ? 8u : 0u); r++) {
++				uint32_t base = (start > 128 ? start - 128 : 0) + r * 32;
++				uint32_t v[8];
++				for (unsigned j = 0; j < 8; j++) {
++					v[j] = *(volatile uint32_t *)(g_rddm[i] + base + j * 4);
++				}
++				printf("SWEET MHI:   %#07x: %08x %08x %08x %08x %08x %08x %08x %08x\n",
++				    base, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]);
++			}
+ 			hits++;
+ 			o += 160;
+ 		}
+@@ -1217,9 +1230,18 @@ static void
+ htc_send(struct ce_src *c, uint32_t eid, const uint8_t *payload, uint32_t len)
+ {
+ 	static uint8_t f[512];
+-	uint32_t h = eid | len << 16;
++	static uint8_t seq[8];
++	/*
++	 * ath11k_htc_prepare_tx_skb: endpoint 7:0, flags 15:8 (NEED_CREDIT_UPDATE on the credit-controlled WMI
++	 * endpoint, which is how the firmware knows to report credits back), payload length 31:16; the second
++	 * word carries the endpoint's own sequence number in bits 15:8.
++	 */
++	uint32_t flags = (eid != 0 && eid == (uint32_t)g_htc.wmi_eid) ? 1u : 0u;
++	uint32_t h = eid | flags << 8 | len << 16;
++	uint32_t ctrl = (uint32_t)seq[eid & 7]++ << 8;
+ 	memset(f, 0, 8);
+ 	memcpy(f, &h, 4);
++	memcpy(f + 4, &ctrl, 4);
+ 	memcpy(f + 8, payload, len);
+ 	ce_send(c, f, 8 + len);
+ }
+@@ -1443,6 +1465,219 @@ wifi_scan(void)
+ 	(void)wifi_wait(&never, 2000, "after scan");
+ }
+ 
++/*
++ * Wi-Fi phase 4b: the HAL data-path rings, which ath11k builds (ath11k_dp_alloc, ath11k_dp_pdev_reo_setup)
++ * before it ever sends WMI_INIT, and which we had skipped. k13d showed the firmware sitting happily for 15 s
++ * after the service-ready events and dying 95 ms after INIT with the same assert whatever resource config we
++ * ask for, so what it misses is not in the message: at INIT the firmware brings up its own data path and
++ * expects the WBM idle link list, the TCL/REO/WBM rings and the REO configuration to be there.
++ *
++ * Register layout (hal.c with qca6390_regs): every ring has an R0 block (base lsb +0, base msb +4 with the
++ * ring size in words at bit 8, id +8, misc +0x10 with bit 6 = enable, and then source rings keep the address
++ * the hardware writes their tail to at +0x1c/+0x20 and their interrupt setup at +0x30/+0x34, destination
++ * rings keep the address of their head at +0x14/+0x18 and their interrupt setup at +0x24) and an R2 block
++ * (head +0, tail +4). The head and tail the hardware owns live in one array indexed by ring id (hal->rdp).
++ */
++#define HAL_REO_BASE            0xa38000u
++#define HAL_TCL_BASE            0xa44000u
++#define HAL_WBM_BASE            0xa34000u
++#define DP_RING_BLOCK           0x300000u
++#define DP_LINK_DESCS           32768u
++#define DP_LINK_DESC_SIZE       128u
++#define DP_LINK_BLOCK           (DP_LINK_DESCS * DP_LINK_DESC_SIZE + DP_LINK_DESC_SIZE)
++#define DP_ID_WBM_IDLE          104u
++
++static vm_offset_t g_dva, g_lva, g_rdp_va;
++static uint64_t g_dpa, g_lpa, g_rdp_pa;
++static uint32_t g_doff;
++
++struct dp_ring {
++	const char *name;
++	uint32_t r0, r2, id, entries, esz, src, batch, timer;
++	uint64_t pa;
++	vm_offset_t va;
++};
++
++static int
++dp_alloc(uint32_t bytes, uint32_t align, vm_offset_t *va, uint64_t *pa)
++{
++	uint32_t o = (g_doff + align - 1u) & ~(align - 1u);
++	if (o + bytes > DP_RING_BLOCK) {
++		printf("SWEET DP: out of ring memory at %u + %u\n", o, bytes);
++		return -1;
++	}
++	g_doff = o + bytes;
++	*va = g_dva + o;
++	*pa = g_dpa + o;
++	for (uint32_t i = 0; i < bytes; i += 4) {
++		*(volatile uint32_t *)(*va + i) = 0;
++	}
++	return 0;
++}
++
++static int
++dp_ring_init(struct dp_ring *r)
++{
++	uint32_t words = r->esz * r->entries;
++	if (dp_alloc(words * 4u, 8u, &r->va, &r->pa) != 0) {
++		return -1;
++	}
++	uint64_t ptr = g_rdp_pa + r->id * 4u;
++	*(volatile uint32_t *)(g_rdp_va + r->id * 4u) = 0;
++	win_wr(r->r0 + 0x00, (uint32_t)r->pa);
++	win_wr(r->r0 + 0x04, (uint32_t)((r->pa >> 32) & 0xffu) | (words << 8));
++	if (r->src) {
++		win_wr(r->r0 + 0x08, r->esz);
++		win_wr(r->r0 + 0x30, (r->timer << 16) | (r->batch * r->esz));
++		win_wr(r->r0 + 0x34, 0);
++		if (r->id != DP_ID_WBM_IDLE) {
++			win_wr(r->r0 + 0x1c, (uint32_t)ptr);
++			win_wr(r->r0 + 0x20, (uint32_t)(ptr >> 32));
++		}
++	} else {
++		win_wr(r->r0 + 0x08, (r->id << 8) | r->esz);
++		win_wr(r->r0 + 0x24, ((r->timer >> 3) << 16) | (r->batch * r->esz));
++		win_wr(r->r0 + 0x14, (uint32_t)ptr);
++		win_wr(r->r0 + 0x18, (uint32_t)(ptr >> 32));
++	}
++	win_wr(r->r2 + 0, 0);
++	win_wr(r->r2 + 4, 0);
++	win_wr(r->r0 + 0x10, r->src ? ((1u << 1) | (1u << 6)) : (1u << 6));
++	return 0;
++}
++
++/* ath11k_hw_ipq8074_reo_setup, which the QCA6390 uses too */
++static void
++dp_reo_setup(void)
++{
++	uint32_t map = 1u | 2u << 3 | 3u << 6 | 4u << 9 | 1u << 12 | 2u << 15 | 3u << 18 | 4u << 21;
++	uint32_t v = win_rd(HAL_REO_BASE + 0x00);
++	v &= ~(7u << 23);
++	v |= (0u << 23) | (1u << 2) | (1u << 3);                        /* fragments to REO2SW1, aging on */
++	win_wr(HAL_REO_BASE + 0x00, v);
++	win_wr(HAL_REO_BASE + 0x50c, 40000);
++	win_wr(HAL_REO_BASE + 0x510, 40000);
++	win_wr(HAL_REO_BASE + 0x514, 40000);
++	win_wr(HAL_REO_BASE + 0x518, 40000);
++	for (uint32_t i = 0; i < 4; i++) {
++		win_wr(HAL_REO_BASE + 0x04 + i * 4, map << 8);
++	}
++}
++
++/* ath11k_hal_tx_set_dscp_tid_map: eight DSCP values per TID, three bits each */
++static void
++dp_dscp_map(void)
++{
++	uint8_t tbl[24];
++	uint32_t n = 0;
++	for (uint32_t g = 0; g < 8; g++) {
++		uint32_t v = 0;
++		for (uint32_t k = 0; k < 8; k++) {
++			v |= g << (3 * k);
++		}
++		tbl[n++] = (uint8_t)v;
++		tbl[n++] = (uint8_t)(v >> 8);
++		tbl[n++] = (uint8_t)(v >> 16);
++	}
++	for (uint32_t id = 0; id < 48; id++) {
++		uint32_t ctl = win_rd(HAL_TCL_BASE + 0x14);
++		win_wr(HAL_TCL_BASE + 0x14, ctl | (1u << 17));
++		uint32_t a = HAL_TCL_BASE + 0x2c + id * 24u;
++		for (uint32_t i = 0; i < 24; i += 4) {
++			uint32_t w;
++			memcpy(&w, tbl + i, 4);
++			win_wr(a + i, w);
++		}
++		ctl = win_rd(HAL_TCL_BASE + 0x14);
++		win_wr(HAL_TCL_BASE + 0x14, ctl & ~(1u << 17));
++	}
++}
++
++static void
++wifi_dp(void)
++{
++	if (sweet_gpu_pool_alloc(DP_RING_BLOCK, &g_dpa) != 0 || g_dpa + DP_RING_BLOCK > 0x100000000ull ||
++	    !(g_dva = ml_io_map((vm_offset_t)g_dpa, DP_RING_BLOCK)) ||
++	    sweet_gpu_pool_alloc(DP_LINK_BLOCK, &g_lpa) != 0 || g_lpa + DP_LINK_BLOCK > 0x100000000ull ||
++	    !(g_lva = ml_io_map((vm_offset_t)g_lpa, DP_LINK_BLOCK))) {
++		printf("SWEET DP: no memory\n");
++		return;
++	}
++	for (uint32_t o = 0; o < DP_LINK_BLOCK; o += 4) {
++		*(volatile uint32_t *)(g_lva + o) = 0;
++	}
++	g_doff = 0;
++	if (dp_alloc(0x400, 0x100, &g_rdp_va, &g_rdp_pa) != 0) {
++		return;
++	}
++	printf("SWEET DP: rings at %#llx, link descriptors at %#llx, pointers at %#llx\n", g_dpa, g_lpa, g_rdp_pa);
++
++	struct dp_ring idle = { "wbm_idle", HAL_WBM_BASE + 0x860, HAL_WBM_BASE + 0x30b0, DP_ID_WBM_IDLE,
++		                32767, 2, 1, 1, 256, 0, 0 };
++	if (dp_ring_init(&idle) != 0) {
++		return;
++	}
++	/*
++	 * ath11k_dp_link_desc_setup: hand the WBM every 128-byte link descriptor of one bank, as a source ring
++	 * whose entries are {address low, address high | manager 1 | cookie}. One entry stays free, as the ring
++	 * is full when the head reaches the tail.
++	 */
++	uint64_t desc = (g_lpa + (DP_LINK_DESC_SIZE - 1)) & ~(uint64_t)(DP_LINK_DESC_SIZE - 1);
++	uint32_t filled = 0;
++	for (uint32_t i = 0; i + 1 < idle.entries && i < DP_LINK_DESCS; i++) {
++		volatile uint32_t *e = (volatile uint32_t *)(idle.va + i * 8u);
++		e[0] = (uint32_t)desc;
++		e[1] = (uint32_t)((desc >> 32) & 0xffu) | (1u << 8);
++		desc += DP_LINK_DESC_SIZE;
++		filled++;
++	}
++	__asm__ volatile ("dsb sy" ::: "memory");
++	win_wr(idle.r2 + 0, filled * idle.esz);
++	printf("SWEET DP: idle list: %u link descriptors, head %u\n", filled, win_rd(idle.r2));
++
++	struct dp_ring r[14] = {
++		{ "wbm_rel",     HAL_WBM_BASE + 0x1d8, HAL_WBM_BASE + 0x3018, 105,    64,  8, 1,   1,  256, 0, 0 },
++		{ "tcl_cmd",     HAL_TCL_BASE + 0x78c, HAL_TCL_BASE + 0x2018,  24,    32,  8, 1,   1,  256, 0, 0 },
++		{ "tcl_status",  HAL_TCL_BASE + 0x894, HAL_TCL_BASE + 0x2030,  25,    32,  9, 0,   1,  256, 0, 0 },
++		{ "tcl_data0",   HAL_TCL_BASE + 0x684, HAL_TCL_BASE + 0x2000,  16,   512,  8, 1,   1,  256, 0, 0 },
++		{ "tx_comp0",    HAL_WBM_BASE + 0x910, HAL_WBM_BASE + 0x30c0, 106, 32768,  8, 0, 256, 1000, 0, 0 },
++		{ "reo_reinj",   HAL_REO_BASE + 0x1ec, HAL_REO_BASE + 0x3028,   5,    32,  8, 1,   1,  256, 0, 0 },
++		{ "rx_rel",      HAL_WBM_BASE + 0xa78, HAL_WBM_BASE + 0x30d8, 109,  1024,  8, 0,   1,  256, 0, 0 },
++		{ "reo_except",  HAL_REO_BASE + 0x3a4, HAL_REO_BASE + 0x3050,   4,   128, 16, 0,   1,  256, 0, 0 },
++		{ "reo_cmd",     HAL_REO_BASE + 0x194, HAL_REO_BASE + 0x3020,   8,   256, 10, 1,   1,  256, 0, 0 },
++		{ "reo_status",  HAL_REO_BASE + 0x4ac, HAL_REO_BASE + 0x3068,   9,  2048, 26, 0,   1,  256, 0, 0 },
++		{ "reo_dst0",    HAL_REO_BASE + 0x244, HAL_REO_BASE + 0x3030,   0,  2048, 16, 0, 128,  500, 0, 0 },
++		{ "reo_dst1",    HAL_REO_BASE + 0x29c, HAL_REO_BASE + 0x3038,   1,  2048, 16, 0, 128,  500, 0, 0 },
++		{ "reo_dst2",    HAL_REO_BASE + 0x2f4, HAL_REO_BASE + 0x3040,   2,  2048, 16, 0, 128,  500, 0, 0 },
++		{ "reo_dst3",    HAL_REO_BASE + 0x34c, HAL_REO_BASE + 0x3048,   3,  2048, 16, 0, 128,  500, 0, 0 },
++	};
++	for (unsigned i = 0; i < 14; i++) {
++		if (dp_ring_init(&r[i]) != 0) {
++			return;
++		}
++		if (r[i].id == 16) {
++			/* ath11k_hal_tx_init_data_ring: every entry starts as an empty TCL_DATA_CMD TLV */
++			for (uint32_t k = 0; k < r[i].entries; k++) {
++				*(volatile uint32_t *)(r[i].va + k * r[i].esz * 4u) = (324u << 1) | (28u << 10);
++			}
++		}
++		if (r[i].id == 8) {
++			/* ath11k_hal_reo_init_cmd_ring: every entry carries its command number */
++			for (uint32_t k = 0; k < r[i].entries; k++) {
++				*(volatile uint32_t *)(r[i].va + k * r[i].esz * 4u + 4u) = k + 1;
++			}
++		}
++		if (r[i].id == 9) {
++			dp_reo_setup();
++			dp_dscp_map();
++		}
++	}
++	__asm__ volatile ("dsb sy" ::: "memory");
++	printf("SWEET DP: %u rings up, %u KiB used; REO gen %#x, TCL ctrl %#x, idle misc %#x base %#x\n",
++	    15, g_doff >> 10, win_rd(HAL_REO_BASE), win_rd(HAL_TCL_BASE + 0x14), win_rd(idle.r0 + 0x10),
++	    win_rd(idle.r0));
++}
++
+ #define RC(field, value)        cfg[field] = (value)
+ static void
+ wmi_init(void)
+@@ -1462,13 +1697,30 @@ wmi_init(void)
+ 	 * threads or heap. sweetwmimin=1 asks for the smallest sensible target: one vdev, four peers, no TDLS, no
+ 	 * WoW, no offloads. If it still asserts the same way, the config is not what the firmware is missing.
+ 	 */
++	/*
++	 * k13d: before blaming the INIT message, find out whether the firmware is still alive at all without it.
++	 * sweetwmiidle=<seconds> sits still after the service-ready events, polling the event rings; if SYS_ERR
++	 * arrives anyway the crash has nothing to do with INIT and we are missing something the firmware needs
++	 * from the host (the data-path rings, most likely). If it survives, INIT is the trigger.
++	 */
++	uint32_t idle = 0;
++	(void)PE_parse_boot_argn("sweetwmiidle", &idle, sizeof(idle));
++	if (idle) {
++		volatile int never = 0;
++		printf("SWEET WMI: idling %u s before INIT\n", idle);
++		(void)wifi_wait(&never, (int)idle * 1000, "idle");
++		printf("SWEET WMI: after %u s idle: %s\n", idle, g_sysfail ? "FIRMWARE DEAD" : "firmware alive");
++		if (g_sysfail) {
++			return;
++		}
++	}
+ 	uint32_t minimal = 0;
+ 	(void)PE_parse_boot_argn("sweetwmimin", &minimal, sizeof(minimal));
+ 	if (minimal) {
+ 		RC(1, 1); RC(2, 4); RC(6, 8); RC(7, 16); RC(8, mask); RC(9, mask);
+ 		RC(10, 100); RC(11, 100); RC(12, 100); RC(13, 40);
+ 		RC(14, 1); RC(15, 4); RC(22, 1024); RC(29, 64); RC(30, 6);
+-		RC(33, 1); RC(44, 1u << 5); RC(54, 1); RC(67, 1u << 9);
++		RC(33, 1); RC(44, 1u << 5); RC(54, 1); RC(68, 1u << 9);
+ 		printf("SWEET WMI: INIT minimal (1 vdev, 4 peers, 8 tids)\n");
+ 		htc_send(&g_ce3, g_htc.wmi_eid, (const uint8_t *)msg, sizeof(msg));
+ 		if (wifi_wait(&g_htc.wmi_ready, 10000, "WMI ready") != 0) {
+@@ -1506,7 +1758,7 @@ wmi_init(void)
+ 	RC(35, 0x16);                                                   /* num_wow_filters */
+ 	RC(44, 1u << 5);                                                /* flag1: BSS_CHANNEL_INFO_64 */
+ 	RC(54, 1);                                                      /* use_pdev_id */
+-	RC(67, 1u << 9);                                                /* flags2: CALC_NEXT_DTIM_COUNT_SET */
++	RC(68, 1u << 9);                                                /* flags2: CALC_NEXT_DTIM_COUNT_SET */
+ 	cfg[73] = (0x13u << 16);                                        /* ARRAY_STRUCT, no memory chunks */
+ 	printf("SWEET WMI: INIT (%u bytes, %u chains, mask %#x): vdevs %u peers %u tids %u msdu %u frag %u wow %u pdev_id %u\n",
+ 	    (unsigned)sizeof(msg), chains, mask, cfg[1], cfg[2], cfg[6], cfg[29], cfg[30], cfg[35], cfg[54]);
+@@ -1624,6 +1876,15 @@ wifi_start(void)
+ 		(void)wifi_wait(&never, 3000, "listening");
+ 		return;
+ 	}
++	uint32_t dp = 0;
++	(void)PE_parse_boot_argn("sweetdp", &dp, sizeof(dp));
++	if (dp) {
++		wifi_dp();
++		if (g_sysfail) {
++			printf("SWEET DP: the firmware died while the rings were being built\n");
++			return;
++		}
++	}
+ 	wmi_init();
+ }
+ 
