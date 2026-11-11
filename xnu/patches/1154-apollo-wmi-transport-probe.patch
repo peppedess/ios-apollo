@@ -1,8 +1,6 @@
-diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
-index 2193845..ba12556 100644
 --- a/bsd/dev/apollo_pcie.c
 +++ b/bsd/dev/apollo_pcie.c
-@@ -865,6 +865,10 @@ wlan_rddm(void)
+@@ -865,6 +865,10 @@
  			run_n = 0;
  		}
  	}
@@ -13,32 +11,7 @@ index 2193845..ba12556 100644
  }
  
  static void
-@@ -1412,7 +1416,7 @@ wifi_vdev_create(void)
- 	memcpy(&w[6], g_htc.mac + 4, 2);
- 	w[7] = 2;                                                       /* num_cfg_txrx_streams */
- 	w[8] = 0;                                                       /* pdev_id */
--	w[11] = (0x13u << 16) | 32u;                                    /* ARRAY_STRUCT, two stream configs */
-+	w[11] = (0x12u << 16) | 32u;                                    /* ARRAY_STRUCT, two stream configs */
- 	uint32_t chains = g_htc.rf_chains ? g_htc.rf_chains : 2u;
- 	w[12] = (0x19fu << 16) | 12u; w[13] = 0; w[14] = chains; w[15] = chains;        /* 2.4 GHz */
- 	w[16] = (0x19fu << 16) | 12u; w[17] = 1; w[18] = chains; w[19] = chains;        /* 5 GHz */
-@@ -1451,11 +1455,11 @@ wifi_scan(void)
- 	c[36] = 0;                                                      /* dwell_time_active_2g */
- 	c[37] = 40; c[38] = 30;                                         /* 6 GHz dwell times */
- 	uint32_t *t = c + 40;
--	t[0] = (0x11u << 16);                                           /* ARRAY_UINT32: no channel list */
--	t[1] = (0x14u << 16);                                           /* ARRAY_FIXED_STRUCT: no SSIDs */
--	t[2] = (0x14u << 16) | 8u;                                      /* ARRAY_FIXED_STRUCT: one BSSID */
-+	t[0] = (0x10u << 16);                                           /* ARRAY_UINT32: no channel list */
-+	t[1] = (0x13u << 16);                                           /* ARRAY_FIXED_STRUCT: no SSIDs */
-+	t[2] = (0x13u << 16) | 8u;                                      /* ARRAY_FIXED_STRUCT: one BSSID */
- 	t[3] = 0xffffffffu; t[4] = 0x0000ffffu;                         /* broadcast */
--	t[5] = (0x12u << 16);                                           /* ARRAY_BYTE: no extra IEs */
-+	t[5] = (0x11u << 16);                                           /* ARRAY_BYTE: no extra IEs */
- 	printf("SWEET WMI: scan start (all channels, broadcast probe)\n");
- 	htc_send(&g_ce3, g_htc.wmi_eid, (const uint8_t *)m, 4 * 47);
- 	if (wifi_wait(&g_htc.scan_done, 25000, "scan") == 0) {
-@@ -1714,6 +1718,24 @@ wmi_init(void)
+@@ -1714,6 +1718,24 @@
  			return;
  		}
  	}
@@ -63,12 +36,7 @@ index 2193845..ba12556 100644
  	uint32_t minimal = 0;
  	(void)PE_parse_boot_argn("sweetwmimin", &minimal, sizeof(minimal));
  	if (minimal) {
-@@ -1759,10 +1781,13 @@ wmi_init(void)
- 	RC(44, 1u << 5);                                                /* flag1: BSS_CHANNEL_INFO_64 */
- 	RC(54, 1);                                                      /* use_pdev_id */
- 	RC(68, 1u << 9);                                                /* flags2: CALC_NEXT_DTIM_COUNT_SET */
--	cfg[73] = (0x13u << 16);                                        /* ARRAY_STRUCT, no memory chunks */
-+	cfg[73] = (0x12u << 16);                                        /* ARRAY_STRUCT, no memory chunks */
+@@ -1763,6 +1785,9 @@
  	printf("SWEET WMI: INIT (%u bytes, %u chains, mask %#x): vdevs %u peers %u tids %u msdu %u frag %u wow %u pdev_id %u\n",
  	    (unsigned)sizeof(msg), chains, mask, cfg[1], cfg[2], cfg[6], cfg[29], cfg[30], cfg[35], cfg[54]);
  	htc_send(&g_ce3, g_htc.wmi_eid, msg, sizeof(msg));
@@ -78,12 +46,3 @@ index 2193845..ba12556 100644
  	if (wifi_wait(&g_htc.wmi_ready, 10000, "WMI ready") != 0) {
  		return;
  	}
-@@ -1856,7 +1881,7 @@ wifi_start(void)
- 	}
- 	/* connect WMI control (1 credit, as ath11k gives the QCA6390) and HTT (no credit flow), then setup complete */
- 	uint32_t m[3];
--	m[0] = 2u | 0x100u << 16; m[1] = 1u << 8;
-+	m[0] = 2u | 0x100u << 16; m[1] = 2u << 8;                       /* credits: all of them, as ath11k gives one WMI endpoint */
- 	g_htc.resp = 0;
- 	htc_send(&g_ce0, 0, (const uint8_t *)m, 8);
- 	if (wifi_wait(&g_htc.resp, 3000, "connect WMI") != 0) {
