@@ -264,3 +264,4 @@ k12x (1145): resource config now matches ath11k exactly; still SYS_ERR 98 ms aft
 k12y (1146): crash state ee 3 (RDDM), MHISTATUS 0xff05, BHI status 0xae0cec43 err 9; DDR segment written by the firmware but no ASCII in the first 256 KiB. k12z: 1147 downloads the RDDM dump for the assert text.
 k12z (1147): RDDM download refused with a 1 MiB area (status 0). k13a: 1148 uses the 0x420000 ath11k expects.
 k13a (1148): RDDM dump works. Firmware: QURT kernel, image WLAN.HST.1.0.1.r1-01134 (2022-06-30), board data "J3S_Bring_up_bdf_P1_1_bdf_GoldenBin" present, and the crash record "Asserted in:0x1503340:0x1530258, line#502". k13b: 1149 (context around the assert, all CE pipes).
+k13b (1149): assert record reads "cmnos_thread.c" + "Asserted in:0x1503340:0x1530258, line#502" (firmware thread layer). k13c: 1150 with sweetwmimin=1.
