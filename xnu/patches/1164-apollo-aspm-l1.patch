@@ -1,12 +1,19 @@
 diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
-index 61403dd..9cb74fd 100644
+index 61403dd..e0c43ba 100644
 --- a/bsd/dev/apollo_pcie.c
 +++ b/bsd/dev/apollo_pcie.c
-@@ -1963,6 +1963,13 @@ wifi_start(void)
+@@ -49,6 +49,7 @@ void apollo_pcie_init(void);
+ #define GPIO_WAKE       81u
+ 
+ static vm_offset_t g_parf, g_phy, g_dbi, g_atu, g_cfg;
++static void aspm_enable(void);
+ 
+ static inline uint32_t
+ rd(vm_offset_t b, uint32_t o)
+@@ -1963,6 +1964,12 @@ wifi_start(void)
  	}
  	printf("SWEET WLFW: mission mode on\n");
  
-+	static void aspm_enable(void);
 +	uint32_t aspm = 1;
 +	(void)PE_parse_boot_argn("sweetaspm", &aspm, sizeof(aspm));
 +	if (aspm) {
