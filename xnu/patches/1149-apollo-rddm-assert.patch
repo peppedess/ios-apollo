@@ -1,0 +1,96 @@
+From 3f414aa0c22f652420dbc952d5e5acd6e97e18e6 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 11 Nov 2026 15:44:37 +0100
+Subject: [PATCH] apollo pcie: search the whole RAM dump for the assert record
+ and long text; add the CE4 and CE7 source rings
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01VzhH6pxBJ4naMiihKoMfcq
+---
+ bsd/dev/apollo_pcie.c | 40 ++++++++++++++++++++++++++++++++--------
+ 1 file changed, 32 insertions(+), 8 deletions(-)
+
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index d8d6062..11e3d9e 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -808,10 +808,35 @@ wlan_rddm(void)
+ 	if ((st >> 30) != 2u) {
+ 		return;
+ 	}
++	/* the crash record and the firmware's own last messages: look for "Assert" and print what is around it */
++	static const char key[] = "Assert";
++	unsigned hits = 0;
++	for (unsigned i = 0; i < n && hits < 6; i++) {
++		for (uint32_t o = 0; o + 200 < RDDM_SEG && hits < 6; o++) {
++			unsigned m = 0;
++			while (m < 6 && *(volatile uint8_t *)(g_rddm[i] + o + m) == (uint8_t)key[m]) {
++				m++;
++			}
++			if (m < 6) {
++				continue;
++			}
++			char ctx[193];
++			uint32_t start = o > 64 ? o - 64 : 0;
++			for (unsigned j = 0; j < 192; j++) {
++				uint8_t ch = *(volatile uint8_t *)(g_rddm[i] + start + j);
++				ctx[j] = (ch >= 0x20 && ch < 0x7f) ? (char)ch : '.';
++			}
++			ctx[192] = 0;
++			printf("SWEET MHI: assert %u at %u+%#x: %s\n", hits, i, o, ctx);
++			hits++;
++			o += 160;
++		}
++	}
++	/* then every long text run in every piece, which is where the firmware's last log lines are */
+ 	unsigned shown = 0, run_n = 0;
+ 	char run[160];
+-	for (unsigned i = 0; i < n && shown < 40; i++) {
+-		for (uint32_t o = 0; o < RDDM_SEG && shown < 40; o++) {
++	for (unsigned i = 0; i < n && shown < 90; i++) {
++		for (uint32_t o = 0; o < RDDM_SEG && shown < 90; o++) {
+ 			uint8_t ch = *(volatile uint8_t *)(g_rddm[i] + o);
+ 			if (ch >= 0x20 && ch < 0x7f) {
+ 				if (run_n < sizeof(run) - 1) {
+@@ -819,7 +844,7 @@ wlan_rddm(void)
+ 				}
+ 				continue;
+ 			}
+-			if (run_n >= 16) {
++			if (run_n >= 28) {
+ 				run[run_n] = 0;
+ 				printf("SWEET MHI: dump %u + %#x: \"%s\"\n", i, o - run_n, run);
+ 				shown++;
+@@ -827,11 +852,6 @@ wlan_rddm(void)
+ 			run_n = 0;
+ 		}
+ 	}
+-	if (!shown) {
+-		printf("SWEET MHI: no text in the dump (first words %08x %08x %08x %08x)\n", *(volatile uint32_t *)g_rddm[0],
+-		    *(volatile uint32_t *)(g_rddm[0] + 4), *(volatile uint32_t *)(g_rddm[0] + 8),
+-		    *(volatile uint32_t *)(g_rddm[0] + 12));
+-	}
+ }
+ 
+ static void
+@@ -1081,6 +1101,8 @@ struct ce_dst {
+ };
+ static struct ce_src g_ce0 = { 16, 0x0400, 0xa00000, 0xa00400, 32, 0 };
+ static struct ce_src g_ce3 = { 32, 0x0800, 0xa06000, 0xa06400, 35, 0 };
++static struct ce_src g_ce4 = { 32, 0x0c00, 0xa08000, 0xa08400, 36, 0 };         /* host->target HTT */
++static struct ce_src g_ce7 = { 32, 0x1c00, 0xa0e000, 0xa0e400, 39, 0 };         /* host->target WMI mac1 */
+ static struct ce_dst g_cer[3] = {
+ 	{ 1, 0x1000, 0x1200, 0xa03000, 0xa03400, 0xa03058, 0xa03408, 57, 81, 0, 0, CE_RXBUF },
+ 	{ 2, 0x1400, 0x1600, 0xa05000, 0xa05400, 0xa05058, 0xa05408, 58, 82, 0, 0, CE_RXBUF + 0x10000 },
+@@ -1546,6 +1568,8 @@ wifi_start(void)
+ 	delay(5000);
+ 	ce_src_init(&g_ce0);
+ 	ce_src_init(&g_ce3);
++	ce_src_init(&g_ce4);
++	ce_src_init(&g_ce7);
+ 	for (unsigned k = 0; k < 3; k++) {
+ 		ce_dst_init(&g_cer[k]);
+ 	}
+-- 
+2.43.0
+
