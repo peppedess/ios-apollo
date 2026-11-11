@@ -1,0 +1,130 @@
+From 279f438f4b4f69a168e2609c70fa4c4232b40e9d Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 11 Nov 2026 15:33:45 +0100
+Subject: [PATCH] apollo pcie: RDDM dump area of 0x420000 in nine pieces, scan
+ all of it for text
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01VzhH6pxBJ4naMiihKoMfcq
+---
+ bsd/dev/apollo_pcie.c | 81 +++++++++++++++++++++++++++----------------
+ 1 file changed, 51 insertions(+), 30 deletions(-)
+
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 20f4ff7..d8d6062 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -749,32 +749,50 @@ static unsigned g_nseg;
+  * (mhi_download_rddm_image) hands it a BHIe receive vector and the device writes the dump into it; the Q6's
+  * crash reason is plain text inside. Same registers as the transmit side, 0x60/0x68/0x70/0x78 off the BHIe base.
+  */
+-#define RDDM_SIZE       0x100000u
++/* ath11k gives the QCA6390 a 0x420000-byte dump area, in 512 KiB pieces like the firmware download */
++#define RDDM_SIZE       0x420000u
++#define RDDM_SEG        0x80000u
++#define RDDM_NSEG       9u
++static vm_offset_t g_rddm[RDDM_NSEG];
+ static void
+ wlan_rddm(void)
+ {
+ 	uint32_t bhie = rd(g_bar, 0x2c);
+-	uint64_t pa = 0;
+-	if (bhie >= 0x1000u || sweet_gpu_pool_alloc(RDDM_SIZE + 0x1000u, &pa) != 0 ||
+-	    pa + RDDM_SIZE + 0x1000u > 0x100000000ull) {
+-		printf("SWEET MHI: no memory for the RAM dump\n");
++	uint64_t tab = 0;
++	if (bhie >= 0x1000u || sweet_gpu_pool_alloc(0x1000u, &tab) != 0 || tab + 0x1000u > 0x100000000ull) {
++		printf("SWEET MHI: no memory for the dump vector table\n");
+ 		return;
+ 	}
+-	vm_offset_t va = ml_io_map((vm_offset_t)pa, RDDM_SIZE + 0x1000u);
+-	if (!va) {
++	vm_offset_t tva = ml_io_map((vm_offset_t)tab, 0x1000u);
++	if (!tva) {
+ 		return;
+ 	}
+-	for (uint32_t o = 0; o < RDDM_SIZE + 0x1000u; o += 4) {
+-		*(volatile uint32_t *)(va + o) = 0;
++	unsigned n = 0;
++	for (unsigned i = 0; i < RDDM_NSEG; i++) {
++		uint64_t pa = 0;
++		if (sweet_gpu_pool_alloc(RDDM_SEG, &pa) != 0 || pa + RDDM_SEG > 0x100000000ull) {
++			break;
++		}
++		g_rddm[i] = ml_io_map((vm_offset_t)pa, RDDM_SEG);
++		if (!g_rddm[i]) {
++			break;
++		}
++		for (uint32_t o = 0; o < RDDM_SEG; o += 4) {
++			*(volatile uint32_t *)(g_rddm[i] + o) = 0;
++		}
++		*(volatile uint64_t *)(tva + 16 * i) = pa;
++		*(volatile uint64_t *)(tva + 16 * i + 8) = RDDM_SEG;
++		n++;
++	}
++	printf("SWEET MHI: dump area: %u of %u pieces (%u KiB)\n", n, RDDM_NSEG, n * (RDDM_SEG >> 10));
++	if (n < RDDM_NSEG) {
++		return;
+ 	}
+-	/* one vector entry at the end: {address, size} of the dump area */
+-	uint64_t vec = pa + RDDM_SIZE;
+-	*(volatile uint64_t *)(va + RDDM_SIZE) = pa;
+-	*(volatile uint64_t *)(va + RDDM_SIZE + 8) = RDDM_SIZE;
++	uint64_t vec = tab;
+ 	__asm__ volatile ("dsb sy" ::: "memory");
+ 	wr(g_bar, bhie + 0x64, (uint32_t)(vec >> 32));
+ 	wr(g_bar, bhie + 0x60, (uint32_t)vec);
+-	wr(g_bar, bhie + 0x68, 16);
++	wr(g_bar, bhie + 0x68, n * 16u);
+ 	uint32_t seq = ((uint32_t)mach_absolute_time() & 0x3fffffffu) | 1u;
+ 	wr(g_bar, bhie + 0x70, (rd(g_bar, bhie + 0x70) & ~0x3fffffffu) | seq);
+ 	uint32_t st = 0;
+@@ -790,26 +808,29 @@ wlan_rddm(void)
+ 	if ((st >> 30) != 2u) {
+ 		return;
+ 	}
+-	unsigned shown = 0, n = 0;
+-	char run[128];
+-	for (uint32_t o = 0; o < RDDM_SIZE && shown < 24; o++) {
+-		uint8_t ch = *(volatile uint8_t *)(va + o);
+-		if (ch >= 0x20 && ch < 0x7f) {
+-			if (n < sizeof(run) - 1) {
+-				run[n++] = (char)ch;
++	unsigned shown = 0, run_n = 0;
++	char run[160];
++	for (unsigned i = 0; i < n && shown < 40; i++) {
++		for (uint32_t o = 0; o < RDDM_SEG && shown < 40; o++) {
++			uint8_t ch = *(volatile uint8_t *)(g_rddm[i] + o);
++			if (ch >= 0x20 && ch < 0x7f) {
++				if (run_n < sizeof(run) - 1) {
++					run[run_n++] = (char)ch;
++				}
++				continue;
+ 			}
+-			continue;
+-		}
+-		if (n >= 10) {
+-			run[n] = 0;
+-			printf("SWEET MHI: dump + %#x: \"%s\"\n", o - n, run);
+-			shown++;
++			if (run_n >= 16) {
++				run[run_n] = 0;
++				printf("SWEET MHI: dump %u + %#x: \"%s\"\n", i, o - run_n, run);
++				shown++;
++			}
++			run_n = 0;
+ 		}
+-		n = 0;
+ 	}
+ 	if (!shown) {
+-		printf("SWEET MHI: no text in the dump (first words %08x %08x %08x %08x)\n", *(volatile uint32_t *)va,
+-		    *(volatile uint32_t *)(va + 4), *(volatile uint32_t *)(va + 8), *(volatile uint32_t *)(va + 12));
++		printf("SWEET MHI: no text in the dump (first words %08x %08x %08x %08x)\n", *(volatile uint32_t *)g_rddm[0],
++		    *(volatile uint32_t *)(g_rddm[0] + 4), *(volatile uint32_t *)(g_rddm[0] + 8),
++		    *(volatile uint32_t *)(g_rddm[0] + 12));
+ 	}
+ }
+ 
+-- 
+2.43.0
+
