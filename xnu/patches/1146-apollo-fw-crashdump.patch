@@ -1,0 +1,106 @@
+From 534a2495fd732bcf1c376f1fbda77fc0641da264 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 11 Nov 2026 10:12:20 +0100
+Subject: [PATCH] apollo pcie: on SYS_ERR dump the firmware's DDR segments as
+ text (its assert message) plus EE and BHI state
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01VzhH6pxBJ4naMiihKoMfcq
+---
+ bsd/dev/apollo_pcie.c | 59 +++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 59 insertions(+)
+
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index dd94a44..fa19c3a 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -566,6 +566,7 @@ er0_poll(void)
+ 		}
+ 		if (type == 0x20 && (d0 >> 24) == 0xffu) {
+ 			printf("SWEET MHI: *** SYS_ERR: the QCA6390 firmware crashed ***\n");
++			g_sysfail = 1;
+ 		}
+ 		g_er0_rp = g_er0_rp + 16 >= ER0_RING + 32 * 16 ? ER0_RING : g_er0_rp + 16;
+ 	}
+@@ -734,6 +735,50 @@ qrtr_send_ctrl(uint32_t type, uint32_t dst_node)
+  * length) + TLVs inside QRTR DATA packets from our port 1:0x4000.
+  */
+ #define WLFW_PORT       0x4000u
++/* the DDR the firmware asked for: on a crash Qualcomm firmware leaves its assert text in there */
++static struct {
++	uint64_t pa;
++	uint32_t size, type;
++	vm_offset_t va;
++} g_seg[4];
++static unsigned g_nseg;
++static volatile int g_sysfail;
++
++static void
++wlan_crash_dump(void)
++{
++	printf("SWEET MHI: crash state: ee %u mhistatus %#x bhi status %#x err %#x\n", rd(g_bar, 0x100 + 0x28),
++	    rd(g_bar, 0x48), rd(g_bar, 0x100 + 0x2c), rd(g_bar, 0x100 + 0x30));
++	for (unsigned k = 0; k < g_nseg; k++) {
++		if (!g_seg[k].va) {
++			continue;
++		}
++		unsigned shown = 0;
++		char run[96];
++		unsigned n = 0;
++		uint32_t cap = g_seg[k].size < 0x40000u ? g_seg[k].size : 0x40000u;
++		for (uint32_t o = 0; o < cap && shown < 8; o++) {
++			uint8_t ch = *(volatile uint8_t *)(g_seg[k].va + o);
++			if (ch >= 0x20 && ch < 0x7f) {
++				if (n < sizeof(run) - 1) {
++					run[n++] = (char)ch;
++				}
++				continue;
++			}
++			if (n >= 12) {
++				run[n] = 0;
++				printf("SWEET MHI: segment %u type %u + %#x: \"%s\"\n", k, g_seg[k].type, o - n, run);
++				shown++;
++			}
++			n = 0;
++		}
++		if (!shown) {
++			printf("SWEET MHI: segment %u type %u: no text (first words %08x %08x %08x %08x)\n", k, g_seg[k].type,
++			    *(volatile uint32_t *)g_seg[k].va, *(volatile uint32_t *)(g_seg[k].va + 4),
++			    *(volatile uint32_t *)(g_seg[k].va + 8), *(volatile uint32_t *)(g_seg[k].va + 12));
++		}
++	}
++}
+ static uint32_t g_wlfw_node, g_wlfw_port;
+ static uint16_t g_txn = 1;
+ static struct {
+@@ -1350,6 +1395,13 @@ wifi_wait(volatile int *flag, int timeout_ms, const char *what)
+ 		if (*flag) {
+ 			return 0;
+ 		}
++		if (g_sysfail) {
++			g_sysfail = 0;
++			pc_msleep(200);
++			(void)er0_poll();
++			wlan_crash_dump();
++			return -1;
++		}
+ 		pc_msleep(10);
+ 	}
+ 	printf("SWEET HTC: %s: nothing in %d ms (CE status heads %u %u %u, CE0 tail %u)\n", what, timeout_ms,
+@@ -1613,6 +1665,13 @@ wlfw_handshake(void)
+ 				*(volatile uint32_t *)(va + z) = 0;
+ 			}
+ 			printf("SWEET WLFW: segment %u: %u bytes type %u at %#llx\n", i, size, type, pa);
++			if (g_nseg < 4) {
++				g_seg[g_nseg].pa = pa;
++				g_seg[g_nseg].size = size;
++				g_seg[g_nseg].type = type;
++				g_seg[g_nseg].va = va;
++				g_nseg++;
++			}
+ 			memcpy(rsp + o, &pa, 8);
+ 			memcpy(rsp + o + 8, &size, 4);
+ 			memcpy(rsp + o + 12, &type, 4);
+-- 
+2.43.0
+
