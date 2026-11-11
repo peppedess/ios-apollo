@@ -1,0 +1,61 @@
+From 774b48d3d5523dcd3d36c1b9aa4b4b1118a07425 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 11 Nov 2026 09:47:23 +0100
+Subject: [PATCH] apollo pcie: fix the resource config field offsets (off by
+ one past gtk_offload_max_vdev), flags2, SYS_ERR notice
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01VzhH6pxBJ4naMiihKoMfcq
+---
+ bsd/dev/apollo_pcie.c | 27 ++++++++++++++++-----------
+ 1 file changed, 16 insertions(+), 11 deletions(-)
+
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index b5b2644..dd94a44 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -564,6 +564,9 @@ er0_poll(void)
+ 		if (type == 0x21) {
+ 			g_cmd_cc = d0 >> 24;
+ 		}
++		if (type == 0x20 && (d0 >> 24) == 0xffu) {
++			printf("SWEET MHI: *** SYS_ERR: the QCA6390 firmware crashed ***\n");
++		}
+ 		g_er0_rp = g_er0_rp + 16 >= ER0_RING + 32 * 16 ? ER0_RING : g_er0_rp + 16;
+ 	}
+ 	if (n) {
+@@ -1310,18 +1313,20 @@ wmi_init(void)
+ 	RC(17, 3);                                                      /* roam_offload_max_vdev */
+ 	RC(18, 8);                                                      /* roam_offload_max_ap_profiles */
+ 	RC(22, 1024);                                                   /* tx_dbg_log_size */
+-	RC(29, 2);                                                      /* gtk_offload_max_vdev */
+-	RC(30, 0x400);                                                  /* num_msdu_desc */
+-	RC(31, 0xa);                                                    /* max_frag_entries */
+-	RC(32, 1);                                                      /* num_tdls_vdevs */
+-	RC(33, 8);                                                      /* num_tdls_conn_table_entries */
+-	RC(34, 2);                                                      /* beacon_tx_offload_max_vdev */
+-	RC(35, 0x20);                                                   /* num_multicast_filter_entries */
+-	RC(36, 0x16);                                                   /* num_wow_filters */
+-	RC(45, 1u << 5);                                                /* flag1: BSS_CHANNEL_INFO_64 */
+-	RC(56, 1);                                                      /* use_pdev_id */
++	RC(28, 2);                                                      /* gtk_offload_max_vdev */
++	RC(29, 0x400);                                                  /* num_msdu_desc */
++	RC(30, 0xa);                                                    /* max_frag_entries */
++	RC(31, 1);                                                      /* num_tdls_vdevs */
++	RC(32, 8);                                                      /* num_tdls_conn_table_entries */
++	RC(33, 2);                                                      /* beacon_tx_offload_max_vdev */
++	RC(34, 0x20);                                                   /* num_multicast_filter_entries */
++	RC(35, 0x16);                                                   /* num_wow_filters */
++	RC(44, 1u << 5);                                                /* flag1: BSS_CHANNEL_INFO_64 */
++	RC(54, 1);                                                      /* use_pdev_id */
++	RC(67, 1u << 9);                                                /* flags2: CALC_NEXT_DTIM_COUNT_SET */
+ 	cfg[73] = (0x13u << 16);                                        /* ARRAY_STRUCT, no memory chunks */
+-	printf("SWEET WMI: INIT (%u bytes, %u chains, mask %#x)\n", (unsigned)sizeof(msg), chains, mask);
++	printf("SWEET WMI: INIT (%u bytes, %u chains, mask %#x): vdevs %u peers %u tids %u msdu %u frag %u wow %u pdev_id %u\n",
++	    (unsigned)sizeof(msg), chains, mask, cfg[1], cfg[2], cfg[6], cfg[29], cfg[30], cfg[35], cfg[54]);
+ 	htc_send(&g_ce3, g_htc.wmi_eid, msg, sizeof(msg));
+ 	if (wifi_wait(&g_htc.wmi_ready, 10000, "WMI ready") != 0) {
+ 		return;
+-- 
+2.43.0
+
