@@ -1,8 +1,8 @@
 From 534a2495fd732bcf1c376f1fbda77fc0641da264 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Wed, 11 Nov 2026 10:12:20 +0100
-Subject: [PATCH] apollo pcie: on SYS_ERR dump the firmware's DDR segments as
- text (its assert message) plus EE and BHI state
+Subject: [PATCH 1/2] apollo pcie: on SYS_ERR dump the firmware's DDR segments
+ as text (its assert message) plus EE and BHI state
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01VzhH6pxBJ4naMiihKoMfcq
@@ -101,6 +101,41 @@ index dd94a44..fa19c3a 100644
  			memcpy(rsp + o, &pa, 8);
  			memcpy(rsp + o + 8, &size, 4);
  			memcpy(rsp + o + 12, &type, 4);
+-- 
+2.43.0
+
+
+From db03b6481b3e21456a3ac64c547c86dc83128113 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 11 Nov 2026 10:14:21 +0100
+Subject: [PATCH 2/2] apollo pcie: declare g_sysfail before its first use
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01VzhH6pxBJ4naMiihKoMfcq
+---
+ bsd/dev/apollo_pcie.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index fa19c3a..8af7d04 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -177,6 +177,7 @@ static const uint16_t phy_seq[][2] = {
+ #define MEM_PA          0x60300000u
+ #define MEM_END         0x63ffffffu
+ static vm_offset_t g_bar;
++static volatile int g_sysfail;
+ 
+ static const char *
+ mhi_ee_name(uint32_t ee)
+@@ -742,7 +743,6 @@ static struct {
+ 	vm_offset_t va;
+ } g_seg[4];
+ static unsigned g_nseg;
+-static volatile int g_sysfail;
+ 
+ static void
+ wlan_crash_dump(void)
 -- 
 2.43.0
 
