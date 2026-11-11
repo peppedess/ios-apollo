@@ -115,3 +115,10 @@ pm8009_s2 ("smpf2")**, vdd-wlan-io pm8150_s4, vdd-wlan-rfa1 pm8150_s5 (1.9 V), v
 (1.35 V). We had read an earlier dtbo as saying the digital rail was S6 and never turned PM8009 S2 on. The
 always-on domain runs without it, which is why everything up to and including the firmware's QMI and WMI
 handshakes worked; the WCSS core does not.
+
+## 1160-apollo-cmddb-dump.patch
+
+k13l: `smpf2 lookup matches=0`. The rail is named in apollo's own device tree, and the Android driver
+resolves it through cmd-db the same way, so either this board really has no PM8009 or we are reading only
+part of the dictionary — "rfclka2", which an sm8250 should have, is missing too, which points at the
+second. `sweetrpmhdump=1` lists every cmd-db header and every resource name with its address.

@@ -1,0 +1,88 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 5d2782e..0756429 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2681,6 +2681,12 @@ pcie_main(void *arg __unused, wait_result_t w __unused)
+ 	 * what the assert at cmnos_thread.c line 502 turned out to be, once the one site in the image that
+ 	 * loads 502 was disassembled.
+ 	 */
++	uint32_t dumpdb = 0;
++	(void)PE_parse_boot_argn("sweetrpmhdump", &dumpdb, sizeof(dumpdb));
++	if (dumpdb) {
++		extern int sweet_rpmh_dump(void);
++		(void)sweet_rpmh_dump();
++	}
+ 	vote_smps("smpf2", 950);
+ 	vote_smps("smpa5", 1900);
+ 	vote_smps("smpc8", 1352);
+diff --git a/bsd/dev/sweet_rpmh.c b/bsd/dev/sweet_rpmh.c
+index 2824fb5..e44623c 100644
+--- a/bsd/dev/sweet_rpmh.c
++++ b/bsd/dev/sweet_rpmh.c
+@@ -169,6 +169,66 @@ rh_map(void)
+ 	return 0;
+ }
+ 
++/*
++ * List every cmd-db resource, so a name that does not resolve can be told from a name this board simply
++ * does not have. apollo's cnss node asks for "smpf2" (PM8009 S2, vdd-wlan-dig) and our lookup finds no
++ * match for it: either the board really lacks it or we are reading only part of the dictionary.
++ */
++int sweet_rpmh_dump(void);
++
++int
++sweet_rpmh_dump(void)
++{
++	if (__atomic_exchange_n(&rh_lock, 1, __ATOMIC_ACQUIRE)) {
++		return EBUSY;
++	}
++	int error = rh_map();
++	if (error == 0) {
++		for (unsigned i = 0; i < 8; ++i) {
++			uint32_t h = 8u + 16u * i;
++			unsigned slave = rh_db16(h);
++			if (!slave) {
++				break;
++			}
++			uint32_t entries = RH_DB_HEADER + rh_db16(h + 2);
++			unsigned count = rh_db16(h + 6);
++			printf("SWEET RPMH: header %u: slave %u, %u entries at %#x\n", i, slave, count, entries);
++			char line[200];
++			unsigned n = 0;
++			for (unsigned j = 0; j < count; ++j) {
++				uint32_t e = entries + RH_DB_ENTRY * j;
++				if (!rh_range(e, RH_DB_ENTRY)) {
++					break;
++				}
++				char nm[9];
++                                uint32_t k0 = rh_read(rh_db, e), k1 = rh_read(rh_db, e + 4);
++				for (unsigned c = 0; c < 4; ++c) {
++					nm[c] = (char)(k0 >> (8u * c));
++					nm[4 + c] = (char)(k1 >> (8u * c));
++				}
++				nm[8] = 0;
++				for (unsigned c = 0; c < 8; ++c) {
++					if (nm[c] == 0) {
++						break;
++					}
++					if (nm[c] < 32 || nm[c] > 126) {
++						nm[c] = '?';
++					}
++				}
++				n += (unsigned)snprintf(line + n, sizeof(line) - n, "%s=%#x ", nm,
++				    rh_read(rh_db, e + 16));
++				if (n > 150 || j + 1 == count) {
++					printf("SWEET RPMH:   %s\n", line);
++					n = 0;
++					line[0] = 0;
++				}
++			}
++		}
++	}
++	__atomic_store_n(&rh_lock, 0, __ATOMIC_RELEASE);
++	return error;
++}
++
+ static int
+ rh_lookup(const char *res, uint32_t *address)
+ {
