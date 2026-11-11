@@ -72,3 +72,15 @@ The QCA6390 PMU takes RPMH_RF_CLK2 as its "xo" (the `qcom,qca6390-pmu` binding),
 PMIC that the SoC's PCIe reference clock does not replace: the digital side boots without it and the RF PLL
 never locks. Vote it, and its neighbours, before WLAN_EN. An RPMh VRM clock is enabled by writing 1 at the
 resource's enable offset, the same offset the regulator votes use.
+
+## 1157-apollo-bdf-and-segments.patch
+
+k13i: "rfclka2" is not in apollo's cmd-db (ENODEV), rfclka1, rfclka3 and lnbclka2 vote fine, and the
+firmware still dies. Two things to look at next:
+
+* `sweetbdf=1` sends `bdwlan.elf` instead of Xiaomi's `bd_j3s.elf`. The chip reports board id 0xff, which is
+  cnss2's "not fused" value, and its rule for that is the plain file, not a variant. Wrong board data is
+  one of the few things that lets everything digital work and only breaks when the radio is configured.
+* The firmware's own DDR segments are read before the RAM dump now, not after — the dump takes seconds over
+  BHIe and has twice ended the log early — and their first words are printed before INIT as well, so we can
+  see whether the firmware is using that memory at all.

@@ -1,0 +1,69 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 7148c23..94f8437 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -891,9 +891,10 @@ wlan_crash_dump(void)
+ {
+ 	printf("SWEET MHI: crash state: ee %u mhistatus %#x bhi status %#x err %#x\n", rd(g_bar, 0x100 + 0x28),
+ 	    rd(g_bar, 0x48), rd(g_bar, 0x100 + 0x2c), rd(g_bar, 0x100 + 0x30));
+-	if (rd(g_bar, 0x100 + 0x28) == 3u) {
+-		wlan_rddm();
+-	}
++	/*
++	 * The DDR the firmware runs from is ordinary memory we can read straight away, while pulling the RAM
++	 * dump over BHIe takes seconds and has twice now ended the log early, so read the segments first.
++	 */
+ 	for (unsigned k = 0; k < g_nseg; k++) {
+ 		if (!g_seg[k].va) {
+ 			continue;
+@@ -923,6 +924,12 @@ wlan_crash_dump(void)
+ 			    *(volatile uint32_t *)(g_seg[k].va + 8), *(volatile uint32_t *)(g_seg[k].va + 12));
+ 		}
+ 	}
++	pc_msleep(2500);
++	printf("SWEET MHI: segments read, RAM dump next\n");
++	pc_msleep(2500);
++	if (rd(g_bar, 0x100 + 0x28) == 3u) {
++		wlan_rddm();
++	}
+ }
+ static uint32_t g_wlfw_node, g_wlfw_port;
+ static uint16_t g_txn = 1;
+@@ -1819,6 +1826,15 @@ wmi_init(void)
+ 	} else if (var == 3) {
+ 		len = 4 + 32 + 292;
+ 	}
++	for (unsigned k = 0; k < g_nseg; k++) {
++		if (g_seg[k].va) {
++			printf("SWEET WLFW: segment %u type %u %u KiB at %#llx: %08x %08x %08x %08x | %08x at +1M\n",
++			    k, g_seg[k].type, g_seg[k].size >> 10, g_seg[k].pa,
++			    *(volatile uint32_t *)g_seg[k].va, *(volatile uint32_t *)(g_seg[k].va + 4),
++			    *(volatile uint32_t *)(g_seg[k].va + 8), *(volatile uint32_t *)(g_seg[k].va + 12),
++			    g_seg[k].size > 0x100000u ? *(volatile uint32_t *)(g_seg[k].va + 0x100000) : 0);
++		}
++	}
+ 	printf("SWEET WMI: INIT (variant %u, %u bytes, %u chains, mask %#x): vdevs %u peers %u tids %u msdu %u frag %u wow %u pdev_id %u\n",
+ 	    var, len, chains, mask, cfg[1], cfg[2], cfg[6], cfg[29], cfg[30], cfg[35], cfg[54]);
+ 	htc_send(&g_ce3, g_htc.wmi_eid, frame, len);
+@@ -2006,11 +2022,19 @@ wlfw_board(void)
+ 		printf("SWEET WLFW: eeprom cal data advertised\n");
+ 	}
+ 
++	/*
++	 * The chip reports board id 0xff, which is what cnss2 reads when the board is not fused: its rule is
++	 * then the plain "bdwlan.elf", not a variant. We have been sending Xiaomi's bd_j3s.elf. sweetbdf=1
++	 * swaps them, since wrong board data is one of the few things that would let everything digital work
++	 * and only break when the firmware configures the radio.
++	 */
++	uint32_t bdf = 0;
++	(void)PE_parse_boot_argn("sweetbdf", &bdf, sizeof(bdf));
+ 	uint32_t bdlen = 0;
+-	const char *bdname = "bd_j3s.elf";
++	const char *bdname = bdf ? "bdwlan.elf" : "bd_j3s.elf";
+ 	const uint8_t *bd = wlan_firmware(bdname, &bdlen);
+ 	if (!bd) {
+-		bdname = "bdwlan.elf";
++		bdname = bdf ? "bd_j3s.elf" : "bdwlan.elf";
+ 		bd = wlan_firmware(bdname, &bdlen);
+ 	}
+ 	if (!bd) {
