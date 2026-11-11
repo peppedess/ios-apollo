@@ -1,0 +1,46 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index ba12556..cb77ba8 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -1724,6 +1724,15 @@ wmi_init(void)
+ 	 * same frame with a command id no firmware has a handler for: a firmware that drops it and lives has a
+ 	 * working transport and a problem with INIT itself, one that dies has a problem with what reaches it.
+ 	 */
++	/*
++	 * k13g: an unknown command id is ignored and the firmware lives, and the hardware consumed the CE3
++	 * descriptor, so the transport is sound and INIT itself is what kills it. sweetwmivar bisects the
++	 * message: 1 = the INIT command TLV alone, with no resource config and no chunk array, which is the
++	 * answer to "does merely dispatching WMI_INIT kill it"; 2 = the whole frame padded to the 336 bytes
++	 * ath11k sends; 3 = command and resource config with no chunk array.
++	 */
++	uint32_t var = 0;
++	(void)PE_parse_boot_argn("sweetwmivar", &var, sizeof(var));
+ 	uint32_t probe = 0;
+ 	(void)PE_parse_boot_argn("sweetwmiprobe", &probe, sizeof(probe));
+ 	if (probe) {
+@@ -1782,9 +1791,22 @@ wmi_init(void)
+ 	RC(54, 1);                                                      /* use_pdev_id */
+ 	RC(68, 1u << 9);                                                /* flags2: CALC_NEXT_DTIM_COUNT_SET */
+ 	cfg[73] = (0x12u << 16);                                        /* ARRAY_STRUCT, no memory chunks */
+-	printf("SWEET WMI: INIT (%u bytes, %u chains, mask %#x): vdevs %u peers %u tids %u msdu %u frag %u wow %u pdev_id %u\n",
+-	    (unsigned)sizeof(msg), chains, mask, cfg[1], cfg[2], cfg[6], cfg[29], cfg[30], cfg[35], cfg[54]);
+-	htc_send(&g_ce3, g_htc.wmi_eid, msg, sizeof(msg));
++	static uint8_t padded[336];
++	uint32_t len = sizeof(msg);
++	const uint8_t *frame = msg;
++	if (var == 1) {
++		len = 4 + 32;
++	} else if (var == 2) {
++		memset(padded, 0, sizeof(padded));
++		memcpy(padded, msg, sizeof(msg));
++		frame = padded;
++		len = sizeof(padded);
++	} else if (var == 3) {
++		len = 4 + 32 + 292;
++	}
++	printf("SWEET WMI: INIT (variant %u, %u bytes, %u chains, mask %#x): vdevs %u peers %u tids %u msdu %u frag %u wow %u pdev_id %u\n",
++	    var, len, chains, mask, cfg[1], cfg[2], cfg[6], cfg[29], cfg[30], cfg[35], cfg[54]);
++	htc_send(&g_ce3, g_htc.wmi_eid, frame, len);
+ 	pc_msleep(50);
+ 	printf("SWEET WMI: after INIT: CE3 head %u tail %u (hardware %u), firmware %s\n",
+ 	    win_rd(g_ce3.r2), win_rd(g_ce3.r2 + 4), c_r32(CE_RDP + 4 * g_ce3.id), g_sysfail ? "DEAD" : "alive");

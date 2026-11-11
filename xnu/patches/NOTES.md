@@ -53,3 +53,11 @@ and stays alive has a working transport and something to say about INIT itself; 
 is being handed something other than what we think we are sending. The normal path now also prints the CE3
 head and tail right after INIT, so we can see whether the firmware consumed the descriptor at all, and the
 RAM-dump printer waits for two log flushes before the test reboots.
+
+## 1155-apollo-wmi-init-bisect.patch
+
+k13g answered the transport question: command id 0x3ffe is ignored, the firmware lives, and CE3's head, tail
+and hardware tail all read 4, so the descriptor was consumed. INIT itself is what kills it. `sweetwmivar`
+bisects the message — 1 sends the INIT command TLV alone (36 bytes, no resource config, no chunk array),
+which answers whether merely dispatching WMI_INIT is fatal; 2 sends the whole frame padded to the 336 bytes
+ath11k sends; 3 leaves off the chunk array.
