@@ -84,3 +84,19 @@ firmware still dies. Two things to look at next:
 * The firmware's own DDR segments are read before the RAM dump now, not after — the dump takes seconds over
   BHIe and has twice ended the log early — and their first words are printed before INIT as well, so we can
   see whether the firmware is using that memory at all.
+
+## 1158-apollo-fwmem-alignment.patch
+
+k13j: `bdwlan.elf` changes the service-ready event (340 bytes instead of 336, so the board data is read)
+and nothing else — same assert. Segment 0 holds firmware data, so the DDR is in use; the caldb segment is
+untouched.
+
+Next suspicion: alignment. Linux allocates these regions with `dma_alloc_coherent`, which for a request of
+megabytes returns a buddy block naturally aligned to its own order — the 6 MB region lands on an 8 MB
+boundary and the 864 KB one on 1 MB. The Q6 maps host DDR with large pages, so a 16 KB-aligned base (what
+the GPU pool gives) can only work for as long as the firmware stays inside the first page, which is exactly
+until INIT asks it to allocate thread stacks and tables there — and the assert is in `cmnos_thread.c`.
+Round each segment up to its own power of two.
+
+The RAM dump is behind `sweetrddm=1` now: pulling it over BHIe has ended the log, and twice panicked the
+kernel, in every run since the firmware started crashing this way.

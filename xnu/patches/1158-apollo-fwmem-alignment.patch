@@ -1,0 +1,49 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 94f8437..e222e2d 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -927,7 +927,9 @@ wlan_crash_dump(void)
+ 	pc_msleep(2500);
+ 	printf("SWEET MHI: segments read, RAM dump next\n");
+ 	pc_msleep(2500);
+-	if (rd(g_bar, 0x100 + 0x28) == 3u) {
++	uint32_t want = 0;
++	(void)PE_parse_boot_argn("sweetrddm", &want, sizeof(want));
++	if (want && rd(g_bar, 0x100 + 0x28) == 3u) {
+ 		wlan_rddm();
+ 	}
+ }
+@@ -2141,13 +2143,30 @@ wlfw_handshake(void)
+ 			memcpy(&size, m + off, 4);
+ 			memcpy(&type, m + off + 4, 4);
+ 			off += 9 + 13u * m[off + 8];
+-			uint64_t pa = 0;
+-			if (fail || sweet_gpu_pool_alloc((size + 0xfffu) & ~0xfffull, &pa) != 0 || pa + size > 0x100000000ull) {
++			/*
++			 * Linux hands these out with dma_alloc_coherent, which for a megabytes-sized request
++			 * returns a buddy block naturally aligned to its own order: the 6 MB region lands on 8 MB
++			 * and the 864 KB one on 1 MB. The Q6 maps this memory with large pages, so give it the
++			 * same alignment instead of the pool's 16 KB.
++			 */
++			uint64_t align = 0x100000ull;
++			while (align < size) {
++				align <<= 1;
++			}
++			uint64_t pa = 0, raw = 0;
++			uint32_t span = (uint32_t)((size + 0xfffu) & ~0xfffull);
++			if (fail || sweet_gpu_pool_alloc(span + align, &raw) != 0) {
+ 				printf("SWEET WLFW: segment %u: %u bytes type %u: NO MEMORY\n", i, size, type);
+ 				fail = 1;
+ 				continue;
+ 			}
+-			vm_offset_t va = ml_io_map((vm_offset_t)pa, (size + 0xfffu) & ~0xfffu);
++			pa = (raw + align - 1) & ~(align - 1);
++			if (pa + size > 0x100000000ull) {
++				printf("SWEET WLFW: segment %u: %u bytes type %u: above 4 GiB\n", i, size, type);
++				fail = 1;
++				continue;
++			}
++			vm_offset_t va = ml_io_map((vm_offset_t)pa, span);
+ 			for (uint32_t z = 0; va && z < size; z += 4) {
+ 				*(volatile uint32_t *)(va + z) = 0;
+ 			}
