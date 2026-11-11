@@ -33,3 +33,13 @@ the firmware brings up its own data path on top of it.
 * `ath11k_hw_ipq8074_reo_setup` (fragments to REO2SW1, aging on, the hash-to-ring map in all four
   DEST_RING_CTRL registers) and the 48 DSCP-to-TID tables;
 * the four REO destination rings last, as `ath11k_dp_pdev_reo_setup` does.
+
+## 1153-apollo-wmi-array-tags.patch
+
+The WMI array TLV tags were all one too high: `WMI_TAG_FIRST_ARRAY_ENUM` is 16, so ARRAY_UINT32 is 0x10,
+ARRAY_BYTE 0x11, ARRAY_STRUCT 0x12 and ARRAY_FIXED_STRUCT 0x13, and we were sending 0x11, 0x12, 0x13 and
+0x14. WMI_INIT's third TLV — the (empty) host memory chunk array — therefore carried a tag the firmware's
+parser does not expect at that position, which is exactly the kind of failure that does not depend on any
+value in the resource config. The same mistake was in the vdev-create and start-scan commands, never
+reached. The WMI endpoint also asks for both of the target's credits now, as ath11k does with one WMI
+endpoint, instead of one.
