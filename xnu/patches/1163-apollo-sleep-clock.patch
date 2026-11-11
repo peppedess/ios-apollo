@@ -1,0 +1,29 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 9c52221..61403dd 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2164,10 +2164,21 @@ wlfw_handshake(void)
+ 	 * host_cap: 1 client, nm_modem 0x1e (host C-state, internal sleep clock, PCIe global reset, PME D3cold: the
+ 	 * QCA6390 hw_params), BDF and M3 support, M3 cache, cal not done, mem_cfg_mode 0
+ 	 */
+-	static const uint8_t cap[] = {
+-		0x10, 4, 0, 1, 0, 0, 0,  0x13, 1, 0, 0x1e,  0x14, 1, 0, 1,  0x16, 1, 0, 1,  0x17, 1, 0, 1,  0x1a, 1, 0, 0,
+-		0x1c, 1, 0, 0,
++	/*
++	 * nm_modem: ath11k sets 0x1e because its QCA6390 hw_params carry internal_sleep_clock, which is meant
++	 * for the non-Qualcomm platforms it runs on — bit 1 tells the firmware to use the chip's own sleep
++	 * clock and bit 2 says the host is not a Qualcomm platform. apollo is one, and cnss2 leaves both clear:
++	 * the sleep clock comes from the PMIC. That matters because what kills us is the firmware's HW-DTIM
++	 * sleep sequence, which collapses the WCSS and needs a sleep clock to keep time; it polls
++	 * WCSS_CC_WCSS_WLAN1_GDSCR for PWR_ON to clear and never sees it. Leave the PCIe capability bits.
++	 */
++	uint32_t nm = 0x18;
++	(void)PE_parse_boot_argn("sweetnm", &nm, sizeof(nm));
++	uint8_t cap[] = {
++		0x10, 4, 0, 1, 0, 0, 0,  0x13, 1, 0, (uint8_t)nm,  0x14, 1, 0, 1,  0x16, 1, 0, 1,  0x17, 1, 0, 1,
++		0x1a, 1, 0, 0,  0x1c, 1, 0, 0,
+ 	};
++	printf("SWEET WLFW: host_cap nm_modem %#x\n", nm);
+ 	wlfw_send(0x34, cap, sizeof(cap));
+ 	if (wlfw_wait(&g_q.got, 3000, "host_cap") != 0 || g_q.result != 0) {
+ 		return;

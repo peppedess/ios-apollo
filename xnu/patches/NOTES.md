@@ -148,3 +148,18 @@ out after the ~95 ms we have been seeing.
 Release it before INIT, stay off the bus for 400 ms while the firmware sequences, then take it back for our
 own register polling. `sweetwake=1` restores the old behaviour. The GDSC peek from 1161 is behind
 `sweetgdsc=1` and off: 0xc30004 is not mapped in the host's view and reading it hung the phone.
+
+## 1163-apollo-sleep-clock.patch
+
+Disassembling the poll call itself settles what the firmware is doing: `poll(0xe0c30004, mask 0x80000000,
+expected 0, "_whal_pmm_wlan_pwr_seq_hwdtim_sleep___RAM", line 495, "WCSS_CC_WCSS_WLAN1_GDSCR/PWR_ON")`. It
+waits for PWR_ON to **clear** — the WCSS is being powered **down**, not up. At INIT, with no vdev yet, the
+firmware puts the MAC into HW-DTIM sleep, and the domain never collapses.
+
+A sleep sequence needs a sleep clock, and we have been telling the firmware to use the chip's internal one:
+ath11k sets nm_modem 0x1e because its QCA6390 hw_params carry `internal_sleep_clock`, which exists for the
+non-Qualcomm platforms ath11k runs on. apollo is a Qualcomm platform with a PMIC sleep clock and cnss2
+leaves both that bit and HOST_CSTATE clear. `sweetnm` sets the field, default 0x18.
+
+Releasing PCIE_SOC_WAKE around INIT (1162) changed nothing on its own, and forcing the rails into PWM
+(1161) changed nothing either; both stay in.
