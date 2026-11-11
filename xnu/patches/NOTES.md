@@ -43,3 +43,13 @@ parser does not expect at that position, which is exactly the kind of failure th
 value in the resource config. The same mistake was in the vdev-create and start-scan commands, never
 reached. The WMI endpoint also asks for both of the target's credits now, as ath11k does with one WMI
 endpoint, instead of one.
+
+## 1154-apollo-wmi-transport-probe.patch
+
+k13f fixed the tags and changed nothing: still `cmnos_thread.c` line 502, still 96 ms after INIT. So before
+porting any more of ath11k, separate the two possibilities. `sweetwmiprobe=1` sends the same 332-byte frame
+on the same endpoint with command id 0x3ffe, which no firmware has a handler for. A firmware that ignores it
+and stays alive has a working transport and something to say about INIT itself; one that dies the same way
+is being handed something other than what we think we are sending. The normal path now also prints the CE3
+head and tail right after INIT, so we can see whether the firmware consumed the descriptor at all, and the
+RAM-dump printer waits for two log flushes before the test reboots.
