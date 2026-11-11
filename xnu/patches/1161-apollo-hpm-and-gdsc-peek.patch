@@ -1,23 +1,28 @@
 diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
-index 0756429..f233512 100644
+index f233512..b084fc0 100644
 --- a/bsd/dev/apollo_pcie.c
 +++ b/bsd/dev/apollo_pcie.c
-@@ -156,12 +156,30 @@ vote_clk(const char *res)
- static int
- vote_smps(const char *res, unsigned mv)
- {
--	const uint32_t o[2] = { 0, 4 }, v[2] = { mv, 1 };            /* voltage, enable (mode left alone) */
--	int e = sweet_rpmh_write(res, 2, o, v);
--	printf("SWEET PCIE: rpmh %s %u mV -> %d\n", res, mv, e);
-+	/*
-+	 * Voltage, then mode, then enable. PMIC5 SMPS mode 7 is forced PWM: cnss2 asks for these rails with a
-+	 * load current, which puts them in high power mode, and a rail left in auto or PFM may not carry the
-+	 * inrush of the chip's WCSS power domain coming up — which is the step that times out at WMI_INIT.
-+	 */
-+	const uint32_t o[3] = { 0, 8, 4 }, v[3] = { mv, 7, 1 };
-+	int e = sweet_rpmh_write(res, 3, o, v);
-+	printf("SWEET PCIE: rpmh %s %u mV HPM -> %d\n", res, mv, e);
+@@ -167,18 +167,6 @@ vote_smps(const char *res, unsigned mv)
  	return e;
+ }
+ 
+-/*
+- * The Q6 polls 0xe0c30004 for the WCSS WLAN1 GDSC's PWR_ON. Its peripheral window starts at 0xe0000000,
+- * so the same register should be at 0xc30004 through our BAR window; read it, and its neighbours, to see
+- * what the power domain is actually doing.
+- */
+-static void
+-gdsc_peek(const char *when)
+-{
+-	printf("SWEET DP: GDSC %s: %#x %#x %#x %#x | shadow %#x %#x\n", when,
+-	    win_rd(0xc30000), win_rd(0xc30004), win_rd(0xc30008), win_rd(0xc3000c),
+-	    win_rd(0xb5ff08), win_rd(0xb5ff78));
+-}
+ 
+ /* live DT qcom,phy-sequence of qcom,pcie@1c00000 (offset, value), all delays 0 */
+ static const uint16_t phy_seq[][2] = {
+@@ -1724,6 +1712,19 @@ wifi_dp(void)
+ 	    win_rd(idle.r0));
  }
  
 +/*
@@ -33,44 +38,6 @@ index 0756429..f233512 100644
 +	    win_rd(0xb5ff08), win_rd(0xb5ff78));
 +}
 +
- /* live DT qcom,phy-sequence of qcom,pcie@1c00000 (offset, value), all delays 0 */
- static const uint16_t phy_seq[][2] = {
- 	{ 0x840, 0x03 }, { 0x094, 0x08 }, { 0x154, 0x34 }, { 0x16c, 0x08 }, { 0x058, 0x0f }, { 0x0a4, 0x42 },
-@@ -1837,10 +1855,12 @@ wmi_init(void)
- 			    g_seg[k].size > 0x100000u ? *(volatile uint32_t *)(g_seg[k].va + 0x100000) : 0);
- 		}
- 	}
-+	gdsc_peek("before INIT");
- 	printf("SWEET WMI: INIT (variant %u, %u bytes, %u chains, mask %#x): vdevs %u peers %u tids %u msdu %u frag %u wow %u pdev_id %u\n",
- 	    var, len, chains, mask, cfg[1], cfg[2], cfg[6], cfg[29], cfg[30], cfg[35], cfg[54]);
- 	htc_send(&g_ce3, g_htc.wmi_eid, frame, len);
- 	pc_msleep(50);
-+	gdsc_peek("after INIT");
- 	printf("SWEET WMI: after INIT: CE3 head %u tail %u (hardware %u), firmware %s\n",
- 	    win_rd(g_ce3.r2), win_rd(g_ce3.r2 + 4), c_r32(CE_RDP + 4 * g_ce3.id), g_sysfail ? "DEAD" : "alive");
- 	if (wifi_wait(&g_htc.wmi_ready, 10000, "WMI ready") != 0) {
-@@ -2675,11 +2695,11 @@ pcie_main(void *arg __unused, wait_result_t w __unused)
- 	/*
- 	 * apollo's own qcom,cnss-qca6390 node names its rails: vdd-wlan-aon pm8150_s6 (0.95 V), vdd-wlan-dig
- 	 * pm8009_s2 = "smpf2" (0.95 V), vdd-wlan-io pm8150_s4 (1.8), vdd-wlan-rfa1 pm8150_s5 (1.9),
--	 * vdd-wlan-rfa2 pm8150a_s8 (1.35). We had been treating S6 as both aon and dig and never turning
--	 * PM8009 S2 on, which leaves the chip's WCSS core unpowered: everything in the always-on domain works,
--	 * and the firmware dies at WMI_INIT polling WCSS_CC_WCSS_WLAN1_GDSCR for PWR_ON — which is exactly
--	 * what the assert at cmnos_thread.c line 502 turned out to be, once the one site in the image that
--	 * loads 502 was disassembled.
-+	 * vdd-wlan-rfa2 pm8150a_s8 (1.35) — but apollo's own overlay (fragment 132) moves vdd-wlan-dig onto
-+	 * pm8150_s6 as well, and this board's cmd-db has no PM8009 resources at all, so S6 really is both.
-+	 * The firmware dies at WMI_INIT polling WCSS_CC_WCSS_WLAN1_GDSCR for PWR_ON — the assert at
-+	 * cmnos_thread.c line 502, found by disassembling the one site in the image that loads 502 — so what
-+	 * the WCSS power domain needs is still missing.
- 	 */
- 	uint32_t dumpdb = 0;
- 	(void)PE_parse_boot_argn("sweetrpmhdump", &dumpdb, sizeof(dumpdb));
-@@ -2687,7 +2707,6 @@ pcie_main(void *arg __unused, wait_result_t w __unused)
- 		extern int sweet_rpmh_dump(void);
- 		(void)sweet_rpmh_dump();
- 	}
--	vote_smps("smpf2", 950);
- 	vote_smps("smpa5", 1900);
- 	vote_smps("smpc8", 1352);
- 	vote_clk("rfclka2");                            /* RPMH_RF_CLK2: the QCA6390 PMU's "xo" */
+ #define RC(field, value)        cfg[field] = (value)
+ static void
+ wmi_init(void)
