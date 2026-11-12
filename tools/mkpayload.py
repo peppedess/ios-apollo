@@ -178,7 +178,10 @@ def add_gpufw_to_adt(adt_blob, fw_dir):
     return adt.serialize(root)
 
 
-WLAN_FW = ('amss20.bin', 'm3.bin', 'regdb.bin', 'bd_j3s.elf', 'bdwlan.elf')
+# The phone's own set, and linux-firmware's QCA6390 hw2.0 set beside it: the second is what ath11k is
+# written against, and our host sequence is ath11k's.
+WLAN_FW = ('amss20.bin', 'm3.bin', 'regdb.bin', 'bd_j3s.elf', 'bdwlan.elf',
+           'amss_lf.bin', 'm3_lf.bin', 'bd_lf.elf')
 
 
 def add_wlanfw_to_adt(adt_blob, fw_dir):

@@ -278,3 +278,16 @@ buddy block on a 512 KiB boundary, and we were giving it 16 KiB alignment from t
 chip's own always-on core; the main firmware waits on it during exactly the power sequences that fail, so
 an M3 that cannot run is a good reason for them to time out. Same class of mistake as 1158, in the one
 buffer 1158 did not cover.
+
+## 1174-apollo-linux-firmware-set.patch
+
+M3 alignment did not help either, and the list of host-side differences from ath11k is now empty. So turn
+the experiment around: the host sequence we have built is ath11k's, and ath11k is written against
+**linux-firmware's** QCA6390 blobs, not the phone's. The phone's firmware expects Qualcomm's own cnss2
+host, which differs in ways that are not visible from outside it.
+
+Both sets now travel in the payload: `amss20.bin`/`m3.bin`/`bd_j3s.elf` as before, and `amss_lf.bin`,
+`m3_lf.bin` and `bd_lf.elf` from linux-firmware's ath11k/QCA6390/hw2.0 — the last extracted from
+`board-2.bin`, whose entry for chip id 0, board id 255 is exactly what this chip reports. (That container
+also carries Xiaomi_Pad_5Pro variants, which are sm8250 devices with the same radio, so a closer board file
+is there if the default one works but behaves oddly.) `sweetlf=1` selects the linux-firmware set.

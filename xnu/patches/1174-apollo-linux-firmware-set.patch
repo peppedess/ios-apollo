@@ -1,0 +1,71 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index eb534d4..45992c5 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -51,6 +51,21 @@ void apollo_pcie_init(void);
+ static vm_offset_t g_parf, g_phy, g_dbi, g_atu, g_cfg;
+ static void aspm_enable(void);
+ 
++/*
++ * Two firmware sets travel in the payload: the phone's own (amss20.bin, m3.bin, bd_j3s.elf) and
++ * linux-firmware's QCA6390 hw2.0 (amss_lf.bin, m3_lf.bin, and the board-2.bin entry for chip id 0,
++ * board id 255, extracted as bd_lf.elf). Our host sequence is ath11k's, and ath11k is written against
++ * the second; the first expects Qualcomm's own cnss2 host, which differs in ways we cannot see from
++ * outside. sweetlf=1 picks it.
++ */
++static int
++use_linux_firmware(void)
++{
++	uint32_t lf = 0;
++	(void)PE_parse_boot_argn("sweetlf", &lf, sizeof(lf));
++	return lf != 0;
++}
++
+ static inline uint32_t
+ rd(vm_offset_t b, uint32_t o)
+ {
+@@ -2231,7 +2246,7 @@ wlfw_board(void)
+ 	uint32_t bdf = 0;
+ 	(void)PE_parse_boot_argn("sweetbdf", &bdf, sizeof(bdf));
+ 	uint32_t bdlen = 0;
+-	const char *bdname = bdf ? "bdwlan.elf" : "bd_j3s.elf";
++	const char *bdname = use_linux_firmware() ? "bd_lf.elf" : (bdf ? "bdwlan.elf" : "bd_j3s.elf");
+ 	const uint8_t *bd = wlan_firmware(bdname, &bdlen);
+ 	if (!bd) {
+ 		bdname = bdf ? "bd_j3s.elf" : "bdwlan.elf";
+@@ -2268,7 +2283,7 @@ wlfw_board(void)
+ 	printf("SWEET WLFW: board data sent, %u segments, type %u\n", seg, type);
+ 
+ 	uint32_t m3len = 0;
+-	const uint8_t *m3 = wlan_firmware("m3.bin", &m3len);
++	const uint8_t *m3 = wlan_firmware(use_linux_firmware() ? "m3_lf.bin" : "m3.bin", &m3len);
+ 	/*
+ 	 * Align it the way dma_alloc_coherent would: 266668 bytes comes out of a 512 KiB buddy block, on a
+ 	 * 512 KiB boundary. The M3 is the chip's own always-on core and the main firmware waits on it during
+@@ -2487,7 +2502,7 @@ mhi_mem_prepare(void)
+ 		return 0;
+ 	}
+ 	uint32_t fwlen = 0;
+-	const uint8_t *fw = wlan_firmware("amss20.bin", &fwlen);
++	const uint8_t *fw = wlan_firmware(use_linux_firmware() ? "amss_lf.bin" : "amss20.bin", &fwlen);
+ 	unsigned nseg = (fwlen + SEG_LEN - 1) / SEG_LEN;
+ 	uint64_t size = MHI_CTRL_SIZE + (uint64_t)nseg * SEG_LEN;
+ 	if (!fw || sweet_gpu_pool_alloc(size, &g_mpa) != 0 || g_mpa + size > 0x100000000ull) {
+@@ -2525,7 +2540,7 @@ static void
+ mhi_bringup(uint32_t bhi)
+ {
+ 	uint32_t fwlen = 0;
+-	(void)wlan_firmware("amss20.bin", &fwlen);
++	(void)wlan_firmware(use_linux_firmware() ? "amss_lf.bin" : "amss20.bin", &fwlen);
+ 	uint32_t bhie = rd(g_bar, 0x2c);
+ 	unsigned nseg = (fwlen + SEG_LEN - 1) / SEG_LEN;
+ 	if (bhie >= 0x1000u || mhi_mem_prepare() != 0) {
+@@ -2740,7 +2755,7 @@ static void
+ bhi_load_sbl(uint32_t bhi)
+ {
+ 	uint32_t fwlen = 0;
+-	const uint8_t *fw = wlan_firmware("amss20.bin", &fwlen);
++	const uint8_t *fw = wlan_firmware(use_linux_firmware() ? "amss_lf.bin" : "amss20.bin", &fwlen);
+ 	if (!fw) {
+ 		return;
+ 	}
