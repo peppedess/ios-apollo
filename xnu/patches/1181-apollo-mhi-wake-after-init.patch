@@ -1,0 +1,43 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 0335f9b..f31b8b0 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2077,16 +2077,34 @@ wmi_init(void)
+ 		printf("SWEET WMI: quiet window, %u ms with no bus access\n", quiet);
+ 		pc_msleep(quiet);
+ 	}
++	/*
++	 * Come back the way MHI does. k14f deasserted the device wake and the firmware lived through the whole
++	 * 437 ms INIT window for the first time — it only died the moment we took the wake back, by writing
++	 * PCIE_SOC_WAKE and reading registers 5 us later at a chip that was still collapsed in M2. ath11k never
++	 * does that: every register access past the MHI block goes through mhi_device_get_sync, which asserts
++	 * the device wake vote and waits for MHISTATUS to say M0 before anything touches the bus. Do the same.
++	 */
++	if (!wake) {
++		mhi_db(g_chdb + 8u * 127u, 1);
++		uint32_t st = 0, ms = 0;
++		for (; ms < 200; ms++) {
++			st = rd(g_bar, 0x48);
++			if (((st >> 8) & 0xffu) == 2u) {
++				break;
++			}
++			pc_msleep(1);
++		}
++		printf("SWEET MHI: wake after INIT: mhistatus %#x (state %u) after %u ms\n", st,
++		    (st >> 8) & 0xffu, ms);
++		win_wr(0x3004, 1);
++		delay(5000);
++	}
+ 	for (int ms = 0; ms < 400; ms += 10) {
+ 		(void)er1_poll();
+ 		ce_poll();
+ 		pc_msleep(10);
+ 	}
+ 	printf("SWEET WMI: WMI ready flag %d after the INIT window\n", g_htc.wmi_ready);
+-	if (!wake) {
+-		win_wr(0x3004, 1);
+-		delay(5000);
+-	}
+ 	gdsc_peek("after INIT");
+ 	printf("SWEET WMI: after INIT: CE3 head %u tail %u (hardware %u), firmware %s\n",
+ 	    win_rd(g_ce3.r2), win_rd(g_ce3.r2 + 4), c_r32(CE_RDP + 4 * g_ce3.id), g_sysfail ? "DEAD" : "alive");

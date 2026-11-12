@@ -379,3 +379,25 @@ and the firmware's answer it touches nothing. We poll the copy engine registers 
 those reads is a PCIe transaction that pulls the link out of L1 and the chip out of MHI M2 — exactly the
 states the firmware's power sequence is trying to reach. `sweetquiet=<ms>` stays off the bus entirely for
 that long first.
+
+## 1181-apollo-mhi-wake-after-init.patch
+
+1179 worked. With the device wake deasserted, the firmware lived through the entire INIT window for the
+first time since this started — 437 ms, against the 95 ms it had never once survived — and
+`after INIT: firmware alive`. It died in the next breath, when we took the wake back:
+
+```
+[  41.773] SWEET MHI: device wake deasserted (doorbell 0x6f8)
+[  41.773] SWEET WMI: INIT (variant 0, 332 bytes, 2 chains, mask 0x3)
+[  42.210] SWEET WMI: WMI ready flag 0 after the INIT window
+[  42.216] SWEET WMI: after INIT: CE3 head 0 tail 0 (hardware 4), firmware alive
+[  42.216] SWEET MHI: *** SYS_ERR: the QCA6390 firmware crashed ***
+```
+
+So the diagnosis was right and the cure is only half-applied. We let the chip collapse and then woke it by
+writing `PCIE_SOC_WAKE` and reading registers 5 us later, at a chip still in M2. ath11k never does that:
+every register access past the MHI block goes through `mhi_device_get_sync`, which asserts the device wake
+vote and waits for `MHISTATUS` to report M0 before anything touches the bus. Do the same — assert doorbell
+127, poll `MHISTATUS` (BAR + 0x48, state in bits 15:8) for M0 with a 200 ms budget, and only then take
+`PCIE_SOC_WAKE` and start draining the rings. The copy-engine poll loop moves after the wake too, since
+every read in it was hitting a collapsed chip as well.
