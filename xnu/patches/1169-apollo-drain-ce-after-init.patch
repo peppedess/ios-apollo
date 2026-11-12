@@ -1,0 +1,23 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index bc3e4be..f9377f1 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -1990,10 +1990,18 @@ wmi_init(void)
+ 		win_wr(0x3004, 0);
+ 	}
+ 	htc_send(&g_ce3, g_htc.wmi_eid, frame, len);
++	/*
++	 * Drain the copy engines too, not just the MHI event ring: the firmware's answer to INIT arrives on
++	 * CE2, and up to now this window only polled MHI, so a WMI_READY sent before the crash would have been
++	 * left sitting in the ring and never read. Whether one arrives decides what the crash even is — a
++	 * failed INIT, or a successful one followed by a power sequence we are not ready for.
++	 */
+ 	for (int ms = 0; ms < 400; ms += 10) {
+ 		(void)er1_poll();
++		ce_poll();
+ 		pc_msleep(10);
+ 	}
++	printf("SWEET WMI: WMI ready flag %d after the INIT window\n", g_htc.wmi_ready);
+ 	if (!wake) {
+ 		win_wr(0x3004, 1);
+ 		delay(5000);

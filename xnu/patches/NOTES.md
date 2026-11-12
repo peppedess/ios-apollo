@@ -216,3 +216,12 @@ ring pointers instead leaves each ring's interrupt asserted into the WCSS aggreg
 nobody to clear it — and `WCSS_WCMN_R0_APPS_AGGRE_INTR_STATUS/PMM_WCMN_WLAN1_LS_DONE_INTR` is among the
 strings in the same power sequence. Point every copy-engine and data-path ring at the scratch page the
 endpoint's MSI capability already uses.
+
+## 1169-apollo-drain-ce-after-init.patch
+
+Per-ring MSI (1168) changed nothing. But the window after INIT, added in 1162 to stay off the bus, polls
+only the MHI event ring — and the firmware's answer to INIT comes back on CE2. So for the last several
+boots a WMI_READY sent before the crash would have sat unread in the ring, and we would never have known
+that INIT had in fact succeeded. Drain the copy engines in that window too and say whether the ready flag
+is set. This is the difference between a failed INIT and a successful one followed by a power sequence we
+are not prepared for, and it has been invisible.
