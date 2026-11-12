@@ -171,3 +171,14 @@ off for the firmware download and puts them back in `ath11k_pci_start`, right be
 there says leaving ASPM disabled causes "MHI M2 problems" — the low-power path. We never enabled ASPM at
 all, and the firmware dies in a light-sleep sequence. Enable L1 on both ends (endpoint first) and L1.1/1.2
 where both ends offer them, after mission mode and before HTC. `sweetaspm=0` turns it off again.
+
+## 1165-apollo-diag-channel.patch
+
+ASPM changed nothing either, so stop guessing and read the firmware's own log. apollo's cnss node
+configures MHI channels 4 and 5 as DIAG, exactly like the IPCR pair we already drive, and the firmware
+writes its F3 messages there — the printf formats are in `amss20.bin`, and the terse form carries their
+addresses, so the bytes can be resolved off the phone.
+
+`sweetdiag=1` starts the two channels immediately before INIT (not earlier: the firmware has been logging
+since boot and would flood), posts eight 4 KiB buffers, and prints the first 60 packets as hex while
+polling the event ring through the 400 ms the firmware takes to die.

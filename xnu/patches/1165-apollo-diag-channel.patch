@@ -1,0 +1,87 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index e0c43ba..d751641 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -634,12 +634,18 @@ bhie_load(uint32_t bhie, unsigned nseg)
+  */
+ #define CH20_RING       0x7000u         /* 64 x 16, 1 KiB-aligned */
+ #define CH21_RING       0x7400u
++#define CH4_RING        0x7800u         /* DIAG, the firmware's own F3 log */
++#define CH5_RING        0x7c00u
++#define DIAGBUF         0x8000u         /* 8 x 4 KiB */
++#define DIAGBUF_SZ      0x1000u
++#define NDIAG           8u
+ #define RXBUF           0x10000u        /* 16 x 8 KiB */
+ #define RXBUF_SZ        0x2000u
+ #define NRX             16u
+ #define TXBUF           0x30000u        /* 16 KiB */
+ #define QRTR_CTRL       0xfffffffeu
+ static uint32_t g_chdb, g_cmd_wp = CMD_RING, g_er1_rp = ER1_RING, g_ch20_wp = CH20_RING, g_ch21_wp = CH21_RING;
++static uint32_t g_ch4_wp = CH4_RING, g_ch5_wp = CH5_RING, g_diag_shown;
+ 
+ static uint32_t
+ ring_next(uint32_t off, uint32_t base, uint32_t n)
+@@ -1092,6 +1098,26 @@ er1_poll(void)
+ 				}
+ 			}
+ 			chan_queue(21, CH21_RING, &g_ch21_wp, buf, RXBUF_SZ);
++		} else if (type == 0x22 && ch == 5 && ptr >= g_mpa + CH5_RING && ptr < g_mpa + CH5_RING + 64 * 16) {
++			/*
++			 * DIAG. Qualcomm F3 messages: the terse form carries the addresses of its format and file
++			 * strings, which are in amss20.bin, so print the bytes and resolve them off the phone.
++			 */
++			uint32_t tre = (uint32_t)(ptr - g_mpa);
++			uint32_t buf = (uint32_t)(m_r64(tre) - g_mpa);
++			if (g_diag_shown < 60u && len) {
++				uint32_t k = len < 96u ? len : 96u;
++				char line[3 * 96 + 8];
++				uint32_t o = 0;
++				for (uint32_t i = 0; i < k; i++) {
++					uint8_t b = (uint8_t)(*(volatile uint32_t *)(g_mva + buf + (i & ~3u)) >>
++					    (8u * (i & 3u)));
++					o += (uint32_t)snprintf(line + o, sizeof(line) - o, "%02x", b);
++				}
++				printf("SWEET DIAG: %u bytes: %s\n", len, line);
++				g_diag_shown++;
++			}
++			chan_queue(5, CH5_RING, &g_ch5_wp, buf, DIAGBUF_SZ);
+ 		} else {
+ 			printf("SWEET MHI: er1 event %#x ch %u code %u len %u ptr %#llx\n", type, ch, code, len, ptr);
+ 		}
+@@ -1864,6 +1890,24 @@ wmi_init(void)
+ 			    g_seg[k].size > 0x100000u ? *(volatile uint32_t *)(g_seg[k].va + 0x100000) : 0);
+ 		}
+ 	}
++	/*
++	 * Open the DIAG channels (apollo's cnss node configures 4 and 5 the same way as IPCR) just before INIT,
++	 * so the firmware's F3 log for the step that kills it arrives and nothing earlier floods the log.
++	 */
++	uint32_t diag = 0;
++	(void)PE_parse_boot_argn("sweetdiag", &diag, sizeof(diag));
++	if (diag) {
++		chan_ctx(4, CH4_RING, 1);
++		chan_ctx(5, CH5_RING, 2);
++		__asm__ volatile ("dsb sy" ::: "memory");
++		if (mhi_cmd((4u << 24) | (0x12u << 16), "START_CHAN 4") == 0 &&
++		    mhi_cmd((5u << 24) | (0x12u << 16), "START_CHAN 5") == 0) {
++			for (unsigned i = 0; i < NDIAG; i++) {
++				chan_queue(5, CH5_RING, &g_ch5_wp, DIAGBUF + i * DIAGBUF_SZ, DIAGBUF_SZ);
++			}
++			printf("SWEET DIAG: channels 4 and 5 up, %u buffers posted\n", NDIAG);
++		}
++	}
+ 	gdsc_peek("before INIT");
+ 	/*
+ 	 * Let the chip sleep again. ath11k writes PCIE_SOC_WAKE_PCIE_LOCAL_REG only in power_down; we have been
+@@ -1880,7 +1924,10 @@ wmi_init(void)
+ 		win_wr(0x3004, 0);
+ 	}
+ 	htc_send(&g_ce3, g_htc.wmi_eid, frame, len);
+-	pc_msleep(400);
++	for (int ms = 0; ms < 400; ms += 10) {
++		(void)er1_poll();
++		pc_msleep(10);
++	}
+ 	if (!wake) {
+ 		win_wr(0x3004, 1);
+ 		delay(5000);
