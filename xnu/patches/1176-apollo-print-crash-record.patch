@@ -1,0 +1,28 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 08c90b4..b04a881 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -883,6 +883,23 @@ wlan_rddm(void)
+ 			 * The crash record around the "Asserted in:" string holds the faulting thread's name and
+ 			 * its registers; print the words so the next run can be read without guessing.
+ 			 */
++			/*
++			 * Print the record as text in four lines, each flushed, before anything else: the hex dump
++			 * below has never survived to the log, and what the record says around the message — the
++			 * faulting thread's name, the real file string — is what decides whether the GDSC reading
++			 * of this assert is right at all.
++			 */
++			for (unsigned r = 0; hits < 1 && r < 4u; r++) {
++				char tx[190];
++				uint32_t b0 = (start > 256 ? start - 256 : 0) + r * 180u;
++				for (unsigned j = 0; j < 180; j++) {
++					uint8_t c = *(volatile uint8_t *)(g_rddm[i] + b0 + j);
++					tx[j] = (c >= 32 && c < 127) ? (char)c : '.';
++				}
++				tx[180] = 0;
++				printf("SWEET MHI: record %#x: %s\n", b0, tx);
++				pc_msleep(1200);
++			}
+ 			for (unsigned r = 0; r < (hits < 1 ? 8u : 0u); r++) {
+ 				uint32_t base = (start > 128 ? start - 128 : 0) + r * 32;
+ 				uint32_t v[8];

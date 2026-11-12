@@ -307,3 +307,10 @@ What is left is the one enable we never touched. apollo's cnss node carries `qco
 share one internal PMU, and the RF common supply it produces is not the WLAN side's alone — which would
 leave the digital side working, as it does, and the radio unable to finish a power transition, which is
 precisely where both firmwares die.
+
+## 1176-apollo-print-crash-record.patch
+
+BT_EN made no difference. Before fixing anything else on the strength of the GDSC reading, verify it: print
+the crash record itself as text, four flushed lines around the message, before the hex dump that has never
+survived to the log. What sits around `Asserted in:` — the faulting thread's name, the real file string —
+is what says whether that reading is right.
