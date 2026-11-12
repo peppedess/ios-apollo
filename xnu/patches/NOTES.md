@@ -202,3 +202,17 @@ either further: the assert we have been reasoning from was read in k13b, and the
 deal since — the data-path rings, the TLV tags, the rails, ASPM, the device wake. Re-read it. The RAM dump
 printer now pauses for a log flush after each step, so an early return cannot swallow the result the way it
 did in k13e and k13i.
+
+## 1168-apollo-srng-msi.patch
+
+k13u re-read the crash record with everything since k13b in place, and it is unchanged: `cmnos_thread.c`,
+`Asserted in:0x1503340:0x1530258, line#502`. (The search that found the one site loading 502 was also
+redone properly — the first pass had masked Hexagon's parse bits and would have missed two encodings out
+of three. Still one site.) So the diagnosis stands and the WCSS still will not collapse.
+
+What ath11k does to every ring and we do to none: `HAL_SRNG_FLAGS_MSI_INTR`, an MSI address and data in
+each ring's registers, so a completion is delivered as a write the hardware retires itself. Polling the
+ring pointers instead leaves each ring's interrupt asserted into the WCSS aggregate interrupt status with
+nobody to clear it — and `WCSS_WCMN_R0_APPS_AGGRE_INTR_STATUS/PMM_WCMN_WLAN1_LS_DONE_INTR` is among the
+strings in the same power sequence. Point every copy-engine and data-path ring at the scratch page the
+endpoint's MSI capability already uses.

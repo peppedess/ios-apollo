@@ -1,0 +1,59 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 1f5c908..bc3e4be 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -1217,6 +1217,22 @@ c_w32(uint32_t off, uint32_t v)
+ 	*(volatile uint32_t *)(g_cva + off) = v;
+ }
+ 
++/*
++ * Every ring ath11k sets up carries an MSI address and data (HAL_SRNG_FLAGS_MSI_INTR), so a completion is
++ * delivered as a write the hardware itself retires. We drive the rings by polling and programmed none, which
++ * leaves each ring's interrupt asserted into the WCSS aggregate status with nobody to clear it — and the
++ * aggregate status is what the firmware's light-sleep sequence waits on before it can collapse the domain.
++ * Point them all at the same scratch page; nothing reads it.
++ */
++static void
++srng_msi(uint32_t r0, uint32_t data)
++{
++	uint64_t a = g_mpa + MSI_LAND;
++	win_wr(r0 + 0x48, (uint32_t)a);
++	win_wr(r0 + 0x4c, (uint32_t)((a >> 32) & 0xffu) | (1u << 8));
++	win_wr(r0 + 0x50, data);
++}
++
+ static void
+ ce_src_init(struct ce_src *c)
+ {
+@@ -1228,6 +1244,7 @@ ce_src_init(struct ce_src *c)
+ 	win_wr(c->r0 + 0x34, 0);
+ 	win_wr(c->r0 + 0x1c, (uint32_t)tp);
+ 	win_wr(c->r0 + 0x20, (uint32_t)(tp >> 32));
++	srng_msi(c->r0, c->id);
+ 	win_wr(c->r2 + 0, 0);
+ 	win_wr(c->r2 + 4, 0);
+ 	c_w32(CE_RDP + 4 * c->id, 0);
+@@ -1247,6 +1264,7 @@ ce_dst_init(struct ce_dst *c)
+ 	win_wr(c->r0 + 0x34, 0);
+ 	win_wr(c->r0 + 0x1c, (uint32_t)tp);
+ 	win_wr(c->r0 + 0x20, (uint32_t)(tp >> 32));
++	srng_msi(c->r0, c->id);
+ 	win_wr(c->r2 + 0, 0);
+ 	win_wr(c->r2 + 4, 0);
+ 	c_w32(CE_RDP + 4 * c->id, 0);
+@@ -1261,6 +1279,7 @@ ce_dst_init(struct ce_dst *c)
+ 	win_wr(c->sr0 + 0x24, 4);                                        /* batch 1 entry */
+ 	win_wr(c->sr0 + 0x14, (uint32_t)hp);
+ 	win_wr(c->sr0 + 0x18, (uint32_t)(hp >> 32));
++	srng_msi(c->sr0, c->sid);
+ 	win_wr(c->sr2 + 0, 0);
+ 	win_wr(c->sr2 + 4, 0);
+ 	c_w32(CE_RDP + 4 * c->sid, 0);
+@@ -1598,6 +1617,7 @@ dp_ring_init(struct dp_ring *r)
+ 	*(volatile uint32_t *)(g_rdp_va + r->id * 4u) = 0;
+ 	win_wr(r->r0 + 0x00, (uint32_t)r->pa);
+ 	win_wr(r->r0 + 0x04, (uint32_t)((r->pa >> 32) & 0xffu) | (words << 8));
++	srng_msi(r->r0, r->id);
+ 	if (r->src) {
+ 		win_wr(r->r0 + 0x08, r->esz);
+ 		win_wr(r->r0 + 0x30, (r->timer << 16) | (r->batch * r->esz));
