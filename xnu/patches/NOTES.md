@@ -182,3 +182,15 @@ addresses, so the bytes can be resolved off the phone.
 `sweetdiag=1` starts the two channels immediately before INIT (not earlier: the firmware has been logging
 since boot and would flood), posts eight 4 KiB buffers, and prints the first 60 packets as hex while
 polling the event ring through the 400 ms the firmware takes to die.
+
+## 1166-apollo-device-wake-and-diag-mask.patch
+
+k13r: both DIAG channels start (completion code 1) and the firmware sends nothing — diag emits no F3
+messages until the host sets the runtime masks. Send DIAG_EXT_MSG_CONFIG_F subcommand 5 with every level
+on, and a version request ahead of it to show the outbound half works.
+
+The more interesting half of this patch: assert the **MHI device wake**. `mhi_assert_dev_wake` writes 1 to
+doorbell 127 of the channel doorbell block, and ath11k takes that vote around every register access past
+BAR+4K-32 — which is every access it makes — so on a working host the chip is held awake for as long as
+the driver is driving it. We never asserted it once, and what kills us is the firmware deciding it may
+sleep. `sweetdwake=0` turns it off.

@@ -1,0 +1,55 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index d751641..18076ca 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -1894,6 +1894,18 @@ wmi_init(void)
+ 	 * Open the DIAG channels (apollo's cnss node configures 4 and 5 the same way as IPCR) just before INIT,
+ 	 * so the firmware's F3 log for the step that kills it arrives and nothing earlier floods the log.
+ 	 */
++	/*
++	 * Assert the MHI device wake. mhi_assert_dev_wake writes 1 to doorbell 127 in the channel doorbell
++	 * block, and ath11k takes that vote (mhi_device_get_sync) around every register access past BAR+4K-32,
++	 * which is all of ours — so on a working host the chip is held awake for as long as the driver is
++	 * touching it. We never asserted it, and what kills us is the firmware deciding it may sleep.
++	 */
++	uint32_t dwake = 1;
++	(void)PE_parse_boot_argn("sweetdwake", &dwake, sizeof(dwake));
++	if (dwake) {
++		mhi_db(g_chdb + 8u * 127u, 1);
++		printf("SWEET MHI: device wake asserted (doorbell %#x)\n", g_chdb + 8u * 127u);
++	}
+ 	uint32_t diag = 0;
+ 	(void)PE_parse_boot_argn("sweetdiag", &diag, sizeof(diag));
+ 	if (diag) {
+@@ -1905,7 +1917,30 @@ wmi_init(void)
+ 			for (unsigned i = 0; i < NDIAG; i++) {
+ 				chan_queue(5, CH5_RING, &g_ch5_wp, DIAGBUF + i * DIAGBUF_SZ, DIAGBUF_SZ);
+ 			}
+-			printf("SWEET DIAG: channels 4 and 5 up, %u buffers posted\n", NDIAG);
++			/*
++			 * Nothing arrived on the first try: diag emits nothing until the host sets the message
++			 * masks. DIAG_EXT_MSG_CONFIG_F (0x7d) subcommand 5 turns every runtime level on; the
++			 * version request (0x00) ahead of it is a cheap check that the outbound half works.
++			 */
++			static const uint8_t ver[] = { 0x00 };
++			static const uint8_t mask[] = { 0x7d, 0x05, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff };
++			uint32_t b = tx_slot();
++			for (unsigned i = 0; i < sizeof(ver); i++) {
++				m_w32(b + 4 * i, ver[i]);
++			}
++			chan_queue(4, CH4_RING, &g_ch4_wp, b, sizeof(ver));
++			b = tx_slot();
++			for (unsigned i = 0; i < sizeof(mask); i += 4) {
++				uint32_t w = 0;
++				memcpy(&w, mask + i, sizeof(mask) - i < 4 ? sizeof(mask) - i : 4);
++				m_w32(b + i, w);
++			}
++			chan_queue(4, CH4_RING, &g_ch4_wp, b, sizeof(mask));
++			printf("SWEET DIAG: channels 4 and 5 up, %u buffers posted, masks requested\n", NDIAG);
++			for (int ms = 0; ms < 200; ms += 10) {
++				(void)er1_poll();
++				pc_msleep(10);
++			}
+ 		}
+ 	}
+ 	gdsc_peek("before INIT");
