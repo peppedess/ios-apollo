@@ -314,3 +314,17 @@ BT_EN made no difference. Before fixing anything else on the strength of the GDS
 the crash record itself as text, four flushed lines around the message, before the hex dump that has never
 survived to the log. What sits around `Asserted in:` — the faulting thread's name, the real file string —
 is what says whether that reading is right.
+
+## 1177-apollo-all-clock-buffers.patch
+
+k14e printed the crash record in full and the reading holds: a file field of `cmnos_thread.c` — which is
+the assert *printer's* own file, at 0x15836c0, which loads that string itself — followed by
+`Asserted in:0x1503340:0x1530258, line#502`, the form the firmware uses when the caller's file and
+function names have been stripped. Line 502 still belongs to the single site in the image that loads it,
+in the WCSS GDSC poll.
+
+So: vote every clock buffer this board has. The `qca6390-pmu` binding takes RPMH_RF_CLK2 as the chip's
+"xo", apollo's cmd-db has no `rfclka2` at all, and the chip's digital side can perfectly well run off the
+PCIe reference clock — it boots and its Q6 runs — while the radio needs the real 38.4 MHz buffer. That is
+the shape of the failure we have, and whatever feeds that input here is one of the eight names cmd-db does
+list.

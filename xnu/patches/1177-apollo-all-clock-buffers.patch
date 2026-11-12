@@ -1,0 +1,26 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index b04a881..d8513c4 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -3012,10 +3012,20 @@ pcie_main(void *arg __unused, wait_result_t w __unused)
+ 	}
+ 	vote_smps("smpa5", 1900);
+ 	vote_smps("smpc8", 1352);
+-	vote_clk("rfclka2");                            /* RPMH_RF_CLK2: the QCA6390 PMU's "xo" */
++	/*
++	 * Every clock buffer this board's cmd-db has. The qca6390-pmu binding takes RPMH_RF_CLK2 as the
++	 * chip's "xo", and apollo has no rfclka2 at all, so whatever feeds that input here is one of the
++	 * others. The chip's digital side can run off the PCIe reference clock — it boots, and its Q6 runs —
++	 * while the radio needs the real 38.4 MHz buffer, which would leave exactly the failure we have.
++	 */
+ 	vote_clk("rfclka1");
++	vote_clk("rfclka2");
+ 	vote_clk("rfclka3");
++	vote_clk("rfclkd3");
++	vote_clk("rfclkd4");
++	vote_clk("lnbclka1");
+ 	vote_clk("lnbclka2");
++	vote_clk("lnbclka3");
+ 	/*
+ 	 * Power-cycle the chip. We had only ever driven WLAN_EN high, never low, so whatever state the chip
+ 	 * was left in — by the bootloader, by Android, or by our own previous test, which ends with the
