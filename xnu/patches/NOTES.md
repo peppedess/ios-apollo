@@ -339,3 +339,35 @@ to let the link enter L1. We have never read or written that register — whatev
 what every run so far has used. Enabling ASPM in the two config spaces (1164) does nothing if the
 controller is holding the link out of L1 anyway, and a link pinned in L0 keeps the endpoint out of the
 low-power states its firmware waits on. Clear it, and log what it was.
+
+## 1179-apollo-deassert-device-wake.patch
+
+The reference the user asked for is now in hand, and it is the phone's own recovery. Its kernel carries
+Qualcomm's `cnss2` bound to `qcom,cnss-qca6390` with `/sys/kernel/cnss/fs_ready` writable, so the stock
+driver can be made to run its whole power-up with one write. With the modem partition mounted at
+`/firmware`, SELinux set permissive and `amss20.bin` copied where `ueventd` looks for it, that write
+produces:
+
+```
+cnss: Setting MHI state: INIT(0)
+cnss: Setting MHI state: POWER_ON(2)
+ueventd: found /etc/firmware/qca6390/amss20.bin
+cnss: MHI status cb is called with reason MISSION_MODE(6)
+```
+
+So on this board, with this firmware image, the chip boots to mission mode under the stock driver. The
+hardware, the rails, the clock buffers, the PCIe link and `amss20.bin` are all fine; nothing in the long
+elimination table was ever the problem. Our own bring-up reaches mission mode too. What is left is what
+the host does between QMI and `WMI_INIT`.
+
+One host behaviour governs exactly the thing the firmware dies on. MHI's device wake is a vote to keep the
+chip in M0: `mhi_assert_dev_wake` writes 1 to doorbell 127 and `mhi_deassert_dev_wake` writes 0, and a
+working host only holds it while it is actually touching the device. 1172 asserted it on the theory that
+the firmware should not be sleeping at all, and it has been held ever since. But the crash record says the
+opposite: the firmware *wants* to sleep — `_whal_pmm_wlan_pwr_seq_hwdtim_sleep` polls
+`WCSS_CC_WCSS_WLAN1_GDSCR/PWR_ON` for 0 and asserts at line 502 when the domain never collapses. A held
+device wake is precisely what would keep that domain up.
+
+So deassert it: with `sweetdwake=0` write 0 to the doorbell rather than leaving the vote wherever it was,
+and keep `sweetwake=0` releasing `PCIE_SOC_WAKE` across the INIT window, so nothing on our side is holding
+the chip awake while it sequences.

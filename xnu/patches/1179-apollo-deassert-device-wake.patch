@@ -1,0 +1,20 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index b530978..482e54e 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -1995,6 +1995,15 @@ wmi_init(void)
+ 	if (dwake) {
+ 		mhi_db(g_chdb + 8u * 127u, 1);
+ 		printf("SWEET MHI: device wake asserted (doorbell %#x)\n", g_chdb + 8u * 127u);
++	} else {
++		/*
++		 * Deassert it instead. The firmware dies inside _whal_pmm_wlan_pwr_seq_hwdtim_sleep waiting for
++		 * WCSS_CC_WCSS_WLAN1_GDSCR/PWR_ON to clear: it is trying to power-collapse the WCSS and the domain
++		 * never goes down. A held device wake keeps the chip in M0 and is exactly what would hold it up,
++		 * so clear the vote and let the chip reach M2 while it sequences.
++		 */
++		mhi_db(g_chdb + 8u * 127u, 0);
++		printf("SWEET MHI: device wake deasserted (doorbell %#x)\n", g_chdb + 8u * 127u);
+ 	}
+ 	uint32_t diag = 0;
+ 	(void)PE_parse_boot_argn("sweetdiag", &diag, sizeof(diag));
