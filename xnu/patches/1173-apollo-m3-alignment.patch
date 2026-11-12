@@ -1,0 +1,24 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index f7c30a8..eb534d4 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2269,8 +2269,17 @@ wlfw_board(void)
+ 
+ 	uint32_t m3len = 0;
+ 	const uint8_t *m3 = wlan_firmware("m3.bin", &m3len);
+-	uint64_t m3pa = 0;
+-	if (!m3 || sweet_gpu_pool_alloc((m3len + 0xfffu) & ~0xfffull, &m3pa) != 0 || m3pa + m3len > 0x100000000ull) {
++	/*
++	 * Align it the way dma_alloc_coherent would: 266668 bytes comes out of a 512 KiB buddy block, on a
++	 * 512 KiB boundary. The M3 is the chip's own always-on core and the main firmware waits on it during
++	 * the power sequences, so if it cannot run, those sequences are what fail.
++	 */
++	uint64_t m3pa = 0, m3raw = 0, m3al = 0x80000ull;
++	while (m3al < m3len) {
++		m3al <<= 1;
++	}
++	if (!m3 || sweet_gpu_pool_alloc(((m3len + 0xfffu) & ~0xfffull) + m3al, &m3raw) != 0 ||
++	    ((m3pa = (m3raw + m3al - 1) & ~(m3al - 1)), m3pa + m3len > 0x100000000ull)) {
+ 		printf("SWEET WLFW: no m3.bin or no memory for it\n");
+ 		return;
+ 	}

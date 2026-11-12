@@ -262,3 +262,19 @@ domain refuse to collapse, and an excellent way to make every experiment produce
 
 Hold WLAN_EN low for 100 ms before raising it, which is what cnss2's power-off and power-on do between
 them.
+
+## 1173-apollo-m3-alignment.patch
+
+The power cycle (1172) works — the chip enumerates from a genuinely cold start now — and the crash is
+unchanged, so the wedged-state theory was wrong, though the fix stays.
+
+Chasing the assert record further settled a doubt: the two hex values in `Asserted in:0x%x:0x%x, line#%d`
+are the stripped file and function name pointers, and `cmnos_thread.c` is the file of the *printer*, which
+lives at 0x15836c0 and loads that string itself. So the record names its own helper, not the caller, and
+line 502 still belongs to the one site in the image that loads it — the GDSC poll. The diagnosis holds.
+
+This patch aligns the M3 image the way `dma_alloc_coherent` would: 266668 bytes comes out of a 512 KiB
+buddy block on a 512 KiB boundary, and we were giving it 16 KiB alignment from the GPU pool. The M3 is the
+chip's own always-on core; the main firmware waits on it during exactly the power sequences that fail, so
+an M3 that cannot run is a good reason for them to time out. Same class of mistake as 1158, in the one
+buffer 1158 did not cover.
