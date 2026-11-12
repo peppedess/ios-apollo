@@ -1,0 +1,20 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 18076ca..77a2937 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -813,6 +813,7 @@ wlan_rddm(void)
+ 		n++;
+ 	}
+ 	printf("SWEET MHI: dump area: %u of %u pieces (%u KiB)\n", n, RDDM_NSEG, n * (RDDM_SEG >> 10));
++	pc_msleep(2500);                                                /* let the log reach UFS before anything else */
+ 	if (n < RDDM_NSEG) {
+ 		return;
+ 	}
+@@ -833,6 +834,7 @@ wlan_rddm(void)
+ 		pc_msleep(20);
+ 	}
+ 	printf("SWEET MHI: RAM dump %s after %d ms (status %#x)\n", (st >> 30) == 2u ? "received" : "not received", ms, st);
++	pc_msleep(2500);
+ 	if ((st >> 30) != 2u) {
+ 		return;
+ 	}

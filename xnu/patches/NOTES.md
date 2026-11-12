@@ -194,3 +194,11 @@ doorbell 127 of the channel doorbell block, and ath11k takes that vote around ev
 BAR+4K-32 — which is every access it makes — so on a working host the chip is held awake for as long as
 the driver is driving it. We never asserted it once, and what kills us is the firmware deciding it may
 sleep. `sweetdwake=0` turns it off.
+
+## 1167-apollo-rddm-flush.patch
+
+The device wake changed nothing and diag still sends nothing even with the masks requested. Before chasing
+either further: the assert we have been reasoning from was read in k13b, and the driver has changed a great
+deal since — the data-path rings, the TLV tags, the rails, ASPM, the device wake. Re-read it. The RAM dump
+printer now pauses for a log flush after each step, so an early return cannot swallow the result the way it
+did in k13e and k13i.
