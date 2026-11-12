@@ -371,3 +371,11 @@ device wake is precisely what would keep that domain up.
 So deassert it: with `sweetdwake=0` write 0 to the doorbell rather than leaving the vote wherever it was,
 and keep `sweetwake=0` releasing `PCIE_SOC_WAKE` across the INIT window, so nothing on our side is holding
 the chip awake while it sequences.
+
+## 1180-apollo-quiet-init-window.patch
+
+The same thought, one level up. ath11k is interrupt-driven across `WMI_INIT`: between sending the command
+and the firmware's answer it touches nothing. We poll the copy engine registers every 10 ms, and each of
+those reads is a PCIe transaction that pulls the link out of L1 and the chip out of MHI M2 — exactly the
+states the firmware's power sequence is trying to reach. `sweetquiet=<ms>` stays off the bus entirely for
+that long first.

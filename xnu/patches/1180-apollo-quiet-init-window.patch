@@ -1,0 +1,24 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 482e54e..0335f9b 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2064,6 +2064,19 @@ wmi_init(void)
+ 	 * left sitting in the ring and never read. Whether one arrives decides what the crash even is — a
+ 	 * failed INIT, or a successful one followed by a power sequence we are not ready for.
+ 	 */
++	/*
++	 * Optionally stay off the bus entirely first. ath11k is interrupt-driven here and touches nothing
++	 * between sending INIT and the firmware's answer; we poll the copy engine registers every 10 ms, and
++	 * every one of those reads is a PCIe transaction that pulls the chip back out of L1 and out of MHI M2.
++	 * The firmware's power sequence needs the chip to actually reach its low-power state, so give it a
++	 * quiet window with no MMIO at all before we start looking.
++	 */
++	uint32_t quiet = 0;
++	(void)PE_parse_boot_argn("sweetquiet", &quiet, sizeof(quiet));
++	if (quiet) {
++		printf("SWEET WMI: quiet window, %u ms with no bus access\n", quiet);
++		pc_msleep(quiet);
++	}
+ 	for (int ms = 0; ms < 400; ms += 10) {
+ 		(void)er1_poll();
+ 		ce_poll();
