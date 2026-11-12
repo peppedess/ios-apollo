@@ -131,3 +131,61 @@ The most useful next move is a reference: mainline Linux with ath11k runs on sm8
 radio (the `board-2.bin` we extracted even carries Xiaomi_Pad_5Pro variants). Capturing what a working
 host does on one of those — the PARF and PHY register state at link-up, the regulator and clock votes, the
 QMI exchange — would turn the remaining search from guesswork into a diff.
+
+## The reference (12 November 2026, afternoon)
+
+The user chose "take a Linux reference" over more guessing, and the reference turned out to be already on
+the phone. Android no longer boots, but recovery does, and its kernel (4.19.325-cip136, LineageOS) has
+Qualcomm's `cnss2` bound to `qcom,cnss-qca6390` with `/sys/kernel/cnss/fs_ready` writable by root. One
+write runs the stock driver's whole power-up.
+
+Getting it to complete took three things:
+
+- the firmware file. Recovery does not mount the modem partition, so `ueventd` found nothing. Mount it:
+  `mount -t vfat -o ro /dev/block/by-name/modem /firmware`.
+- SELinux. Even mounted, `ueventd` is denied `search` on the vfat mount
+  (`avc: denied { search } ... tcontext=u:object_r:vfat:s0`), so it still reports
+  `could not find firmware`. `setenforce 0` plus a copy into `/etc/firmware/qca6390/`, the first path
+  `ueventd` tries, fixes it.
+- a clean state. `cnss` refuses a second power-up (`Already powered up`,
+  `Cannot set MHI state INIT(0) in current MHI state (0x5)`, `ASSERT at line 1158`), and
+  `/sys/kernel/cnss/shutdown` does not clear it. Reboot to recovery between attempts.
+
+With all three, writing `fs_ready`:
+
+```
+cnss: Processing driver event: COLD_BOOT_CAL_START(5), state: 0x0
+cnss: Regulator vdd-wlan-io / aon / dig / rfa1 / rfa2 is being enabled
+cnss: BT_EN_GPIO State: Off. Delay WLAN_GPIO enable
+cnss: Assert WLAN_EN GPIO successfully            (102 ms later)
+msm_pcie_link_train: PCIe RC0 link initialized
+cnss: Read register offset 0x1f8031c, val = 0x6 -> Write val 0x2
+cnss: Setting MHI state: INIT(0) / POWER_ON(2)
+ueventd: found /etc/firmware/qca6390/amss20.bin
+cnss: MHI status cb is called with reason MISSION_MODE(6)
+```
+
+**The chip boots to mission mode on this board, with this `amss20.bin`, under the stock driver.** That
+retires the whole elimination table at a stroke: the rails, their order and their modes, the clock
+buffers, the PCIe link and its ASPM state, the board data, the firmware image itself — none of them were
+ever the problem, because the stock driver uses the same ones and gets further than we need. Our own
+bring-up reaches mission mode too and completes QMI. The difference is entirely in what the host does
+between QMI and `WMI_INIT`.
+
+It stops there and no further: `cnss: fatal: Timeout waiting for FW ready indication`. The WLFW QMI
+service rides QRTR over the MHI IPCR channel and needs `qrtr-ns`, which lives on the vendor partition and
+is not in recovery. So the reference gives us mission mode and the power-up sequence, not the QMI or WMI
+exchange. For those, ath11k's source remains the reference.
+
+Also learned, for the record: the endpoint's config space in mission mode has MSI enabled with 32 vectors
+at address `0xa0000040` (the SMMU IOVA window) and base data 800, `MaxPayload` 128 B, `MaxReadRequest`
+512 B, link control `0x0002` (ASPM L1 on, L0s off), link status speed 2 width 1. `devmem` cannot be used
+for a register diff: recovery's kernel has no `/dev/mem`.
+
+### What the reference points at
+
+The firmware dies inside `_whal_pmm_wlan_pwr_seq_hwdtim_sleep`, polling
+`WCSS_CC_WCSS_WLAN1_GDSCR/PWR_ON` for 0 and asserting at line 502 when the WCSS never power-collapses. The
+firmware wants to sleep; something keeps the domain up. MHI's device wake is a host vote to keep the chip
+in M0, and we have been holding it asserted across `WMI_INIT` since 1172, on the opposite theory. 1179
+deasserts it.
