@@ -423,3 +423,19 @@ The instrument that settles this costs nothing: `MHISTATUS` lives at BAR + 0x48 
 always accessible and needs no wake vote. Poll it every 5 ms across the window and print the first
 millisecond at which SYSERR sets. That gives the crash latency directly, under each configuration, and
 tells us whether 1179 moved it at all from the 95 ms it has always been.
+
+### What 1182 measured
+
+Two runs of the same kernel, differing only in the wake flags, with `sweetquiet=600`:
+
+| run  | device wake | PCIE_SOC_WAKE | SYSERR in MHISTATUS |
+|------|-------------|---------------|---------------------|
+| k14h | asserted    | held          | +80 ms after INIT   |
+| k14i | deasserted  | released      | +80 ms after INIT   |
+
+Identical, to the resolution of the probe. The wake state has no bearing on the crash: the firmware dies
+80 ms after `WMI_INIT` whether the host is holding it awake, polling it, or standing completely off the
+bus. 1179, 1180 and 1181 are therefore all corrections to how we observe and resume, not to the failure —
+worth keeping, because they are what ath11k does and they are what made the measurement possible, but the
+cause lies elsewhere. The "437 ms" of k14f was an artefact: the SYS_ERR event needs a DMA the dead chip
+cannot make, so it only appeared when we woke the link.
