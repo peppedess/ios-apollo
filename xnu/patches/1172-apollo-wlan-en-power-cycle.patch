@@ -1,0 +1,26 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 2ce9328..f7c30a8 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2974,11 +2974,19 @@ pcie_main(void *arg __unused, wait_result_t w __unused)
+ 	vote_clk("rfclka1");
+ 	vote_clk("rfclka3");
+ 	vote_clk("lnbclka2");
++	/*
++	 * Power-cycle the chip. We had only ever driven WLAN_EN high, never low, so whatever state the chip
++	 * was left in — by the bootloader, by Android, or by our own previous test, which ends with the
++	 * firmware crashed and the WCSS power domain half collapsed — survived into the next run untouched.
++	 * The SoC reboots between tests; the WLAN chip does not. cnss2 holds WLAN_EN low while the rails
++	 * settle and raises it after 10 ms; hold it low long enough that the chip's own PMU drops everything.
++	 */
+ 	gpio_out(GPIO_PERST, 0);
+-	pc_msleep(10);
++	gpio_out(GPIO_WLAN_EN, 0);
++	pc_msleep(100);
+ 	gpio_out(GPIO_WLAN_EN, 1);
+ 	pc_msleep(100);
+-	printf("SWEET PCIE: WLAN_EN high, PERST# low, WAKE# reads %d\n", gpio_in(GPIO_WAKE));
++	printf("SWEET PCIE: WLAN_EN cycled low then high, PERST# low, WAKE# reads %d\n", gpio_in(GPIO_WAKE));
+ 	if (step < 2) {
+ 		return;
+ 	}

@@ -250,3 +250,15 @@ PME_D3COLD is ath11k telling an x86 host's firmware it may use a power state thi
 
 The board file is not the problem, incidentally: the phone carries `bd_j3s.elf`, `bd_j3sgl.elf` and
 `bd_j3sin.elf` beside the generic `bdwlan.e01`-`e25`, and J3S is apollo's own name.
+
+## 1172-apollo-wlan-en-power-cycle.patch
+
+`cal_done=1` and `nm_modem=0` change nothing either. But here is something we have never done at all: we
+only ever drove WLAN_EN **high**. Never low. So the chip has never been power-cycled by this driver — not
+once in this whole investigation. Whatever state it was left in survives into the next run: the SoC reboots
+between tests, the WLAN chip does not, and every test since the firmware started crashing has ended with
+its WCSS power domain half collapsed and its PMU mid-sequence. That is an excellent way to make a power
+domain refuse to collapse, and an excellent way to make every experiment produce the same answer.
+
+Hold WLAN_EN low for 100 ms before raising it, which is what cnss2's power-off and power-on do between
+them.
