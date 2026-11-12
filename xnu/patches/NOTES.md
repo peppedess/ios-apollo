@@ -225,3 +225,14 @@ boots a WMI_READY sent before the crash would have sat unread in the ring, and w
 that INIT had in fact succeeded. Drain the copy engines in that window too and say whether the ready flag
 is set. This is the difference between a failed INIT and a successful one followed by a power sequence we
 are not prepared for, and it has been invisible.
+
+## 1170-apollo-dump-format-pointers.patch
+
+k13w: no WMI_READY, and nothing else on CE2 either — the firmware answers INIT with silence and then dies.
+So INIT does not complete, and the power sequence is inside it.
+
+Diag is still mute, but the firmware's log is also in RAM, as records that point at their printf format
+strings, and those strings are in the image between 0x16ad000 and 0x181a000. Print every word of the first
+RAM-dump piece that falls in that range together with its offset; `tools/diagdec.py` resolves them against
+`amss20.bin`, and a run of them in offset order is the last thing the firmware had to say before the
+assert.

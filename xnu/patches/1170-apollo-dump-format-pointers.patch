@@ -1,0 +1,48 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index f9377f1..fe89711 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -867,7 +867,6 @@ wlan_rddm(void)
+ 			 * The crash record around the "Asserted in:" string holds the faulting thread's name and
+ 			 * its registers; print the words so the next run can be read without guessing.
+ 			 */
+-			pc_msleep(2500);
+ 			for (unsigned r = 0; r < (hits < 1 ? 8u : 0u); r++) {
+ 				uint32_t base = (start > 128 ? start - 128 : 0) + r * 32;
+ 				uint32_t v[8];
+@@ -879,8 +878,35 @@ wlan_rddm(void)
+ 			}
+ 			hits++;
+ 			o += 160;
++			pc_msleep(2500);
++		}
++	}
++	/*
++	 * The firmware's own log lives in RAM as records that point at their printf format strings, which are
++	 * in amss20.bin between 0x16ad000 and 0x181a000. Print every word of the first piece that falls in
++	 * that range, with its offset: tools/diagdec.py resolves them, and a run of them in offset order is
++	 * the last thing the firmware had to say.
++	 */
++	char fl[120];
++	unsigned fn = 0, found = 0;
++	for (uint32_t o = 0; o + 4 <= RDDM_SEG && found < 180; o += 4) {
++		uint32_t v = *(volatile uint32_t *)(g_rddm[0] + o);
++		if (v < 0x16ad000u || v >= 0x181a000u) {
++			continue;
++		}
++		fn += (unsigned)snprintf(fl + fn, sizeof(fl) - fn, "%x@%x ", v, o);
++		found++;
++		if (fn > 90) {
++			printf("SWEET MHI: fmt %s\n", fl);
++			fn = 0;
++			fl[0] = 0;
+ 		}
+ 	}
++	if (fn) {
++		printf("SWEET MHI: fmt %s\n", fl);
++	}
++	printf("SWEET MHI: %u format pointers in the first piece\n", found);
++	pc_msleep(2500);
+ 	/* then every long text run, which is where the firmware's last log lines are: sweetrddm=2, as walking
+ 	 * all nine pieces of device-mapped memory a byte at a time costs more time than the log survives */
+ 	uint32_t deep = 0;
