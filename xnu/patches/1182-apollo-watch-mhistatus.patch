@@ -1,0 +1,34 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index f31b8b0..d3b02c0 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2074,8 +2074,27 @@ wmi_init(void)
+ 	uint32_t quiet = 0;
+ 	(void)PE_parse_boot_argn("sweetquiet", &quiet, sizeof(quiet));
+ 	if (quiet) {
+-		printf("SWEET WMI: quiet window, %u ms with no bus access\n", quiet);
+-		pc_msleep(quiet);
++		/*
++		 * Watch MHISTATUS and nothing else. The SYS_ERR *event* only lands in the event ring once the chip
++		 * is awake enough to DMA it, so k14f's "firmware alive" at the end of the window meant nothing;
++		 * k14g read MHISTATUS at the end and found 0xff05 — SYSERR already set. MHISTATUS lives in the MHI
++		 * block at BAR + 0x48, which is always accessible and needs no wake vote, so polling it is the one
++		 * probe that tells us when the firmware actually dies without being the reason it dies.
++		 */
++		uint32_t st = 0, first = 0;
++		printf("SWEET WMI: quiet window, %u ms watching MHISTATUS only\n", quiet);
++		for (uint32_t ms = 0; ms < quiet; ms += 5) {
++			st = rd(g_bar, 0x48);
++			if ((st & 4u) && !first) {
++				first = 1;
++				printf("SWEET MHI: SYSERR in mhistatus %#x at +%u ms after INIT\n", st, ms);
++			}
++			pc_msleep(5);
++		}
++		if (!first) {
++			printf("SWEET MHI: no SYSERR in %u ms, mhistatus %#x (state %u)\n", quiet, st,
++			    (st >> 8) & 0xffu);
++		}
+ 	}
+ 	/*
+ 	 * Come back the way MHI does. k14f deasserted the device wake and the firmware lived through the whole

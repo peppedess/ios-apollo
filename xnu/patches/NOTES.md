@@ -401,3 +401,25 @@ vote and waits for `MHISTATUS` to report M0 before anything touches the bus. Do 
 127, poll `MHISTATUS` (BAR + 0x48, state in bits 15:8) for M0 with a 200 ms budget, and only then take
 `PCIE_SOC_WAKE` and start draining the rings. The copy-engine poll loop moves after the wake too, since
 every read in it was hitting a collapsed chip as well.
+
+## 1182-apollo-watch-mhistatus.patch
+
+k14g corrected k14f's reading. With a 300 ms quiet window and the proper MHI wake afterwards:
+
+```
+[  41.809] SWEET WMI: quiet window, 300 ms with no bus access
+[  42.334] SWEET MHI: wake after INIT: mhistatus 0xff05 (state 255) after 200 ms
+[  42.778] SWEET WMI: after INIT: CE3 head 0 tail 0 (hardware 4), firmware alive
+[  42.778] SWEET MHI: *** SYS_ERR: the QCA6390 firmware crashed ***
+```
+
+`0xff05` is READY | SYSERR: the firmware was already dead when the window ended, and the wake loop spent
+its whole 200 ms budget waiting for an M0 that was never coming. So k14f's "firmware alive" meant only
+that no SYS_ERR *event* had arrived — the event rides a DMA write the chip cannot make once it is
+collapsed or dead, which is why it appeared the instant we woke it. The device wake was never the thing
+keeping the firmware alive for 437 ms; it was keeping us from hearing that it had died.
+
+The instrument that settles this costs nothing: `MHISTATUS` lives at BAR + 0x48 in the MHI block, which is
+always accessible and needs no wake vote. Poll it every 5 ms across the window and print the first
+millisecond at which SYSERR sets. That gives the crash latency directly, under each configuration, and
+tells us whether 1179 moved it at all from the 95 ms it has always been.
