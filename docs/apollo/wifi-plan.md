@@ -86,3 +86,48 @@ printf format strings that are in the image — it emits them as Qualcomm F3 dia
 and 21 already work, so bringing up two more is a small step, and each F3 message carries the address of
 its format string, which we can resolve against `amss20.bin` and print. That turns every further question
 in this port from a boot-sized experiment into a log line.
+
+## Phase 4, second day (12 November 2026)
+
+The diagnosis was verified rather than assumed: k14e printed the firmware's crash record in full, and it
+reads `cmnos_thread.c` (the assert *printer's* own file — the printer is at 0x15836c0 and loads that
+string itself) followed by `Asserted in:0x1503340:0x1530258, line#502`, which is the form the firmware
+uses when the caller's file and function names have been stripped by QSHRINK. Line 502 belongs to the
+single site in `amss20.bin` that loads it — the register poll in `_whal_pmm_wlan_pwr_seq_hwdtim_sleep`
+waiting for `WCSS_CC_WCSS_WLAN1_GDSCR` PWR_ON to **clear**. The search for that site was redone correctly
+(the first pass masked Hexagon's parse bits and could have missed two encodings in three); still one site.
+
+So at WMI_INIT the firmware takes the WCSS power domain through a transition and the domain never
+responds. Everything before that — PCIe, MHI, the firmware download, QMI, the board data, HTC, the WMI
+service-ready events — works.
+
+### The second day's eliminations
+
+| suspicion | test | result |
+|---|---|---|
+| the firmware build | linux-firmware's QCA6390 hw2.0 blobs: a different build (2021-11-04), its own board file from `board-2.bin` | **same death, same place** |
+| the board file | `bd_j3s.elf`, `bdwlan.elf`, linux-firmware's board-id 255 entry | same |
+| the WLAN rails | the device-tree reading was wrong (it picked the *next* node's `qcom,resource-name`); redone, pm8150_s4/s5/s6 and pm8150a_s8 are smpa4/smpa5/smpa6/smpc8, exactly what we vote | same |
+| rail power mode | PMIC5 mode 7 (forced PWM) on all four | same |
+| the chip's reference clock | every clock buffer in this board's cmd-db: rfclka1, rfclka3, rfclkd3, rfclkd4, lnbclka1-3 (rfclka2 does not exist here) | same |
+| the BT side of the PMU | drive BT_EN (21) as well as WLAN_EN, as mainline's power sequencer does | same |
+| a wedged chip | WLAN_EN had **never** been driven low: the chip was never power-cycled between runs. Now it is | same (kept) |
+| the M3 image | aligned to 512 KiB, as `dma_alloc_coherent` would | same |
+| cold boot calibration | `cal_done=1` in the QMI host capability | same |
+| the sleep clock and PCIe claims | `nm_modem` 0x1e, 0x18 and 0 | same |
+| ASPM | L1 and L1.1/1.2 on both ends | same |
+| the controller refusing L1 | `PARF_PM_CTRL`'s REQ_NOT_ENTR_L1 — it was already clear | same |
+| per-ring MSI | an MSI address and data in every CE and data-path ring, as ath11k does | same |
+| the firmware's answer | drain CE2 through the window after INIT | no WMI_READY, nothing at all |
+| the firmware's own log | MHI channels 4 and 5 start, masks requested, nothing arrives — and the messages are QSHRINK'd anyway, so the format strings are not in the image | dead end |
+
+### Where that leaves it
+
+Two unrelated firmware builds fail identically, so the cause is in the board or in what the host does with
+it, and every host-side difference from ath11k that we can find is now closed. What remains is either
+inside the chip or in a corner of the SoC's PCIe controller we have not reached.
+
+The most useful next move is a reference: mainline Linux with ath11k runs on sm8250 phones with this exact
+radio (the `board-2.bin` we extracted even carries Xiaomi_Pad_5Pro variants). Capturing what a working
+host does on one of those — the PARF and PHY register state at link-up, the regulator and clock votes, the
+QMI exchange — would turn the remaining search from guesswork into a diff.
