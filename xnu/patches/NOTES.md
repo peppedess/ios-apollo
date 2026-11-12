@@ -439,3 +439,25 @@ bus. 1179, 1180 and 1181 are therefore all corrections to how we observe and res
 worth keeping, because they are what ath11k does and they are what made the measurement possible, but the
 cause lies elsewhere. The "437 ms" of k14f was an artefact: the SYS_ERR event needs a DMA the dead chip
 cannot make, so it only appeared when we woke the link.
+
+## 1183-apollo-qmi-wlan-ini.patch
+
+Reading ath11k's QMI path against ours line by line turned up three divergences, all in what the host
+tells the firmware about itself before mission mode.
+
+`QMI_WLANFW_WLAN_INI_REQ` (0x2f) is the one we never send at all. `ath11k_qmi_firmware_start` sends it
+ahead of `wlan_cfg` and `wlan_mode` whenever `hw_params.fw_wmi_diag_event` is set, and QCA6390 sets it. It
+carries one optional byte, `enablefwlog`, which ath11k sets to 1. Added here, behind `sweetini`.
+
+The other two are already boot-args and need no code:
+
+- `nm_modem`. ath11k builds it as `SLEEP_CLOCK_SELECT_INTERNAL_BIT | HOST_CSTATE_BIT` (QCA6390 has
+  `internal_sleep_clock`), `| PLATFORM_CAP_PCIE_GLOBAL_RESET` (it has `global_reset`), `|
+  PLATFORM_CAP_PCIE_PME_D3COLD` — 0x02 | 0x04 | 0x08 | 0x10 = **0x1e**. We have been sending 0x18, which
+  is the two PCIe bits with both sleep-clock and C-state bits clear.
+- `cal_done`. ath11k sends `ab->qmi.cal_done`, which is only set after a cold boot calibration, and
+  QCA6390 has `cold_boot_calib = false` — so ath11k sends **0** and we have been sending 1. Telling the
+  firmware its calibration is already valid when nothing ever calibrated is exactly the kind of lie that
+  leaves a power sequence waiting on a domain that never settles.
+
+`sweetnm=30 sweetcal=0` tests those two on their own, against the +80 ms the 1182 probe now measures.

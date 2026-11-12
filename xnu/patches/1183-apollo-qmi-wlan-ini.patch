@@ -1,0 +1,23 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index d3b02c0..8305b36 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2194,6 +2194,18 @@ wifi_start(void)
+ 	memcpy(t + o, tgt, sizeof(tgt)); o += sizeof(tgt);
+ 	t[o++] = 0x12; t[o++] = (uint8_t)(1 + sizeof(svc)); t[o++] = 0; t[o++] = 15;
+ 	memcpy(t + o, svc, sizeof(svc)); o += sizeof(svc);
++	/*
++	 * QMI_WLANFW_WLAN_INI_REQ (0x2f) comes first on this chip. ath11k sends it from
++	 * ath11k_qmi_firmware_start whenever hw_params.fw_wmi_diag_event is set, which QCA6390 sets, ahead of
++	 * wlan_cfg and wlan_mode; we have never sent it at all. It carries one optional byte, enablefwlog,
++	 * which ath11k sets to 1.
++	 */
++	uint32_t ini = 1;
++	(void)PE_parse_boot_argn("sweetini", &ini, sizeof(ini));
++	if (ini) {
++		const uint8_t inireq[] = { 0x10, 1, 0, 1 };
++		(void)wlfw_req(0x2f, inireq, sizeof(inireq), "wlan_ini");
++	}
+ 	if (wlfw_req(0x23, t, o, "wlan_cfg") != 0) {
+ 		return;
+ 	}
