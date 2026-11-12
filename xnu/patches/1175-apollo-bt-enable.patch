@@ -1,0 +1,42 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 45992c5..08c90b4 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -45,6 +45,7 @@ void apollo_pcie_init(void);
+ #define CFG_PA          0x60100000u
+ 
+ #define GPIO_WLAN_EN    20u
++#define GPIO_BT_EN      21u
+ #define GPIO_PERST      79u
+ #define GPIO_WAKE       81u
+ 
+@@ -3005,12 +3006,28 @@ pcie_main(void *arg __unused, wait_result_t w __unused)
+ 	 * The SoC reboots between tests; the WLAN chip does not. cnss2 holds WLAN_EN low while the rails
+ 	 * settle and raises it after 10 ms; hold it low long enough that the chip's own PMU drops everything.
+ 	 */
++	/*
++	 * Both enables. apollo's cnss node carries qcom,bt-en-gpio (21) beside wlan-en-gpio (20), and
++	 * mainline's QCA6390 power sequencer drives both high: the two sides of the chip share one internal
++	 * PMU, and the RF common supply it produces is not the WLAN side's alone. That would leave the
++	 * digital side working — which it does — and the radio unable to complete a power transition, which
++	 * is exactly where both firmware builds die. sweetbten=0 goes back to WLAN_EN alone.
++	 */
++	uint32_t bten = 1;
++	(void)PE_parse_boot_argn("sweetbten", &bten, sizeof(bten));
+ 	gpio_out(GPIO_PERST, 0);
+ 	gpio_out(GPIO_WLAN_EN, 0);
++	if (bten) {
++		gpio_out(GPIO_BT_EN, 0);
++	}
+ 	pc_msleep(100);
++	if (bten) {
++		gpio_out(GPIO_BT_EN, 1);
++		pc_msleep(10);
++	}
+ 	gpio_out(GPIO_WLAN_EN, 1);
+ 	pc_msleep(100);
+-	printf("SWEET PCIE: WLAN_EN cycled low then high, PERST# low, WAKE# reads %d\n", gpio_in(GPIO_WAKE));
++	printf("SWEET PCIE: WLAN_EN%s cycled, PERST# low, WAKE# reads %d\n", bten ? " and BT_EN" : "", gpio_in(GPIO_WAKE));
+ 	if (step < 2) {
+ 		return;
+ 	}

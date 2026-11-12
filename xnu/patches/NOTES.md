@@ -291,3 +291,19 @@ Both sets now travel in the payload: `amss20.bin`/`m3.bin`/`bd_j3s.elf` as befor
 `board-2.bin`, whose entry for chip id 0, board id 255 is exactly what this chip reports. (That container
 also carries Xiaomi_Pad_5Pro variants, which are sm8250 devices with the same radio, so a closer board file
 is there if the default one works but behaves oddly.) `sweetlf=1` selects the linux-firmware set.
+
+## 1175-apollo-bt-enable.patch
+
+k14c is the most informative run yet: linux-firmware's QCA6390 blobs (a different build, 2021-11-04,
+version 0x10121492, with its own board file from `board-2.bin`) go through the whole handshake and die at
+WMI_INIT **exactly** like the phone's. Two unrelated firmware builds, two board files, same death. So it
+is not the firmware, and it is not the board data.
+
+And the rails are right: the earlier reading of the device tree had been picking up the *next* node's
+`qcom,resource-name`. pm8150_s4 really is smpa4, s5 smpa5, s6 smpa6 and pm8150a_s8 smpc8, all as voted.
+
+What is left is the one enable we never touched. apollo's cnss node carries `qcom,bt-en-gpio` (21) beside
+`wlan-en-gpio` (20), and mainline's QCA6390 power sequencer drives **both** high. The two sides of the chip
+share one internal PMU, and the RF common supply it produces is not the WLAN side's alone — which would
+leave the digital side working, as it does, and the radio unable to finish a power transition, which is
+precisely where both firmwares die.
