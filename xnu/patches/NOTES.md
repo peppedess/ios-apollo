@@ -328,3 +328,14 @@ So: vote every clock buffer this board has. The `qca6390-pmu` binding takes RPMH
 PCIe reference clock — it boots and its Q6 runs — while the radio needs the real 38.4 MHz buffer. That is
 the shape of the failure we have, and whatever feeds that input here is one of the eight names cmd-db does
 list.
+
+## 1178-apollo-parf-l1-entry.patch
+
+Every clock buffer the board has is voted now (rfclka1, rfclka3, rfclkd3, rfclkd4, lnbclka1-3; rfclka2
+does not exist here) and nothing changed.
+
+`PARF_PM_CTRL` (PARF + 0x20) bit 5 is REQ_NOT_ENTR_L1: while it is set the SoC's PCIe controller refuses
+to let the link enter L1. We have never read or written that register — whatever the bootloader left is
+what every run so far has used. Enabling ASPM in the two config spaces (1164) does nothing if the
+controller is holding the link out of L1 anyway, and a link pinned in L0 keeps the endpoint out of the
+low-power states its firmware waits on. Clear it, and log what it was.

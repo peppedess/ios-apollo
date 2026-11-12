@@ -1,0 +1,20 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index d8513c4..b530978 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2148,6 +2148,15 @@ wifi_start(void)
+ 	(void)PE_parse_boot_argn("sweetaspm", &aspm, sizeof(aspm));
+ 	if (aspm) {
+ 		aspm_enable();
++		/*
++		 * PARF_PM_CTRL bit 5 is REQ_NOT_ENTR_L1: while it is set the controller refuses to let the link
++		 * enter L1, and we have never touched this register — whatever the bootloader left is what we
++		 * have been running with. A link that cannot leave L0 keeps the endpoint out of the low-power
++		 * states its firmware's light-sleep sequence waits for, which is where both firmware builds die.
++		 */
++		uint32_t pm = rd(g_parf, 0x20);
++		wr(g_parf, 0x20, pm & ~(1u << 5));
++		printf("SWEET PCIE: PARF_PM_CTRL %#x -> %#x\n", pm, rd(g_parf, 0x20));
+ 	}
+ 
+ 	win_wr(0x3004, 1);                                              /* ath11k_pci_force_wake */
