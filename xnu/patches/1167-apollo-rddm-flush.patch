@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
-index 18076ca..77a2937 100644
+index 18076ca..1f5c908 100644
 --- a/bsd/dev/apollo_pcie.c
 +++ b/bsd/dev/apollo_pcie.c
 @@ -813,6 +813,7 @@ wlan_rddm(void)
@@ -10,7 +10,7 @@ index 18076ca..77a2937 100644
  	if (n < RDDM_NSEG) {
  		return;
  	}
-@@ -833,6 +834,7 @@ wlan_rddm(void)
+@@ -833,19 +834,25 @@ wlan_rddm(void)
  		pc_msleep(20);
  	}
  	printf("SWEET MHI: RAM dump %s after %d ms (status %#x)\n", (st >> 30) == 2u ? "received" : "not received", ms, st);
@@ -18,3 +18,52 @@ index 18076ca..77a2937 100644
  	if ((st >> 30) != 2u) {
  		return;
  	}
+ 	/* the crash record and the firmware's own last messages: look for "Assert" and print what is around it */
+-	static const char key[] = "Assert";
++	/*
++	 * Only the first piece, and only two hits: the record lives at the start of the dump (0x20e52 in
++	 * k13c) and walking all 4.5 MiB of device-mapped memory a byte at a time takes long enough that the
++	 * log has twice ended before the result reached it.
++	 */
++	static const char key[] = "Asserted in";
+ 	unsigned hits = 0;
+-	for (unsigned i = 0; i < n && hits < 6; i++) {
+-		for (uint32_t o = 0; o + 200 < RDDM_SEG && hits < 6; o++) {
++	for (unsigned i = 0; i < 1u && hits < 2; i++) {
++		for (uint32_t o = 0; o + 200 < RDDM_SEG && hits < 2; o++) {
+ 			unsigned m = 0;
+-			while (m < 6 && *(volatile uint8_t *)(g_rddm[i] + o + m) == (uint8_t)key[m]) {
++			while (m < 11 && *(volatile uint8_t *)(g_rddm[i] + o + m) == (uint8_t)key[m]) {
+ 				m++;
+ 			}
+-			if (m < 6) {
++			if (m < 11) {
+ 				continue;
+ 			}
+ 			char ctx[193];
+@@ -860,7 +867,8 @@ wlan_rddm(void)
+ 			 * The crash record around the "Asserted in:" string holds the faulting thread's name and
+ 			 * its registers; print the words so the next run can be read without guessing.
+ 			 */
+-			for (unsigned r = 0; r < (hits < 2 ? 8u : 0u); r++) {
++			pc_msleep(2500);
++			for (unsigned r = 0; r < (hits < 1 ? 8u : 0u); r++) {
+ 				uint32_t base = (start > 128 ? start - 128 : 0) + r * 32;
+ 				uint32_t v[8];
+ 				for (unsigned j = 0; j < 8; j++) {
+@@ -873,10 +881,13 @@ wlan_rddm(void)
+ 			o += 160;
+ 		}
+ 	}
+-	/* then every long text run in every piece, which is where the firmware's last log lines are */
++	/* then every long text run, which is where the firmware's last log lines are: sweetrddm=2, as walking
++	 * all nine pieces of device-mapped memory a byte at a time costs more time than the log survives */
++	uint32_t deep = 0;
++	(void)PE_parse_boot_argn("sweetrddm", &deep, sizeof(deep));
+ 	unsigned shown = 0, run_n = 0;
+ 	char run[160];
+-	for (unsigned i = 0; i < n && shown < 90; i++) {
++	for (unsigned i = 0; deep > 1u && i < n && shown < 90; i++) {
+ 		for (uint32_t o = 0; o < RDDM_SEG && shown < 90; o++) {
+ 			uint8_t ch = *(volatile uint8_t *)(g_rddm[i] + o);
+ 			if (ch >= 0x20 && ch < 0x7f) {
