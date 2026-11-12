@@ -1,0 +1,26 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index fe89711..2ce9328 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2328,11 +2328,19 @@ wlfw_handshake(void)
+ 	 */
+ 	uint32_t nm = 0x18;
+ 	(void)PE_parse_boot_argn("sweetnm", &nm, sizeof(nm));
++	/*
++	 * cal_done. We have been sending 0, which is what ath11k sends on a first boot, and it tells the
++	 * firmware its calibration data is not valid yet — so at INIT it runs a cold boot calibration, which
++	 * is precisely a sequence that powers the radio up, measures, and powers it back down. Sending 1 says
++	 * the calibration is already done and there is nothing to run.
++	 */
++	uint32_t cal = 1;
++	(void)PE_parse_boot_argn("sweetcal", &cal, sizeof(cal));
+ 	uint8_t cap[] = {
+ 		0x10, 4, 0, 1, 0, 0, 0,  0x13, 1, 0, (uint8_t)nm,  0x14, 1, 0, 1,  0x16, 1, 0, 1,  0x17, 1, 0, 1,
+-		0x1a, 1, 0, 0,  0x1c, 1, 0, 0,
++		0x1a, 1, 0, (uint8_t)cal,  0x1c, 1, 0, 0,
+ 	};
+-	printf("SWEET WLFW: host_cap nm_modem %#x\n", nm);
++	printf("SWEET WLFW: host_cap nm_modem %#x, cal_done %u\n", nm, cal);
+ 	wlfw_send(0x34, cap, sizeof(cap));
+ 	if (wlfw_wait(&g_q.got, 3000, "host_cap") != 0 || g_q.result != 0) {
+ 		return;

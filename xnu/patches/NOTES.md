@@ -236,3 +236,17 @@ strings, and those strings are in the image between 0x16ad000 and 0x181a000. Pri
 RAM-dump piece that falls in that range together with its offset; `tools/diagdec.py` resolves them against
 `amss20.bin`, and a run of them in offset order is the last thing the firmware had to say before the
 assert.
+
+## 1171-apollo-cal-done.patch
+
+Reading the sleep sequence further shows it logging through QSHRINK'd messages — ids, not strings — so the
+diag route would not have been readable even once the channel worked. Back to what the host declares.
+
+`cal_done` in the QMI host capability has been 0, which is what ath11k sends on a first boot: it tells the
+firmware its calibration is not valid yet, and at INIT the firmware then runs a cold boot calibration —
+exactly a sequence that powers the radio up, measures, and powers it back down. `sweetcal=1` (the default
+now) says the calibration is already done. `sweetnm=0` drops the PCIe capability claims as well, since
+PME_D3COLD is ath11k telling an x86 host's firmware it may use a power state this board may not have.
+
+The board file is not the problem, incidentally: the phone carries `bd_j3s.elf`, `bd_j3sgl.elf` and
+`bd_j3sin.elf` beside the generic `bdwlan.e01`-`e25`, and J3S is apollo's own name.
