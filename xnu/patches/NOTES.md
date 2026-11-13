@@ -586,3 +586,32 @@ under Android the vote is simply inherited from whatever the bootloader left up 
 would have dropped when it took over RPMh. That also explains why the stock driver reaching mission mode
 proved nothing about this: the Q6 and MHI run off the XO, and nothing in that path ever needs the sleep
 clock. Only the WLAN section does, and the stock driver never got that far.
+
+### What 1186 measured
+
+The vote goes through — `SWEET RPMH: divclkc1 addr=0x45b00 ... SWEET PCIE: rpmh clock divclkc1 -> 0` —
+and SYSERR still lands at +80 ms after INIT. Eliminated. All eight clock resources this board has are now
+voted, and none of them is what the WCSS is waiting for.
+
+### Where the host-side search stands
+
+Measured with the 1182 probe, every one of these leaves the crash at +80 ms, unmoved:
+
+| run  | what changed |
+|------|--------------|
+| k14h/k14i | MHI device wake and PCIE_SOC_WAKE, held vs released |
+| k14i | no bus access at all across the window |
+| k14j | `nm_modem` 0x1e and `cal_done` 0, ath11k's values |
+| k14k | `QMI_WLANFW_WLAN_INI` added |
+| k14m | `wlan_mode` 7 — *refused by the firmware*, result 1 error 90 |
+| k14n | BT_EN left off, WLAN_EN alone, as the stock driver does |
+| k14o | wait for SERVICE_READY_EXT and EXT2, settle 200 ms, then INIT |
+| k14q | `divclkc1` voted |
+
+The one item left from the ath11k diff is `shadow_reg_v2` in `wlan_cfg`, which QCA6390 sets
+(`supports_shadow_regs = true`) and we send empty. After that the host side is genuinely exhausted, and
+the question becomes one we have never actually answered: **has this chip's WLAN section ever worked on
+this phone?** The stock driver in recovery proved the Q6 boots and MHI reaches mission mode, but it never
+touched the WCSS — nothing in that path does. Android no longer boots, so we have no witness. The way to
+get one is the recovery's own `qcacld` driver, which is built into that kernel (`wlan_hdd_state wlan
+major(485) initialized`, `/dev/wlan` present); it is gated on QMI, which is gated on QRTR's name service.
