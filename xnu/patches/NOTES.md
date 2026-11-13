@@ -832,3 +832,40 @@ It fits every symptom, including the ones that made the fault look impossible:
 `sweetqfprom=0` reverts to clearing bit 2 alone. The register is read and logged at both points it can be
 touched — in the reset path and once more just before INIT — so the run says outright whether bit 0 was
 set when we arrived, and whether the firmware's own boot re-arms it between the two.
+
+### k15: SHUTDOWN_EN was already clear
+
+```
+[  35.308] SWEET MHI: WLAON_QFPROM_PWR_CTRL 0x6 -> 0x2 (shutdown_en was 0, vdd4blow was 1)
+[  41.737] SWEET WMI: WLAON_QFPROM_PWR_CTRL before INIT 0x2 -> 0x2
+[  41.827] SWEET MHI: SYSERR in mhistatus 0xff05 at +80 ms after INIT
+```
+
+Bit 0 was 0 when we arrived and stayed 0. The write is still right — it is what the stock driver does on
+this board and it costs nothing — but the bit was never the problem. ±0 ms, as every run since the first.
+
+## 1191-apollo-power-state-probe.patch
+
+cnss2's register map gives us the one thing we had been missing: a host address for the registers the
+firmware dies on.
+
+```c
+#define QCA6390_WCSS_WFSS_PMM_WFSS_PMM_R0_PMM_CTRL 0x00B60164
+#define QCA6390_WCSS_PMM_TOP_PMU_CX_CSR            0x00B70080
+```
+
+The firmware's own strings name those same registers at `0xe0b60164` and `0xe0b70080`. The two views are
+the same blocks with the top nibble swapped — so every address in the power sequence we disassembled has
+a host address, and `0xe0c300c4`, the WLAN1 GDSCR the firmware dies polling for PWR_ON, is `0x00c300c4`
+from here.
+
+WCSS is unsafe to read directly while its clocks are off (k13n hung the phone on `0xc30004`), but WLAON
+is the always-on domain and carries the host-visible mirrors the stock driver reads in its own crash
+dump: `WL_PWR_STATUS_REG` (0x1f8002c) and `WCSS_TCSR_PMM_SR_STATUS_LO/HI` (0x1f806d0 / 0x1f806cc). This
+patch dumps ten WLAON power registers once before INIT — including `GDSC_DELAY_SETTING` and
+`SETTING2`, which configure the GDSC handshake timing itself — and then polls the three status registers
+every 5 ms alongside MHISTATUS, printing every change.
+
+That turns the 80 ms from a black box into a timeline. Until now everything we know about the failure
+came from reading the firmware's disassembly and inferring; this is the first probe that watches the
+power state machine while it fails. `sweetpwr=0` reverts to MHISTATUS alone.
