@@ -537,3 +537,26 @@ the mac/phy and hw-mode capabilities out of them, and only then calls `ath11k_wm
 This patch latches both events and waits for them before INIT, then lets the chip settle
 (`sweetsettle`, default 200 ms) with the rings drained. `sweetext=0` goes back to the old behaviour for a
 controlled comparison. The +80 ms probe from 1182 is what reads the answer.
+
+### What 1185 measured
+
+Both events arrive and are latched, the chip settles for 200 ms, and then:
+
+```
+[  41.722] SWEET WMI: ext 1 ext2 1, settling 200 ms before INIT
+[  41.942] SWEET WMI: INIT (variant 0, 332 bytes, ...)
+[  42.032] SWEET MHI: SYSERR in mhistatus 0xff05 at +80 ms after INIT
+```
+
+So the race was real but harmless: INIT arriving mid-stream was not what killed it. The patch stays,
+because it is what ath11k does and because having EXT and EXT2 latched is what any later capability
+parsing will need. The run also turned up `WMI_SERVICE_AVAILABLE` (event 0x3, tag 0x22f) ahead of
+service ready, which we had never logged either.
+
+With 1179-1185 the host side is, as far as the ath11k source goes, exhausted: every QMI message, every
+WMI message, the CE table, the service map, the rails and their voltages, the GPIO sequence, the wake
+discipline and the event ordering all match, every request is accepted, and the firmware still dies at
++80 ms in the same WCSS power-collapse poll. That points away from what the host *says* and towards what
+the chip *has* — and the one input to a PMU state machine that nothing in the QMI exchange can supply is
+its sleep clock. Next: dump every RPMh resource cmd-db knows about (`sweetrpmhdump=1`) and look for a
+clock the bootloader was holding up that we are not.
