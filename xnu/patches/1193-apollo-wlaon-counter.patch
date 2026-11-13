@@ -1,0 +1,60 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index f2ab03f..538fbf6 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -215,6 +215,7 @@ static const uint16_t phy_seq[][2] = {
+ #define MEM_PA          0x60300000u
+ #define MEM_END         0x63ffffffu
+ static vm_offset_t g_bar;
++static uint32_t g_timefreq;                 /* cap response TLV 0x17: the rate WLAON's counter should run at */
+ static volatile int g_sysfail;
+ 
+ static const char *
+@@ -2149,6 +2150,28 @@ wmi_init(void)
+ 		uint32_t pwr = 1;
+ 		(void)PE_parse_boot_argn("sweetpwr", &pwr, sizeof(pwr));
+ 		if (pwr) {
++			/*
++			 * Measure WLAON's own counter against ours. GLOBAL_COUNTER_CTRL5 (0x1f80120) is the enable
++			 * — 0 clears, 0x80000000 runs — and CTRL3/CTRL4 (0x1f80118/0x1f8011c) are the low and high
++			 * halves, exactly as cnss_pci_get_device_timestamp reads them. The firmware told us in the
++			 * capability response what rate it expects; sample the counter across 100 ms of our own time
++			 * and compare. The GDSC power-down handshake is timed in WLAON, by this clock, and the
++			 * firmware's poll gives it about twenty milliseconds. A counter running slow by a large
++			 * factor would make a handshake that normally takes microseconds overrun that budget, which
++			 * is the shape of what k17 showed: nothing for 55 ms, one state step, then the assert.
++			 */
++			win_wr(0x1f80120, 0);
++			win_wr(0x1f80120, 0x80000000u);
++			uint32_t c0lo = win_rd(0x1f80118), c0hi = win_rd(0x1f8011c);
++			pc_msleep(100);
++			uint32_t c1lo = win_rd(0x1f80118), c1hi = win_rd(0x1f8011c);
++			uint64_t t0 = ((uint64_t)c0hi << 32) | c0lo, t1 = ((uint64_t)c1hi << 32) | c1lo;
++			printf("SWEET PWR: WLAON counter %llu -> %llu in 100 ms = %llu Hz, firmware expects %u Hz\n",
++			    t0, t1, (t1 - t0) * 10ull, g_timefreq);
++			printf("SWEET PWR: RTC cal %#x %#x %#x %#x %#x %#x %#x %#x %#x\n",
++			    win_rd(0x1f80200), win_rd(0x1f80204), win_rd(0x1f80208), win_rd(0x1f8020c),
++			    win_rd(0x1f80210), win_rd(0x1f80214), win_rd(0x1f80218), win_rd(0x1f8021c),
++			    win_rd(0x1f80220));
+ 			printf("SWEET PWR: WLAON soc_power_ctrl %#x wl_pwr_status %#x pmm_sr_lo %#x pmm_sr_hi %#x "
+ 			    "gdsc_delay %#x/%#x rfa_mem_slp %#x wcssaon_cfg %#x clk_kdf %#x clk_hfrc %#x\n",
+ 			    win_rd(0x1f80000), win_rd(0x1f8002c), win_rd(0x1f806d0), win_rd(0x1f806cc),
+@@ -2513,6 +2536,18 @@ wlfw_board(void)
+ 	if ((v = tlv_find(g_q.rsp, g_q.rsplen, 0x19, &l))) {
+ 		printf("SWEET WLFW: eeprom cal data advertised\n");
+ 	}
++	/*
++	 * TLV 0x17 of the capability response is time_freq_hz: the rate the firmware believes its own
++	 * always-on counter runs at. cnss2 keeps it as plat_priv->device_freq_hz and divides the counter by it
++	 * to turn device ticks into microseconds. It is the firmware's own statement of what clocks WLAON —
++	 * and WLAON is what times the GDSC power-down handshake the firmware dies waiting for. Having the
++	 * number lets us measure the counter from the host and see whether the chip's always-on clock is
++	 * actually running at the rate the firmware is counting on.
++	 */
++	if ((v = tlv_find(g_q.rsp, g_q.rsplen, 0x17, &l)) && l >= 4) {
++		memcpy(&g_timefreq, v, 4);
++		printf("SWEET WLFW: device counter frequency %u Hz\n", g_timefreq);
++	}
+ 
+ 	/*
+ 	 * Which board file. The chip reports board id 0xff, and cnss2's rule for 0xff is not the plain

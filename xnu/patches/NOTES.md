@@ -908,3 +908,47 @@ block — the same always-accessible region as the LTSSM and hot-reset registers
 the host's window into the WCSS state machine without reading WCSS itself, which is what hung the phone
 in k13n. This patch swaps the flat save/restore pair for those two and samples every 1 ms for the first
 120 ms instead of every 5, so the 60 ms step and whatever precedes it are resolved properly.
+
+### k17: one step, and then nothing
+
+At 1 ms resolution the whole window holds exactly one transition:
+
+```
++0 ms   wl_pwr_status 0x9  wcss_dbg_low 0x4402002
++55 ms  wl_pwr_status 0xf  wcss_dbg_low 0x3402001
++76 ms  SYSERR
+```
+
+Fifty-five milliseconds of nothing at all, one state change, and twenty-one milliseconds later the
+assert. Both fields in the debug register step down by one — 2 to 1 in the low nibble, 4 to 3 in bits
+26:24 — a state machine advancing a single step and then stopping where it should have carried on.
+
+That also fixes the firmware's budget, which we had only bounded before. The poll does not start at INIT;
+it starts when the collapse is requested, at +55 ms, and gives up ~21 ms later. The two constants at the
+poll wrapper, 100 and 1000, are a hundred iterations of roughly two hundred microseconds.
+
+So the question is now exactly this: after a correct collapse request, WLAN1's GDSC keeps PWR_ON asserted
+for more than twenty milliseconds. A GDSC power-down is microseconds of work.
+
+## 1193-apollo-wlaon-counter.patch
+
+What times a GDSC power-down handshake is WLAON, and WLAON runs off the chip's always-on clock. If that
+clock is slow or stopped, every delay counted in it stretches, and a handshake that should take
+microseconds overruns the firmware's twenty-millisecond budget — which is the exact shape of k17.
+
+Two things make this measurable rather than another guess:
+
+- The capability response carries **TLV 0x17, `time_freq_hz`**: the firmware's own statement of the rate
+  it believes that counter runs at. cnss2 keeps it as `plat_priv->device_freq_hz` and divides by it to
+  convert device ticks to microseconds. We have been receiving this TLV since the first run and ignoring
+  it.
+- `WLAON_GLOBAL_COUNTER_CTRL5` (0x1f80120) enables the counter, `CTRL3`/`CTRL4` (0x1f80118 / 0x1f8011c)
+  are its low and high halves — exactly what `cnss_pci_get_device_timestamp` reads.
+
+So: clear the counter, start it, sample it across 100 ms of our own time, and print the measured rate
+beside the rate the firmware expects. The nine `RTC_CLK_CAL_CTRL` registers go in the same dump, since
+they sit right beside the GDSC delay settings and are where the chip calibrates that clock.
+
+If the two numbers agree, the always-on clock is fine and this whole line of reasoning is dead. If they
+disagree, we have the cause — and it is a board-level clock, which is exactly the class of thing a port
+gets wrong and a stock driver never has to think about.
