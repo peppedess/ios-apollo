@@ -703,3 +703,43 @@ copy engines at 0xa00000 and 0xa01000 stepping 0x2000 — CE0, CE3, CE4 and CE7 
 CE5 as destinations with their status rings. Thirty of a possible thirty-six.
 
 `sweetshadow=0` sends it empty again.
+
+### What 1187 and 1188 measured
+
+Both accepted, neither moves the crash:
+
+```
+[  41.491] SWEET WLFW: host_cap (cnss2 shape): cal_done 0, ddr_range 0xc0000000 + 0x40000000
+[  41.502] SWEET WLFW: response 0x34: result 0 error 0
+...
+[  42.141] SWEET MHI: SYSERR in mhistatus 0xff05 at +80 ms after INIT
+```
+
+```
+[  41.685] SWEET WLFW: wlan_cfg with 30 shadow registers
+[  41.707] SWEET WLFW: response 0x23: result 0 error 0
+...
+[  42.077] SWEET MHI: SYSERR in mhistatus 0xff05 at +80 ms after INIT
+```
+
+**The host-side diff is now exhausted.** Against ath11k and against cnss2 — the driver that ran this chip
+on this board for years — every QMI message, every TLV, the CE table, the service map, the shadow
+register table, the rails and their voltages, every clock resource the board has, the GPIO sequence, the
+wake discipline, the event ordering and the data path all match or have been tried both ways. Every
+request is accepted. The crash has not moved by one millisecond across sixteen experiments.
+
+### What the failure actually says
+
+Worth stating plainly, because it narrows what is left. The firmware asserts at line 495 of
+`_whal_pmm_wlan_pwr_seq_hwdtim_sleep`, polling the WLAN1 GDSC for PWR_ON to clear. It does **not** assert
+in the clock-off polls that precede it (`WCSS_CC_WCSS_MAC0_MAC_CBCR/CLK_OFF`,
+`WCSS_CC_WCSS_PHYA_320_CBCR/CLK_OFF` are separate call sites with their own line numbers), and it does
+not assert on the way up. So at INIT the WCSS powers **on** correctly, its clocks turn **off**
+correctly, and then the domain refuses to collapse — for the firmware's whole 100 ms budget, from the
+first sample to the last.
+
+A GDSC that powers on but will not collapse is either in hardware control, where SW_COLLAPSE is ignored
+and the domain follows hardware requests, or still has a power request asserted into it from another
+block. Neither is something the host writes directly. The next step is therefore not another host-side
+guess: it is to disassemble the path from the `WMI_INIT` handler to this sequence and find what selects
+it, through the ops table at 0x14280e0 that holds the function pointer.
