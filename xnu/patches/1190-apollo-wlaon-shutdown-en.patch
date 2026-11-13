@@ -1,0 +1,55 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 3297457..67946d7 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -464,7 +464,27 @@ ath11k_sw_reset(void)
+ 	printf("SWEET MHI: sw reset: ltssm %#x hot_rst %#x\n", v, win_rd(0x1e402bc));
+ 	delay(5000);
+ 	win_wr(0x1e08228, 0xffffffffu);                                 /* PCIE_PCIE_INT_ALL_CLEAR */
+-	win_wr(0x1f8031c, win_rd(0x1f8031c) & ~4u);                    /* WLAON_QFPROM_PWR_CTRL: VDD4BLOW off */
++	/*
++	 * WLAON_QFPROM_PWR_CTRL. ath11k clears only VDD4BLOW_SW_EN (bit 2), because on the x86 cards it targets
++	 * nothing ever sets the other bit. apollo is different: its device tree carries qcom,set-wlaon-pwr-ctrl,
++	 * so the stock cnss2 runs cnss_pci_set_wlaon_pwr_ctrl() on this board and that function clears
++	 * SHUTDOWN_EN (bit 0) as well as VDD4BLOW, right before cnss_pci_start_mhi(). The same function *sets*
++	 * SHUTDOWN_EN on every power-down. The register lives in WLAON, the always-on domain, which survives a
++	 * WCSS power collapse and a Q6 reset -- so the bit the last Android (or our own recovery experiments,
++	 * which ran cnss2 power-down cycles) left behind is still standing when we boot, and nothing in our
++	 * path has ever cleared it. A shutdown request latched in the always-on domain does not stop the Q6,
++	 * MHI or QMI; it stops a power-domain collapse, which is exactly where the firmware dies: WLAN1's GDSC
++	 * powers on, its clocks gate off, and then the domain refuses to collapse, so
++	 * _whal_pmm_wlan_pwr_seq_hwdtim_sleep times out polling WCSS_CC_WCSS_WLAN1_GDSCR/PWR_ON.
++	 */
++	{
++		uint32_t qf = 1;
++		(void)PE_parse_boot_argn("sweetqfprom", &qf, sizeof(qf));
++		uint32_t pc = win_rd(0x1f8031c);
++		win_wr(0x1f8031c, qf ? (pc & ~5u) : (pc & ~4u));
++		printf("SWEET MHI: WLAON_QFPROM_PWR_CTRL %#x -> %#x (shutdown_en was %u, vdd4blow was %u)\n",
++		    pc, win_rd(0x1f8031c), pc & 1u, (pc >> 2) & 1u);
++	}
+ 	/* fix_l1ss */
+ 	set_link_reg(0x01e0c0ac, 0x10, 0xffffffffu);                   /* QSERDES_COM_SYSCLK_EN_SEL */
+ 	set_link_reg(0x01e0c628, 0x02, 0xffu);                          /* PCS_OSC_DTCT_CONFIG1 */
+@@ -2068,6 +2088,21 @@ wmi_init(void)
+ 	 */
+ 	uint32_t wake = 0;
+ 	(void)PE_parse_boot_argn("sweetwake", &wake, sizeof(wake));
++	/*
++	 * Read WLAON_QFPROM_PWR_CTRL once more here, and clear SHUTDOWN_EN again if it came back. The reset
++	 * path already cleared it, but the firmware's own boot runs between the two points and this is the last
++	 * moment the host can touch the register before the power sequence starts. If the log shows it set
++	 * again at this point, something in the firmware boot re-arms it and the fix belongs elsewhere.
++	 */
++	{
++		uint32_t qf = 1;
++		(void)PE_parse_boot_argn("sweetqfprom", &qf, sizeof(qf));
++		uint32_t pc = win_rd(0x1f8031c);
++		if (qf && (pc & 5u)) {
++			win_wr(0x1f8031c, pc & ~5u);
++		}
++		printf("SWEET WMI: WLAON_QFPROM_PWR_CTRL before INIT %#x -> %#x\n", pc, win_rd(0x1f8031c));
++	}
+ 	printf("SWEET WMI: INIT (variant %u, %u bytes, %u chains, mask %#x): vdevs %u peers %u tids %u msdu %u frag %u wow %u pdev_id %u\n",
+ 	    var, len, chains, mask, cfg[1], cfg[2], cfg[6], cfg[29], cfg[30], cfg[35], cfg[54]);
+ 	if (!wake) {

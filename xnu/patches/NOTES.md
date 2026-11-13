@@ -776,3 +776,59 @@ Board data is where the PMM's power and clock-gating configuration lives. It is 
 let everything digital work — boot, QMI, HTC, WMI capabilities, all of which do work — and then break
 precisely when the firmware sequences the radio's power domains, which is where we die. `sweetbdf` now
 picks: 0 the global file (the default), 1 `bd_j3s.elf`, 2 the generic `bdwlan.elf`.
+
+### k14v: the global board file is not it either
+
+`k14v` loaded `bd_j3sgl.elf` and died exactly as before:
+
+```
+[  41.328] SWEET WLFW: board file bd_j3sgl.elf, 57968 bytes (7f454c46)
+[  41.758] SWEET WMI: INIT (variant 0, 332 bytes, 2 chains, mask 0x3): ...
+[  41.848] SWEET MHI: SYSERR in mhistatus 0xff05 at +80 ms after INIT
+```
+
+±0 ms against every other run. The board file was the right thing to fix — we had been sending the
+China variant for months — but it is not the cause.
+
+## 1190-apollo-wlaon-shutdown-en.patch
+
+One bit, latched in a domain that never loses power.
+
+`WLAON_QFPROM_PWR_CTRL` (0x1f8031c) has two bits that matter: `VDD4BLOW_SW_EN` (bit 2) and
+`SHUTDOWN_EN` (bit 0). ath11k's `ath11k_pci_sw_reset` clears **only** bit 2, and so have we since the
+first run, because that is the code we ported. ath11k is right for the cards it drives. It is wrong here,
+and apollo's own device tree says so:
+
+```
+soc/qcom,cnss-qca6390@b0000000/qcom,set-wlaon-pwr-ctrl
+```
+
+That property is what makes the stock cnss2 run `cnss_pci_set_wlaon_pwr_ctrl()` on this board, and the
+function clears bit 0 together with bit 2, immediately before `cnss_pci_start_mhi()`:
+
+```c
+if (set_shutdown) val |=  QFPROM_PWR_CTRL_SHUTDOWN_EN_MASK;
+else              val &= ~QFPROM_PWR_CTRL_SHUTDOWN_EN_MASK;
+```
+
+The same function **sets** bit 0 on every power-down (`set_wlaon_pwr_ctrl(pci_priv, false, true, …)` in
+all three teardown paths) and then sleeps 1-2 ms to let it take. WLAON is the always-on domain: it
+survives a WCSS power collapse, a Q6 reset and our `soc_global_reset`. So the shutdown request the last
+Android left behind — or the one cnss2 itself set during our recovery experiments, which power-cycled the
+chip through that very path — is still standing when iOS boots, and nothing of ours has ever cleared it.
+
+It fits every symptom, including the ones that made the fault look impossible:
+
+- A shutdown request in the always-on domain does not stop the Q6, MHI, QMI, HTC or WMI capability
+  exchange. All of that is digital and all of it works.
+- It stops a **power-domain collapse**. Which is precisely and only where we die: WLAN1's GDSC powers on
+  (no assert on the way up), its clocks gate off (the `CLK_OFF` polls at their own line numbers pass),
+  and then the domain refuses to collapse, so `_whal_pmm_wlan_pwr_seq_hwdtim_sleep` line 495 times out
+  polling `WCSS_CC_WCSS_WLAN1_GDSCR/PWR_ON` for 0 — on the firmware's own 100 ms budget, hence ±0 ms
+  every single run.
+- It is board-specific. A generic ath11k card has no `qcom,set-wlaon-pwr-ctrl`, so upstream never needed
+  the write and we never inherited it.
+
+`sweetqfprom=0` reverts to clearing bit 2 alone. The register is read and logged at both points it can be
+touched — in the reset path and once more just before INIT — so the run says outright whether bit 0 was
+set when we arrived, and whether the firmware's own boot re-arms it between the two.
