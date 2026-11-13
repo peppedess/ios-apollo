@@ -1,0 +1,35 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 13f26c3..3297457 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2442,18 +2442,24 @@ wlfw_board(void)
+ 	}
+ 
+ 	/*
+-	 * The chip reports board id 0xff, which is what cnss2 reads when the board is not fused: its rule is
+-	 * then the plain "bdwlan.elf", not a variant. We have been sending Xiaomi's bd_j3s.elf. sweetbdf=1
+-	 * swaps them, since wrong board data is one of the few things that would let everything digital work
+-	 * and only break when the firmware configures the radio.
++	 * Which board file. The chip reports board id 0xff, and cnss2's rule for 0xff is not the plain
++	 * bdwlan.elf: cnss_get_bdf_file_name hands that case to cnss_get_xiaomi_bdf_elf_file_name, which
++	 * picks by hardware platform *and country*. For HARDWARE_PLATFORM_APOLLO that is bd_j3sgl.elf for a
++	 * global device, bd_j3sin.elf for India and bd_j3s.elf only as the default — and this phone's
++	 * cmdline says androidboot.hwc=GLOBAL. So the driver that ran this chip for years loaded
++	 * bd_j3sgl.elf, and every run of ours has sent bd_j3s.elf, the China variant: a different file,
++	 * 57968 bytes against 58040, differing in 4981 bytes. Board data is where the PMM's power and
++	 * clock-gating configuration lives, which is exactly the part that fails. sweetbdf picks: 0 the
++	 * global file, 1 bd_j3s.elf, 2 the generic bdwlan.elf.
+ 	 */
+ 	uint32_t bdf = 0;
+ 	(void)PE_parse_boot_argn("sweetbdf", &bdf, sizeof(bdf));
+ 	uint32_t bdlen = 0;
+-	const char *bdname = use_linux_firmware() ? "bd_lf.elf" : (bdf ? "bdwlan.elf" : "bd_j3s.elf");
++	const char *bdname = use_linux_firmware() ? "bd_lf.elf" :
++	    (bdf == 2 ? "bdwlan.elf" : bdf == 1 ? "bd_j3s.elf" : "bd_j3sgl.elf");
+ 	const uint8_t *bd = wlan_firmware(bdname, &bdlen);
+ 	if (!bd) {
+-		bdname = bdf ? "bd_j3s.elf" : "bdwlan.elf";
++		bdname = "bd_j3s.elf";
+ 		bd = wlan_firmware(bdname, &bdlen);
+ 	}
+ 	if (!bd) {

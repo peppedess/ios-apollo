@@ -743,3 +743,36 @@ and the domain follows hardware requests, or still has a power request asserted 
 block. Neither is something the host writes directly. The next step is therefore not another host-side
 guess: it is to disassemble the path from the `WMI_INIT` handler to this sequence and find what selects
 it, through the ops table at 0x14280e0 that holds the function pointer.
+
+## 1189-apollo-global-board-data.patch
+
+We have been sending the wrong board file since the first run.
+
+The chip reports board id 0xff, and the note on 1140 said cnss2's rule for 0xff is the plain
+`bdwlan.elf`. That is ath11k's rule, not cnss2's. In the phone's own kernel,
+`cnss_get_bdf_file_name` hands `board_id == 0xFF` to `cnss_get_xiaomi_bdf_elf_file_name`, which picks by
+hardware platform **and country**:
+
+```c
+case HARDWARE_PLATFORM_APOLLO:
+	switch (hw_country_ver) {
+	case CountryGlobal: ELF_BDF_FILE_NAME_J3S_GLOBAL;  /* bd_j3sgl.elf */
+	case CountryIndia:  ELF_BDF_FILE_NAME_J3S_INDIA;   /* bd_j3sin.elf */
+	default:            ELF_BDF_FILE_NAME_J3S;         /* bd_j3s.elf   */
+	}
+```
+
+And this phone's own cmdline settles which branch it takes:
+
+```
+androidboot.hwc=GLOBAL
+```
+
+So for the years this chip worked, the driver loaded **`bd_j3sgl.elf`**. Every run of ours has sent
+`bd_j3s.elf`, the China variant — a different file, 57968 bytes against 58040, differing in 4981 of
+them. Both are on the modem partition, along with seventeen other variants, so nothing ever complained.
+
+Board data is where the PMM's power and clock-gating configuration lives. It is the one input that can
+let everything digital work — boot, QMI, HTC, WMI capabilities, all of which do work — and then break
+precisely when the firmware sequences the radio's power domains, which is where we die. `sweetbdf` now
+picks: 0 the global file (the default), 1 `bd_j3s.elf`, 2 the generic `bdwlan.elf`.
