@@ -634,3 +634,30 @@ there, whatever is done from userspace; `qrtr-ns` is beside the point. The `qcac
 ready, but it cannot. The vendor partition is not mapped either (`/dev/block/mapper` is empty), so there
 is nothing to borrow. Getting a witness for this chip's WLAN section would take a recovery kernel built
 with QRTR, which is a project of its own.
+
+## 1187-apollo-cnss2-host-cap.patch
+
+The user settled the open question: Wi-Fi worked on this phone for years, under MIUI and under LineageOS.
+The chip's WLAN section is sound, the radio works, and whatever is wrong is ours. That also means there
+is a host that is known to drive this exact chip on this exact board — and it is not ath11k. It is
+`cnss2`, in the phone's own kernel, which we had never read.
+
+Its `host_cap` is not ath11k's. Reading `cnss_wlfw_host_cap_send_sync` and the
+`wlfw_host_cap_req_msg_v01_ei` table out of `LineageOS/android_kernel_xiaomi_sm8250` gives the real TLV
+map and three differences:
+
+- **no `nm_modem` (0x13).** ath11k sends it because its QCA6390 hw_params carry `internal_sleep_clock`,
+  which exists for the non-Qualcomm platforms ath11k runs on. cnss2 never sends it on a Qualcomm
+  platform. We have been sending it every single run, in every variant — 0x18, 0x1e, 0 — and "0" is not
+  the same message as *absent*: it tells the firmware "use the external sleep clock", where absent lets
+  the firmware decide from its board data.
+- **no `mem_cfg_mode` (0x1c).** Also ath11k's.
+- **`ddr_range` (0x1f)**, two 64-bit words — start and size of the window of host DDR the chip may
+  touch. On Android that is the SMMU IOVA range, `0xa0000000` for `0x10010000`. We have never sent it, so
+  the firmware has only ever learned where its memory is from `respond_mem`, one segment at a time.
+
+This patch sends cnss2's shape: num_clients, bdf_support, m3_support, m3_cache_support, cal_done and
+ddr_range, with nothing else. `host_cap` goes out before `respond_mem`, so the segments do not exist yet
+and the range covers the window the pool allocates from — runs have placed the firmware's DDR anywhere
+between 0xd0000000 and 0xd2800000, so a single guessed region would leave the next run outside it.
+`sweethostcap=0` restores ath11k's shape for a controlled comparison.

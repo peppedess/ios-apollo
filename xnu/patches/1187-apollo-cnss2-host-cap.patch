@@ -1,0 +1,70 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 36c7701..770e042 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2528,12 +2528,59 @@ wlfw_handshake(void)
+ 	 */
+ 	uint32_t cal = 1;
+ 	(void)PE_parse_boot_argn("sweetcal", &cal, sizeof(cal));
+-	uint8_t cap[] = {
+-		0x10, 4, 0, 1, 0, 0, 0,  0x13, 1, 0, (uint8_t)nm,  0x14, 1, 0, 1,  0x16, 1, 0, 1,  0x17, 1, 0, 1,
+-		0x1a, 1, 0, (uint8_t)cal,  0x1c, 1, 0, 0,
+-	};
+-	printf("SWEET WLFW: host_cap nm_modem %#x, cal_done %u\n", nm, cal);
+-	wlfw_send(0x34, cap, sizeof(cap));
++	/*
++	 * Two shapes of this message. ath11k's is what we have sent all along; cnss2's is what actually ran
++	 * this chip on this phone for years, and it differs in three ways. It sends no nm_modem at all (0x13)
++	 * and no mem_cfg_mode (0x1c) — both are ath11k's, for the non-Qualcomm platforms it runs on — and it
++	 * adds ddr_range (0x1f), two 64-bit words naming the window of host DDR the chip may touch, which on
++	 * Android is the SMMU IOVA range. We have never told the firmware where its memory lives; it has had
++	 * to find out from respond_mem alone. sweethostcap=0 goes back to ath11k's shape.
++	 */
++	uint32_t stockcap = 1;
++	(void)PE_parse_boot_argn("sweethostcap", &stockcap, sizeof(stockcap));
++	if (stockcap) {
++		uint64_t lo = 0, hi = 0;
++		for (unsigned i = 0; i < g_nseg; i++) {
++			if (!lo || g_seg[i].pa < lo) {
++				lo = g_seg[i].pa;
++			}
++			if (g_seg[i].pa + g_seg[i].size > hi) {
++				hi = g_seg[i].pa + g_seg[i].size;
++			}
++		}
++		/*
++		 * host_cap goes out before respond_mem, so the segments do not exist yet. Declare the window the
++		 * pool actually allocates from — runs have placed the firmware's DDR anywhere from 0xd0000000 to
++		 * 0xd2800000 — rather than guess one region and leave the next run outside it.
++		 */
++		if (!lo) {
++			lo = 0xc0000000ull;
++			hi = lo + 0x40000000ull;
++		}
++		uint64_t size = hi - lo;
++		uint8_t cap[] = {
++			0x10, 4, 0, 1, 0, 0, 0,
++			0x14, 1, 0, 1,
++			0x16, 1, 0, 1,
++			0x17, 1, 0, 1,
++			0x1a, 1, 0, (uint8_t)cal,
++			0x1f, 16, 0,
++			0, 0, 0, 0, 0, 0, 0, 0,
++			0, 0, 0, 0, 0, 0, 0, 0,
++		};
++		memcpy(cap + sizeof(cap) - 16, &lo, 8);
++		memcpy(cap + sizeof(cap) - 8, &size, 8);
++		printf("SWEET WLFW: host_cap (cnss2 shape): cal_done %u, ddr_range %#llx + %#llx\n", cal, lo,
++		    size);
++		wlfw_send(0x34, cap, sizeof(cap));
++	} else {
++		uint8_t cap[] = {
++			0x10, 4, 0, 1, 0, 0, 0,  0x13, 1, 0, (uint8_t)nm,  0x14, 1, 0, 1,  0x16, 1, 0, 1,
++			0x17, 1, 0, 1,  0x1a, 1, 0, (uint8_t)cal,  0x1c, 1, 0, 0,
++		};
++		printf("SWEET WLFW: host_cap (ath11k shape): nm_modem %#x, cal_done %u\n", nm, cal);
++		wlfw_send(0x34, cap, sizeof(cap));
++	}
+ 	if (wlfw_wait(&g_q.got, 3000, "host_cap") != 0 || g_q.result != 0) {
+ 		return;
+ 	}
