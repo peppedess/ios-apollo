@@ -494,3 +494,20 @@ firmware calibrates on its own, with no WMI at all, and answers with `QMI_WLFW_C
 answer is unambiguous: either the chip completes a calibration — and then it can run its power sequences
 and mission mode is simply missing their result — or it dies in that too, and the failure is upstream of
 anything WMI.
+
+### What 1184 measured
+
+The firmware refuses the mode outright:
+
+```
+[  41.677] SWEET WLFW: response 0x22: result 1 error 90 (7 bytes)
+[  41.677] SWEET WLFW: wlan_mode refused: result 1 error 90
+```
+
+Every request before it is accepted — ind_register, host_cap, respond_mem, cap, ten board-data segments,
+m3, fw_init_done, wlan_ini, wlan_cfg — and then `wlan_mode` with mode 7 comes back `result 1 error 90`.
+This build of `amss20.bin` has no calibration mode to enter, which matches ath11k's
+`cold_boot_calib = false` for QCA6390: the `COLD_BOOT_CAL_START(5)` in the recovery log is cnss2's own
+state-machine event name for the first power-up, not a QMI calibration pass. So the calibration theory is
+dead, and the firmware itself killed it. `sweetmode` stays, since it cost nothing and the refusal is the
+answer.
