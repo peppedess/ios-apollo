@@ -615,3 +615,22 @@ this phone?** The stock driver in recovery proved the Q6 boots and MHI reaches m
 touched the WCSS — nothing in that path does. Android no longer boots, so we have no witness. The way to
 get one is the recovery's own `qcacld` driver, which is built into that kernel (`wlan_hdd_state wlan
 major(485) initialized`, `/dev/wlan` present); it is gated on QMI, which is gated on QRTR's name service.
+
+### Two more eliminations, and the recovery route closed
+
+`sweetdp=1` builds the whole HAL data path before INIT the way ath11k does — 15 rings up, 32766 link
+descriptors, REO and TCL programmed — and the crash does not move:
+
+```
+[  42.091] SWEET DP: 15 rings up, 2072 KiB used; REO gen 0xc0000dc, TCL ctrl 0x9e000
+[  42.091] SWEET WMI: INIT (variant 0, 332 bytes, ...)
+[  42.181] SWEET MHI: SYSERR in mhistatus 0xff05 at +80 ms after INIT
+```
+
+And the recovery route to a full stock reference is closed for good: that kernel has **no QRTR at all** —
+no module, nothing in `/proc/net/protocols`. cnss2's QMI rides QRTR over MHI, so it can never complete
+there, whatever is done from userspace; `qrtr-ns` is beside the point. The `qcacld` driver is built in
+(`/sys/module/wlan`, `/dev/wlan`) and would drive the WCSS if it could ever be told the firmware is
+ready, but it cannot. The vendor partition is not mapped either (`/dev/block/mapper` is empty), so there
+is nothing to borrow. Getting a witness for this chip's WLAN section would take a recovery kernel built
+with QRTR, which is a project of its own.
