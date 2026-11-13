@@ -1,0 +1,80 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 538fbf6..79464d9 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2104,6 +2104,34 @@ wmi_init(void)
+ 		}
+ 		printf("SWEET WMI: WLAON_QFPROM_PWR_CTRL before INIT %#x -> %#x\n", pc, win_rd(0x1f8031c));
+ 	}
++	{
++		uint32_t pwr = 1;
++		(void)PE_parse_boot_argn("sweetpwr", &pwr, sizeof(pwr));
++		if (pwr) {
++		/*
++		 * Measure WLAON's own counter against ours. GLOBAL_COUNTER_CTRL5 (0x1f80120) is the enable
++		 * — 0 clears, 0x80000000 runs — and CTRL3/CTRL4 (0x1f80118/0x1f8011c) are the low and high
++		 * halves, exactly as cnss_pci_get_device_timestamp reads them. The firmware told us in the
++		 * capability response what rate it expects; sample the counter across 100 ms of our own time
++		 * and compare. The GDSC power-down handshake is timed in WLAON, by this clock, and the
++		 * firmware's poll gives it about twenty milliseconds. A counter running slow by a large
++		 * factor would make a handshake that normally takes microseconds overrun that budget, which
++		 * is the shape of what k17 showed: nothing for 55 ms, one state step, then the assert.
++		 */
++		win_wr(0x1f80120, 0);
++		win_wr(0x1f80120, 0x80000000u);
++		uint32_t c0lo = win_rd(0x1f80118), c0hi = win_rd(0x1f8011c);
++		pc_msleep(100);
++		uint32_t c1lo = win_rd(0x1f80118), c1hi = win_rd(0x1f8011c);
++		uint64_t t0 = ((uint64_t)c0hi << 32) | c0lo, t1 = ((uint64_t)c1hi << 32) | c1lo;
++		printf("SWEET PWR: WLAON counter %llu -> %llu in 100 ms = %llu Hz, firmware expects %u Hz\n",
++		    t0, t1, (t1 - t0) * 10ull, g_timefreq);
++		printf("SWEET PWR: RTC cal %#x %#x %#x %#x %#x %#x %#x %#x %#x\n",
++		    win_rd(0x1f80200), win_rd(0x1f80204), win_rd(0x1f80208), win_rd(0x1f8020c),
++		    win_rd(0x1f80210), win_rd(0x1f80214), win_rd(0x1f80218), win_rd(0x1f8021c),
++		    win_rd(0x1f80220));
++		}
++	}
+ 	printf("SWEET WMI: INIT (variant %u, %u bytes, %u chains, mask %#x): vdevs %u peers %u tids %u msdu %u frag %u wow %u pdev_id %u\n",
+ 	    var, len, chains, mask, cfg[1], cfg[2], cfg[6], cfg[29], cfg[30], cfg[35], cfg[54]);
+ 	if (!wake) {
+@@ -2150,28 +2178,6 @@ wmi_init(void)
+ 		uint32_t pwr = 1;
+ 		(void)PE_parse_boot_argn("sweetpwr", &pwr, sizeof(pwr));
+ 		if (pwr) {
+-			/*
+-			 * Measure WLAON's own counter against ours. GLOBAL_COUNTER_CTRL5 (0x1f80120) is the enable
+-			 * — 0 clears, 0x80000000 runs — and CTRL3/CTRL4 (0x1f80118/0x1f8011c) are the low and high
+-			 * halves, exactly as cnss_pci_get_device_timestamp reads them. The firmware told us in the
+-			 * capability response what rate it expects; sample the counter across 100 ms of our own time
+-			 * and compare. The GDSC power-down handshake is timed in WLAON, by this clock, and the
+-			 * firmware's poll gives it about twenty milliseconds. A counter running slow by a large
+-			 * factor would make a handshake that normally takes microseconds overrun that budget, which
+-			 * is the shape of what k17 showed: nothing for 55 ms, one state step, then the assert.
+-			 */
+-			win_wr(0x1f80120, 0);
+-			win_wr(0x1f80120, 0x80000000u);
+-			uint32_t c0lo = win_rd(0x1f80118), c0hi = win_rd(0x1f8011c);
+-			pc_msleep(100);
+-			uint32_t c1lo = win_rd(0x1f80118), c1hi = win_rd(0x1f8011c);
+-			uint64_t t0 = ((uint64_t)c0hi << 32) | c0lo, t1 = ((uint64_t)c1hi << 32) | c1lo;
+-			printf("SWEET PWR: WLAON counter %llu -> %llu in 100 ms = %llu Hz, firmware expects %u Hz\n",
+-			    t0, t1, (t1 - t0) * 10ull, g_timefreq);
+-			printf("SWEET PWR: RTC cal %#x %#x %#x %#x %#x %#x %#x %#x %#x\n",
+-			    win_rd(0x1f80200), win_rd(0x1f80204), win_rd(0x1f80208), win_rd(0x1f8020c),
+-			    win_rd(0x1f80210), win_rd(0x1f80214), win_rd(0x1f80218), win_rd(0x1f8021c),
+-			    win_rd(0x1f80220));
+ 			printf("SWEET PWR: WLAON soc_power_ctrl %#x wl_pwr_status %#x pmm_sr_lo %#x pmm_sr_hi %#x "
+ 			    "gdsc_delay %#x/%#x rfa_mem_slp %#x wcssaon_cfg %#x clk_kdf %#x clk_hfrc %#x\n",
+ 			    win_rd(0x1f80000), win_rd(0x1f8002c), win_rd(0x1f806d0), win_rd(0x1f806cc),
+@@ -2207,6 +2213,11 @@ wmi_init(void)
+ 			printf("SWEET MHI: no SYSERR in %u ms, mhistatus %#x (state %u)\n", quiet, st,
+ 			    (st >> 8) & 0xffu);
+ 		}
++		if (pwr) {
++			uint32_t elo = win_rd(0x1f80118), ehi = win_rd(0x1f8011c);
++			printf("SWEET PWR: WLAON counter after the window %llu, soc_power_ctrl %#x\n",
++			    ((uint64_t)ehi << 32) | elo, win_rd(0x1f80000));
++		}
+ 	}
+ 	/*
+ 	 * Come back the way MHI does. k14f deasserted the device wake and the firmware lived through the whole

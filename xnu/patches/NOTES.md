@@ -952,3 +952,24 @@ they sit right beside the GDSC delay settings and are where the chip calibrates 
 If the two numbers agree, the always-on clock is fine and this whole line of reasoning is dead. If they
 disagree, we have the cause — and it is a board-level clock, which is exactly the class of thing a port
 gets wrong and a stock driver never has to think about.
+
+### k18: the counter is frozen — but the measurement landed in the wrong place
+
+```
+[  41.310] SWEET WLFW: device counter frequency 19200000 Hz
+[  41.841] SWEET PWR: WLAON counter 127653232 -> 127653232 in 100 ms = 0 Hz, firmware expects 19200000 Hz
+[  41.841] SWEET PWR: RTC cal 0 0xfa0 0x17700 0x5d2 0x59688c 0 0 0x1 0x1
+[  41.841] SWEET MHI: SYSERR in mhistatus 0xff05 at +0 ms after INIT
+```
+
+Not one tick in a hundred milliseconds, against the 19.2 MHz the firmware expects — WLAON counts off the
+XO, not off a 32 kHz sleep clock. But the measurement sat inside the quiet window, which runs *after*
+INIT, so its own 100 ms delay let the firmware crash first: `wl_pwr_status` already reads 0xf and
+`soc_power_ctrl` 0x317 instead of the 0x117 of k16 and k17. A dead chip's counter standing still proves
+nothing.
+
+## 1194-apollo-counter-before-init.patch
+
+Move the measurement to before the INIT is sent, where the chip is demonstrably healthy, and take the
+counter once more at the end of the window so the run says whether it kept running while the power
+sequence failed. Nothing else changes.
