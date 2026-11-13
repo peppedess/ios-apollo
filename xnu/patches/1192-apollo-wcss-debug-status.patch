@@ -1,0 +1,36 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 88089e0..f2ab03f 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2158,20 +2158,27 @@ wmi_init(void)
+ 		uint32_t st = 0, first = 0;
+ 		uint32_t lp = 0xffffffffu, llo = 0xffffffffu, lhi = 0xffffffffu;
+ 		printf("SWEET WMI: quiet window, %u ms watching MHISTATUS only\n", quiet);
+-		for (uint32_t ms = 0; ms < quiet; ms += 5) {
++		for (uint32_t ms = 0; ms < quiet; ms += (pwr && ms < 120u) ? 1u : 5u) {
+ 			st = rd(g_bar, 0x48);
+ 			if ((st & 4u) && !first) {
+ 				first = 1;
+ 				printf("SWEET MHI: SYSERR in mhistatus %#x at +%u ms after INIT\n", st, ms);
+ 			}
+ 			if (pwr && ms <= 200u) {
+-				uint32_t p = win_rd(0x1f8002c), lo = win_rd(0x1f806d0), hi = win_rd(0x1f806cc);
++				/*
++				 * PCIE_PCIE_LOCAL_REG_WCSS_STATUS_FOR_DEBUG_HIGH/LOW. These two live in the PCIe local
++				 * block, the same always-accessible region as the LTSSM and hot-reset registers we
++				 * already drive, and they are the host's window into the WCSS state machine without
++				 * touching WCSS itself — which is what hung the phone in k13n. With WL_PWR_STATUS they
++				 * give the whole picture from outside while the firmware's sequence runs.
++				 */
++				uint32_t p = win_rd(0x1f8002c), lo = win_rd(0x01e03140), hi = win_rd(0x01e0313c);
+ 				if (p != lp || lo != llo || hi != lhi) {
+-					printf("SWEET PWR: +%u ms wl_pwr_status %#x pmm_sr %#x:%#x\n", ms, p, hi, lo);
++					printf("SWEET PWR: +%u ms wl_pwr_status %#x wcss_dbg %#x:%#x\n", ms, p, hi, lo);
+ 					lp = p; llo = lo; lhi = hi;
+ 				}
+ 			}
+-			pc_msleep(5);
++			pc_msleep((pwr && ms < 120u) ? 1u : 5u);
+ 		}
+ 		if (!first) {
+ 			printf("SWEET MHI: no SYSERR in %u ms, mhistatus %#x (state %u)\n", quiet, st,

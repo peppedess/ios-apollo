@@ -869,3 +869,42 @@ every 5 ms alongside MHISTATUS, printing every change.
 That turns the 80 ms from a black box into a timeline. Until now everything we know about the failure
 came from reading the firmware's disassembly and inferring; this is the first probe that watches the
 power state machine while it fails. `sweetpwr=0` reverts to MHISTATUS alone.
+
+### k16: the first direct look at the failure
+
+```
+[  41.729] SWEET WMI: INIT (variant 0, 332 bytes, 2 chains, mask 0x3): ...
+[  41.730] SWEET PWR: WLAON soc_power_ctrl 0x117 wl_pwr_status 0x9 pmm_sr_lo 0 pmm_sr_hi 0
+                      gdsc_delay 0x25112222/0x222 rfa_mem_slp 0 wcssaon_cfg 0 clk_kdf 0 clk_hfrc 0
+[  41.730] SWEET PWR: +0 ms  wl_pwr_status 0x9 pmm_sr 0:0
+[  41.798] SWEET PWR: +60 ms wl_pwr_status 0xf pmm_sr 0:0
+[  41.820] SWEET MHI: SYSERR in mhistatus 0xff05 at +80 ms after INIT
+```
+
+`WL_PWR_STATUS` moves — 0x9 to 0xf, bits 1 and 2 appearing — twenty milliseconds before the assert. So
+the sequence is not stalled from the start: something in the power state machine does happen, late, and
+then the firmware gives up. The GDSC delay settings are programmed (0x25112222 / 0x222), the save/restore
+status stays flat at zero, and the three WLAON config registers that are zero are zero in the stock
+driver too — cnss2 only ever reads them, in its crash dump; nothing writes them.
+
+The firmware's own strings settle how far it gets:
+
+```
+WFSS_PMM_R0_PMM_WLAN1_CFG_REG1/MAC1_IDLE_STATUS
+WCSS_WCMN_R0_APPS_AGGRE_INTR_STATUS/PMM_WCMN_WLAN1_LS_DONE_INTR
+WCSS_CC_WCSS_WLAN1_GDSCR/PWR_ON
+```
+
+Three waits, in that order, each with its own line number and its own assert. The one that fires is the
+third. So MAC1 goes idle, the low-power-state handshake completes, and only then does the GDSC refuse to
+drop PWR_ON.
+
+## 1192-apollo-wcss-debug-status.patch
+
+More resolution, and a second vantage point.
+
+`PCIE_PCIE_LOCAL_REG_WCSS_STATUS_FOR_DEBUG_HIGH/LOW` (0x01e0313c / 0x01e03140) sit in the PCIe local
+block — the same always-accessible region as the LTSSM and hot-reset registers we already drive — and are
+the host's window into the WCSS state machine without reading WCSS itself, which is what hung the phone
+in k13n. This patch swaps the flat save/restore pair for those two and samples every 1 ms for the first
+120 ms instead of every 5, so the 60 ms step and whatever precedes it are resolved properly.
