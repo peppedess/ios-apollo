@@ -560,3 +560,29 @@ discipline and the event ordering all match, every request is accepted, and the 
 the chip *has* — and the one input to a PMU state machine that nothing in the QMI exchange can supply is
 its sleep clock. Next: dump every RPMh resource cmd-db knows about (`sweetrpmhdump=1`) and look for a
 clock the bootloader was holding up that we are not.
+
+## 1186-apollo-vote-divclkc1.patch
+
+`sweetrpmhdump=1` printed every resource cmd-db knows about on this board. The slave-4 table has 66
+entries, and exactly eight of them are clocks:
+
+```
+rfclka1=0x42700 rfclka3=0x42800 rfclkd3=0x43000 rfclkd4=0x40600
+lnbclka1=0x42400 lnbclka2=0x42500 lnbclka3=0x42600 divclkc1=0x45b00
+```
+
+We vote seven of them (and `rfclka2`, which the dump confirms does not exist on this board — the lookup
+has always refused it). The eighth, **`divclkc1`, we have never voted.**
+
+On a Qualcomm PMIC a `divclk` output is the divided 32.768 kHz sleep clock, and on these boards it is
+what feeds a companion WLAN/BT chip. That matters here more than any other missing vote: a PMU state
+machine sequences a power collapse against its sleep clock, and the firmware's failure is a power
+collapse that never completes — `WCSS_CC_WCSS_WLAN1_GDSCR/PWR_ON` polled for 100 ms and never moving,
+from the first sample to the last. Not a race, not a slow settle: a domain that never responds at all,
+which is what a missing sequencing clock looks like.
+
+cnss2 asks for no clocks at all on this phone (`Failed to get optional clock rf_clk, err = -2`), so
+under Android the vote is simply inherited from whatever the bootloader left up — a vote our kernel
+would have dropped when it took over RPMh. That also explains why the stock driver reaching mission mode
+proved nothing about this: the Q6 and MHI run off the XO, and nothing in that path ever needs the sleep
+clock. Only the WLAN section does, and the stock driver never got that far.
