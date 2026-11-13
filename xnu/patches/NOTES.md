@@ -683,3 +683,23 @@ for the PCIe part.) Dismissed on evidence.
 Also corrected: the first attempt at cnss2's `host_cap` came back `result 1 error 1`. `ddr_range` is a
 `STATIC_ARRAY` of `QMI_WLFW_MAX_HOST_DDR_RANGE_SIZE_V01` = 3 structs of two u64, so the TLV carries all
 48 bytes with the unused entries zeroed; sending only the first 16 is a malformed message.
+
+## 1188-apollo-shadow-registers.patch
+
+The last item in the ath11k diff. QCA6390 carries `supports_shadow_regs`, and `wlan_cfg` has a TLV for
+the list — 0x14 in the firmware's own message definition, a byte count followed by one u32 address per
+entry, up to 36. We have always sent it empty.
+
+There is no static table to copy. ath11k builds the list at probe time from the SRNG register map:
+`ath11k_hal_srng_shadow_config` walks every ring type that is neither a copy engine nor an LMAC ring, in
+enum order, over each type's `max_rings`, and `ath11k_ce_shadow_config` then adds the copy engines that
+have entries — source rings once, destination rings twice (the ring and its status ring). Each entry is
+the ring's HP register, or HP + 4 for a destination ring, since a destination ring shadows its tail.
+
+Walking that with `qca6390_regs` gives thirty addresses: REO at 0xa38000 with its HP block at +0x3000
+(four REO_DST, the exception ring, reinject, command, status), TCL at 0xa44000 with HP at +0x2000 (three
+TCL_DATA, command, status), WBM at 0xa34000 (idle link, SW2WBM release, five WBM2SW release), and the
+copy engines at 0xa00000 and 0xa01000 stepping 0x2000 — CE0, CE3, CE4 and CE7 as sources, CE1, CE2 and
+CE5 as destinations with their status rings. Thirty of a possible thirty-six.
+
+`sweetshadow=0` sends it empty again.

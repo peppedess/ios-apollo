@@ -1,0 +1,47 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 5836bc9..13f26c3 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2210,6 +2210,42 @@ wifi_start(void)
+ 	memcpy(t + o, tgt, sizeof(tgt)); o += sizeof(tgt);
+ 	t[o++] = 0x12; t[o++] = (uint8_t)(1 + sizeof(svc)); t[o++] = 0; t[o++] = 15;
+ 	memcpy(t + o, svc, sizeof(svc)); o += sizeof(svc);
++	/*
++	 * shadow_reg_v2 (TLV 0x14): the one thing left in the ath11k diff. QCA6390 carries
++	 * supports_shadow_regs, and ath11k builds this list before QMI from the SRNG register map —
++	 * ath11k_hal_srng_shadow_config walks every non-CE, non-LMAC ring type and
++	 * ath11k_ce_shadow_config adds the copy engines that have entries, each contributing the ring's
++	 * HP register, or its TP (HP + 4) for a destination ring. There is no static table to copy; these
++	 * thirty addresses are that walk, computed from qca6390_regs: REO at 0xa38000 (HP block +0x3000),
++	 * TCL at 0xa44000 (+0x2000), WBM at 0xa34000 (+0x3000), and the copy engines at 0xa00000/0xa01000
++	 * stepping 0x2000. We have always sent this empty.
++	 */
++	static const uint32_t shadow[30] = {
++		0xa3b034, 0xa3b03c, 0xa3b044, 0xa3b04c,         /* REO_DST 0..3 (TP) */
++		0xa3b054,                                       /* REO_EXCEPTION (TP) */
++		0xa3b028, 0xa3b020,                             /* REO_REINJECT, REO_CMD (HP) */
++		0xa3b06c,                                       /* REO_STATUS (TP) */
++		0xa46000, 0xa46008, 0xa46010,                   /* TCL_DATA 0..2 (HP) */
++		0xa46018,                                       /* TCL_CMD (HP) */
++		0xa46034,                                       /* TCL_STATUS (TP) */
++		0xa370b0, 0xa37018,                             /* WBM_IDLE_LINK, SW2WBM_RELEASE (HP) */
++		0xa370c4, 0xa370cc, 0xa370d4, 0xa370dc, 0xa370e4, /* WBM2SW_RELEASE 0..4 (TP) */
++		0xa00400,                                       /* CE0 src */
++		0xa03400, 0xa0340c,                             /* CE1 dst, dst status */
++		0xa05400, 0xa0540c,                             /* CE2 dst, dst status */
++		0xa06400,                                       /* CE3 src */
++		0xa08400,                                       /* CE4 src */
++		0xa0b400, 0xa0b40c,                             /* CE5 dst, dst status */
++		0xa0e400,                                       /* CE7 src */
++	};
++	uint32_t shn = 1;
++	(void)PE_parse_boot_argn("sweetshadow", &shn, sizeof(shn));
++	if (shn) {
++		t[o++] = 0x14; t[o++] = (uint8_t)(1 + sizeof(shadow)); t[o++] = 0;
++		t[o++] = (uint8_t)(sizeof(shadow) / 4);
++		memcpy(t + o, shadow, sizeof(shadow)); o += sizeof(shadow);
++		printf("SWEET WLFW: wlan_cfg with %u shadow registers\n", (unsigned)(sizeof(shadow) / 4));
++	}
+ 	/*
+ 	 * QMI_WLANFW_WLAN_INI_REQ (0x2f) comes first on this chip. ath11k sends it from
+ 	 * ath11k_qmi_firmware_start whenever hw_params.fw_wmi_diag_event is set, which QCA6390 sets, ahead of
