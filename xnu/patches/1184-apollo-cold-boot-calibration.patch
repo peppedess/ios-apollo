@@ -1,0 +1,68 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 8305b36..8dffd77 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -1022,7 +1022,7 @@ static struct {
+ 	uint16_t want_id;
+ 	volatile int got;
+ 	uint16_t result, error;
+-	volatile int memreq, memready, initdone, fwready;
++	volatile int memreq, memready, initdone, fwready, caldone;
+ 	uint8_t mem[1024];
+ 	uint32_t memlen;
+ 	uint8_t rsp[512];
+@@ -1118,6 +1118,9 @@ wlfw_rx(const uint8_t *q, uint32_t n)
+ 			g_q.initdone = 1;
+ 		} else if (id == 0x21) {
+ 			g_q.fwready = 1;
++		} else if (id == 0x3e) {
++			/* QMI_WLFW_COLD_BOOT_CAL_DONE_IND */
++			g_q.caldone = 1;
+ 		}
+ 	}
+ }
+@@ -2209,10 +2212,43 @@ wifi_start(void)
+ 	if (wlfw_req(0x23, t, o, "wlan_cfg") != 0) {
+ 		return;
+ 	}
+-	static const uint8_t mode[] = { 0x01, 4, 0, 0, 0, 0, 0,  0x10, 1, 0, 0 };
++	/*
++	 * The mode the firmware is started in. ath11k on a laptop goes straight to mission mode, because
++	 * QCA6390 there has cold_boot_calib = false — but cnss2 on *this phone* does not: the very first
++	 * thing it posts after fs_ready is COLD_BOOT_CAL_START(5), so on apollo the chip is calibrated
++	 * before it is ever used. We have never run that pass, and we hand the firmware a CAL memory
++	 * segment full of zeroes while telling it its calibration is done. Mode 7 is
++	 * ATH11K_FIRMWARE_MODE_COLD_BOOT: the firmware calibrates by itself and answers with
++	 * QMI_WLFW_COLD_BOOT_CAL_DONE_IND (0x3e), no WMI involved. If it survives that, the chip can run
++	 * its power sequences after all and what mission mode is missing is the calibration.
++	 */
++	uint32_t fwmode = 0;
++	(void)PE_parse_boot_argn("sweetmode", &fwmode, sizeof(fwmode));
++	uint8_t mode[] = { 0x01, 4, 0, (uint8_t)fwmode, 0, 0, 0,  0x10, 1, 0, 0 };
+ 	if (wlfw_req(0x22, mode, sizeof(mode), "wlan_mode") != 0) {
+ 		return;
+ 	}
++	if (fwmode == 7) {
++		printf("SWEET WLFW: cold boot calibration started\n");
++		for (uint32_t ms = 0; ms < 30000; ms += 100) {
++			uint32_t st = rd(g_bar, 0x48);
++			if (st & 4u) {
++				printf("SWEET MHI: SYSERR in mhistatus %#x at +%u ms into calibration\n", st, ms);
++				break;
++			}
++			if (g_q.caldone) {
++				printf("SWEET WLFW: *** cold boot calibration done after %u ms ***\n", ms);
++				break;
++			}
++			(void)er0_poll();
++			(void)er1_poll();
++			pc_msleep(100);
++		}
++		if (!g_q.caldone) {
++			printf("SWEET WLFW: calibration did not finish, mhistatus %#x\n", rd(g_bar, 0x48));
++		}
++		return;
++	}
+ 	printf("SWEET WLFW: mission mode on\n");
+ 
+ 	uint32_t aspm = 1;

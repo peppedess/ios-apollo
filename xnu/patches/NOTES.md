@@ -461,3 +461,36 @@ The other two are already boot-args and need no code:
   leaves a power sequence waiting on a domain that never settles.
 
 `sweetnm=30 sweetcal=0` tests those two on their own, against the +80 ms the 1182 probe now measures.
+
+## 1184-apollo-cold-boot-calibration.patch
+
+1183 landed and changed nothing: `response 0x2f: result 0 error 0`, and still SYSERR at +80 ms. Nor did
+`nm_modem=0x1e cal_done=0` (k14j). Our QMI exchange now matches ath11k message for message, byte for byte
+where it matters, and every single request is accepted — and the firmware still dies 80 ms after INIT,
+to the resolution of the probe, whatever the host does before or after. That number has not moved once.
+
+Two things were confirmed rather than changed along the way. The phone's own device tree, read out of
+recovery, gives the cnss node as `vdd-wlan-io 1.8 V`, `aon` and `dig` **on the same regulator** at 0.95 V,
+`rfa1 1.9 V`, `rfa2 1.35 V` — exactly the four rails we vote (smpa4, smpa6, smpa5, smpc8) at exactly those
+voltages. And our `wlan_cfg` CE table and service-to-pipe map are identical, entry for entry, to
+ath11k's `ath11k_target_ce_config_wlan_qca6390` and `ath11k_target_service_to_ce_map_wlan_qca6390`.
+
+What is left is something ath11k never does on a laptop but cnss2 does on *this phone*. QCA6390 has
+`cold_boot_calib = false` in ath11k, so mainline goes straight to mission mode. The recovery log does not:
+
+```
+cnss: Posting event: COLD_BOOT_CAL_START(5), state: 0x0
+```
+
+Before this chip is ever used on apollo, it is brought up in calibration mode and calibrated. We have
+never run that pass. Worse, we hand the firmware a CAL memory segment (QMI type 4, 864 KiB) full of
+zeroes while `host_cap` claims the calibration is already done — and the thing it dies in is a *power*
+sequence, `_whal_pmm_wlan_pwr_seq_hwdtim_sleep`, the kind of sequence whose timing comes from PMU trim
+values that calibration is what produces.
+
+`sweetmode=<n>` sets the mode in `wlan_mode` (0x22). Mode 7 is `ATH11K_FIRMWARE_MODE_COLD_BOOT`: the
+firmware calibrates on its own, with no WMI at all, and answers with `QMI_WLFW_COLD_BOOT_CAL_DONE_IND`
+(0x3e), which we already register for and now latch. The run watches MHISTATUS alongside it, so the
+answer is unambiguous: either the chip completes a calibration — and then it can run its power sequences
+and mission mode is simply missing their result — or it dies in that too, and the failure is upstream of
+anything WMI.
