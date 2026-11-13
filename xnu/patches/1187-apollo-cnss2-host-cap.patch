@@ -1,8 +1,8 @@
 diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
-index 36c7701..770e042 100644
+index 36c7701..5836bc9 100644
 --- a/bsd/dev/apollo_pcie.c
 +++ b/bsd/dev/apollo_pcie.c
-@@ -2528,12 +2528,59 @@ wlfw_handshake(void)
+@@ -2528,12 +2528,66 @@ wlfw_handshake(void)
  	 */
  	uint32_t cal = 1;
  	(void)PE_parse_boot_argn("sweetcal", &cal, sizeof(cal));
@@ -48,12 +48,19 @@ index 36c7701..770e042 100644
 +			0x16, 1, 0, 1,
 +			0x17, 1, 0, 1,
 +			0x1a, 1, 0, (uint8_t)cal,
-+			0x1f, 16, 0,
-+			0, 0, 0, 0, 0, 0, 0, 0,
-+			0, 0, 0, 0, 0, 0, 0, 0,
++			/*
++			 * ddr_range is a STATIC_ARRAY of QMI_WLFW_MAX_HOST_DDR_RANGE_SIZE_V01 = 3 structs of
++			 * two u64 each, so the TLV carries all 48 bytes with the unused entries zeroed —
++			 * sending only the first one is a malformed message, which is what the firmware
++			 * answered the first time (result 1 error 1).
++			 */
++			0x1f, 48, 0,
++			0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,
++			0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,
++			0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,
 +		};
-+		memcpy(cap + sizeof(cap) - 16, &lo, 8);
-+		memcpy(cap + sizeof(cap) - 8, &size, 8);
++		memcpy(cap + sizeof(cap) - 48, &lo, 8);
++		memcpy(cap + sizeof(cap) - 40, &size, 8);
 +		printf("SWEET WLFW: host_cap (cnss2 shape): cal_done %u, ddr_range %#llx + %#llx\n", cal, lo,
 +		    size);
 +		wlfw_send(0x34, cap, sizeof(cap));

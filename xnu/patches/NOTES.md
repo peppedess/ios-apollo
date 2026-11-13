@@ -661,3 +661,25 @@ ddr_range, with nothing else. `host_cap` goes out before `respond_mem`, so the s
 and the range covers the window the pool allocates from — runs have placed the firmware's DDR anywhere
 between 0xd0000000 and 0xd2800000, so a single guessed region would leave the next run outside it.
 `sweethostcap=0` restores ath11k's shape for a controlled comparison.
+
+### The carveout question, answered
+
+A suggestion worth checking: that Android's WLAN firmware memory sits in a fixed reserved region which
+TrustZone's XPU protects, and that our pool being elsewhere would block the chip. The phone's own device
+tree settles it. `cnss_wlan_region` is a `shared-dma-pool`:
+
+```
+compatible   shared-dma-pool     reusable
+size         0x1400000           alignment    0x400000
+alloc-ranges 0x0 0x0 0x0 0xffffffff
+```
+
+Reusable CMA, 20 MiB, 4 MiB-aligned, and **no fixed address at all** — `alloc-ranges` is the whole low
+4 GB. Under Android the firmware's DDR lands wherever CMA happens to put it, boot to boot. There is no
+stock address to match and no page-level requirement to violate; our pool at 0xd0000000 is as valid as
+any. (`pil_wlan_fw_region@86700000` is a 1 MiB removed-dma-pool for the PIL-loaded integrated WCN, not
+for the PCIe part.) Dismissed on evidence.
+
+Also corrected: the first attempt at cnss2's `host_cap` came back `result 1 error 1`. `ddr_range` is a
+`STATIC_ARRAY` of `QMI_WLFW_MAX_HOST_DDR_RANGE_SIZE_V01` = 3 structs of two u64, so the TLV carries all
+48 bytes with the unused entries zeroed; sending only the first 16 is a malformed message.
