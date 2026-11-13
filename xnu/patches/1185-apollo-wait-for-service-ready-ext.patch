@@ -1,0 +1,61 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 8dffd77..051d908 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -1260,7 +1260,7 @@ static struct {
+ 	volatile int ready, resp;
+ 	uint32_t credits, credit_size, resp_svc, resp_status, resp_eid;
+ 	uint32_t wmi_eid, htt_eid;
+-	volatile int svc_ready, wmi_ready;
++	volatile int svc_ready, svc_ext, svc_ext2, wmi_ready;
+ 	uint32_t rf_chains, num_mem_reqs;
+ 	uint8_t mac[6];
+ 	volatile int scan_done;
+@@ -1422,6 +1422,19 @@ htc_rx(uint32_t pipe, const uint8_t *p, uint32_t n)
+ 		 */
+ 		uint32_t tag = m1 >> 16, tlen = m1 & 0xffffu;
+ 		printf("SWEET WMI: ep %u event %#x tag %#x len %u (%u bytes)\n", eid, m0, tag, tlen, n);
++		if (eid == g_htc.wmi_eid) {
++			/*
++			 * WMI_SERVICE_READY_EXT (0x4009) and _EXT2 (0x4022), both in the PDEV group. The firmware
++			 * sends all three capability events back to back; ath11k holds its service-ready completion
++			 * until the ext ones have arrived and only then sends INIT. We were firing INIT in the same
++			 * millisecond as EXT2, while the firmware was still publishing what it can do.
++			 */
++			if (m0 == 0x4009u) {
++				g_htc.svc_ext = 1;
++			} else if (m0 == 0x4022u) {
++				g_htc.svc_ext2 = 1;
++			}
++		}
+ 		if (eid == g_htc.wmi_eid && m0 == 1u && n >= 16 + 76) {
+ 			memcpy(&g_htc.rf_chains, p + 16 + 36, 4);
+ 			memcpy(&g_htc.num_mem_reqs, p + 16 + 72, 4);
+@@ -2303,6 +2316,27 @@ wifi_start(void)
+ 		(void)wifi_wait(&never, 3000, "listening");
+ 		return;
+ 	}
++	/*
++	 * Let the firmware finish saying what it can do. It answers HTC setup complete with three capability
++	 * events back to back — SERVICE_READY (1), SERVICE_READY_EXT (0x4009) and SERVICE_READY_EXT2 (0x4022)
++	 * — and ath11k does not complete its service-ready wait, nor send INIT, until the ext ones have
++	 * arrived. We have been firing INIT in the same millisecond as EXT2 every single time.
++	 */
++	uint32_t wait2 = 1;
++	(void)PE_parse_boot_argn("sweetext", &wait2, sizeof(wait2));
++	if (wait2) {
++		(void)wifi_wait(&g_htc.svc_ext, 2000, "WMI service ready ext");
++		(void)wifi_wait(&g_htc.svc_ext2, 2000, "WMI service ready ext2");
++		uint32_t settle = 200;
++		(void)PE_parse_boot_argn("sweetsettle", &settle, sizeof(settle));
++		printf("SWEET WMI: ext %d ext2 %d, settling %u ms before INIT\n", g_htc.svc_ext,
++		    g_htc.svc_ext2, settle);
++		for (uint32_t ms = 0; ms < settle; ms += 10) {
++			(void)er1_poll();
++			ce_poll();
++			pc_msleep(10);
++		}
++	}
+ 	uint32_t dp = 0;
+ 	(void)PE_parse_boot_argn("sweetdp", &dp, sizeof(dp));
+ 	if (dp) {

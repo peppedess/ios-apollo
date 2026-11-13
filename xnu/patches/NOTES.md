@@ -511,3 +511,29 @@ This build of `amss20.bin` has no calibration mode to enter, which matches ath11
 state-machine event name for the first power-up, not a QMI calibration pass. So the calibration theory is
 dead, and the firmware itself killed it. `sweetmode` stays, since it cost nothing and the refusal is the
 answer.
+
+## 1185-apollo-wait-for-service-ready-ext.patch
+
+k14n eliminated BT_EN too — driving it the way the stock driver does, WLAN_EN alone, still gives SYSERR at
++80 ms. But the log of that run shows something that had been sitting in plain sight for every run:
+
+```
+[  41.742] SWEET WMI: ep 1 event 0x1    tag 0x20  len 128 (336 bytes)
+[  41.742] SWEET WMI: service ready: 2 RF chains, 0 memory requests
+[  41.743] SWEET WMI: ep 1 event 0x4009 tag 0x1ac len 76 (1036 bytes)
+[  41.743] SWEET WMI: ep 1 event 0x4022 tag 0x334 len 40 (80 bytes)
+[  41.743] SWEET WMI: INIT (variant 0, 332 bytes, ...)
+```
+
+`WMI_TLV_CMD(WMI_GRP_PDEV)` is `(4 << 12) | 1` = 0x4001, and counting down that group's event list puts
+`WMI_SERVICE_READY_EXT_EVENTID` at 0x4009 and `WMI_SERVICE_READY_EXT2_EVENTID` at 0x4022. The firmware
+answers HTC setup complete with all three capability events back to back, and **we fire INIT in the same
+millisecond as EXT2**, while it is still publishing what it can do.
+
+ath11k never does that. `ath11k_service_ready_event` deliberately does not complete its service-ready
+wait when the service bitmap advertises `WMI_TLV_SERVICE_EXT_MSG`; it waits for EXT, then EXT2, parses
+the mac/phy and hw-mode capabilities out of them, and only then calls `ath11k_wmi_cmd_init`.
+
+This patch latches both events and waits for them before INIT, then lets the chip settle
+(`sweetsettle`, default 200 ms) with the rings drained. `sweetext=0` goes back to the old behaviour for a
+controlled comparison. The +80 ms probe from 1182 is what reads the answer.
