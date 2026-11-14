@@ -1183,3 +1183,35 @@ collapse at all? Asserting SW_COLLAPSE and watching PWR_ON costs one write, and 
 has no authority" from "something is holding this rail up regardless of who asks". It stays off by
 default because it takes the MAC and PHY down underneath a running firmware; the old value goes straight
 back.
+
+### k22 and k23: the domain is fine, and nobody is asking it
+
+k22 set HW_CONTROL before INIT. The write took — `WLAN1 0xa0223802 WLAN2 0xa0223802` — and the failure
+did not move: `SYSERR at +76 ms`, with the same +55/+56 power-status step. Handing the domain to the
+hardware sequencer is not enough, so the PMM is not driving this register either way.
+
+k23 answered the question that actually mattered:
+
+```
+[  41.758] SWEET GDSC: sw_collapse test: 0xa0223800 -> 0x223801 (pwr_on 0), restored to 0xa0223800
+```
+
+**Writing SW_COLLAPSE takes PWR_ON to zero in under five milliseconds**, and restoring the register
+brings the domain straight back. The GDSC is in perfect health. Nothing is holding the rail up, no clock
+branch, no retention override, no second master. The domain collapses the instant anyone with authority
+asks — and the firmware is not that anyone. It programs the PMM at `0xe0b6xxxx`/`0xe0b7xxxx`, waits, and
+the PMM's sequencer never reaches `0xe0c300c4`, with HW_CONTROL set or clear.
+
+Six weeks of host-side theories, and the answer was a single bit in a register the host can write.
+
+## 1198-apollo-collapse-for-the-firmware.patch
+
+Then ask on its behalf.
+
+The firmware begins polling at +55 ms and gives up around +76. `sweetpoke=<ms>` asserts SW_COLLAPSE on
+both WLAN1 and WLAN2 at +50 ms, holds it through that window, and releases.
+
+This is a crutch and not a fix — it does not teach the PMM to own the domain, and the firmware will want
+the domain back on the way up, which is why the hold is bounded and the release is logged. But if the
+assert stops firing, the diagnosis is confirmed to the last detail and we finally see what the firmware
+does next. That would be the first new ground past this wall.

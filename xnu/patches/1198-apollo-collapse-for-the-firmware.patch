@@ -1,0 +1,49 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index cf2ed12..25ef9c8 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2269,6 +2269,8 @@ wmi_init(void)
+ 			    win_rd(0x1f80024), win_rd(0x1f80028), win_rd(0x1f8001c), win_rd(0x1f80300),
+ 			    win_rd(0x1f80314), win_rd(0x1f80318));
+ 		}
++		uint32_t poke = 0;
++		(void)PE_parse_boot_argn("sweetpoke", &poke, sizeof(poke));
+ 		uint32_t st = 0, first = 0;
+ 		uint32_t lp = 0xffffffffu, llo = 0xffffffffu, lhi = 0xffffffffu;
+ 		printf("SWEET WMI: quiet window, %u ms watching MHISTATUS only\n", quiet);
+@@ -2278,6 +2280,35 @@ wmi_init(void)
+ 				first = 1;
+ 				printf("SWEET MHI: SYSERR in mhistatus %#x at +%u ms after INIT\n", st, ms);
+ 			}
++			/*
++			 * Collapse the domain on the firmware's behalf.
++			 *
++			 * k23 settled what k22 could not: writing SW_COLLAPSE takes PWR_ON to 0 in under five
++			 * milliseconds, and restoring the register brings it straight back. The GDSC is healthy,
++			 * nothing is holding the rail up, and the domain collapses the moment anyone with authority
++			 * asks. The firmware is not that anyone — it programs the PMM and waits, and the PMM's
++			 * sequencer never reaches this register, with HW_CONTROL set or clear.
++			 *
++			 * So ask on its behalf. The firmware starts polling at +55 ms and gives up around +76, so
++			 * assert SW_COLLAPSE on both WLAN1 and WLAN2 at +50 ms, hold it through the window, and
++			 * release. This is a crutch, not a fix: it does not teach the PMM to own the domain. But if
++			 * the assert stops firing, the diagnosis is confirmed to the last detail and we find out
++			 * what the firmware does next — which is the first new ground past this wall in days.
++			 *
++			 * sweetpoke is how long to hold it, in milliseconds; 0 disables the whole thing.
++			 */
++			if (poke && ms == 50u) {
++				win_wr(0x00c300c4, win_rd(0x00c300c4) | 1u);
++				win_wr(0x00c30138, win_rd(0x00c30138) | 1u);
++				printf("SWEET GDSC: collapsed for the firmware at +50 ms, WLAN1 %#x WLAN2 %#x\n",
++				    win_rd(0x00c300c4), win_rd(0x00c30138));
++			}
++			if (poke && ms == 50u + poke) {
++				win_wr(0x00c300c4, win_rd(0x00c300c4) & ~1u);
++				win_wr(0x00c30138, win_rd(0x00c30138) & ~1u);
++				printf("SWEET GDSC: released at +%u ms, WLAN1 %#x WLAN2 %#x\n", ms,
++				    win_rd(0x00c300c4), win_rd(0x00c30138));
++			}
+ 			if (pwr && ms <= 200u) {
+ 				/*
+ 				 * PCIE_PCIE_LOCAL_REG_WCSS_STATUS_FOR_DEBUG_HIGH/LOW. These two live in the PCIe local
