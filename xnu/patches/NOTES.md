@@ -1268,3 +1268,88 @@ Android cannot boot because its `/data` is the iOS root: `iosroot.img` was writt
 2026-11-05. Restoring LineageOS therefore costs the iOS install, not user data — that was already gone
 nine days ago — and the ROM itself is intact in `super`, so formatting data should be enough. Giuseppe
 has asked to go that way after k25.
+
+## The stock bring-up, read line by line from a working Android
+
+LineageOS is back on the phone (its `/data` was the iOS root, so restoring it cost the iOS install and
+no user data). Wi-Fi works, connects, and `settings put global adb_root 1` gives root over adb. debugfs
+is not compiled into that kernel, so cnss2's `reg_read` does not exist and the register comparison we
+went there for is impossible — but the boot log turned out to be worth far more.
+
+### What it confirms
+
+```
+Target capability: chip_id: 0x0, chip_family: 0xb, board_id: 0xff, soc_id: 0xffffffff,
+                   fw_version: 0x101f046e, fw_build_timestamp: 2022-06-30 10:27
+Downloading BDF: qca6390/bd_j3sgl.elf, size: 57968
+Device frequency is 19200000 HZ
+Read register offset 0x1f8031c, val = 0x6 / Write val 0x2
+Config PCIe remap window register to 0x4000003f
+```
+
+The board file is `bd_j3sgl.elf` at exactly 57968 bytes — the file and the size we have been sending
+since 1189. That inference is now fact. The counter frequency, the QFPROM handling and the window
+register all match what we do.
+
+### What it changes
+
+**1. The stock driver downloads a regulatory database first.**
+
+```
+Sending BDF download message, state: 0xb, type: 4
+Downloading BDF: qca6390/regdb.bin, size: 19348
+Sending BDF download message, state: 0xb, type: 1
+Downloading BDF: qca6390/bd_j3sgl.elf, size: 57968
+```
+
+Type 4 is `ATH11K_QMI_BDF_TYPE_REGDB`, and ath11k never sends it on this chip —
+`.supports_regdb = false` for QCA6390 in `core.c`. We followed ath11k. The driver that works on this
+board does not.
+
+**2. Cold boot calibration is not optional here, and the firmware accepts it.**
+
+```
+Processing driver event: FW_READY(4), state: 0xb
+Sending antenna switch sync request, state: 0xf
+Antenna switch request failed, result: 1, err: 94        <- the stock driver fails here too and carries on
+Sending mode message, mode: CALIBRATION(7), state: 0xf
+Received QMI WLFW calibration done indication
+Calibration completed successfully
+Sending mode message, mode: OFF(4), state: 0x200f
+```
+
+k14m sent mode 7 and got `result 1 error 90`, and we wrote cold boot calibration off as unsupported.
+It is supported. We sent it in the wrong place: cnss2 sends it straight after FW_READY, with **no
+wlan_cfg at all**, and after the regdb download.
+
+**3. The whole thing happens twice, and the second pass says the calibration is done.**
+
+Pass one ends with a complete power-down — `mode OFF(4)`, QFPROM written 0x3 (SHUTDOWN_EN set), MHI
+POWER_OFF then DEINIT, WLAN_EN de-asserted, all five regulators disabled. Pass two powers everything
+back up and its host capability message carries:
+
+```
+Calibration done is 1
+```
+
+against `Calibration done is 0` in pass one. Only then come `ini sync request`, wlan_cfg and mission
+mode.
+
+### What we have actually been doing
+
+Pass two only, with `cal_done` 0 — telling the firmware the radio has never been calibrated, while never
+calibrating it, and without the regulatory database. Then sending WMI_INIT and asking the PHY to run a
+power sequence.
+
+That is a coherent account of a chip whose digital side is flawless and whose first radio power sequence
+never completes, and it is the first explanation that does not require the hardware or our register
+mapping to be strange. It also explains why nothing host-side ever moved the failure by a millisecond:
+the missing piece is not in the INIT, it is everything the firmware expected to have happened before it.
+
+### The sequence to implement
+
+1. `regdb.bin` as BDF type 4, before the ELF board file, in both passes.
+2. After FW_READY: mode CALIBRATION(7), no wlan_cfg, wait for the calibration-done indication.
+3. mode OFF(4), then a full power-down: QFPROM 0x3, MHI POWER_OFF, DEINIT, WLAN_EN low, rails off.
+4. Power up again, `cal_done` 1 in host capability, regdb + bdf + m3, then the mission path we already
+   have.
