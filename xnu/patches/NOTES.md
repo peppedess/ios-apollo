@@ -1091,3 +1091,55 @@ consequence rather than the cause.
 `whal_wmac_h2s_grant_check` and the `H2S_GRANT_ISSUED` / `O_WLAN1_H2S_GRANT_INT` pair are new: there is a
 grant handshake in this chip's sleep arbitration. They sit after `full_wake` in address order, so they
 are not in the failing path, but they confirm the sleep sequence is arbitrated rather than unilateral.
+
+### Android is gone, and recovery cannot host the real driver
+
+The plan was to boot LineageOS, where this phone's Wi-Fi worked for years, and capture the exact INIT the
+stock driver sends. Android does not boot:
+
+```
+Can't load Android system. Your data may be corrupt.
+Reason: init_user0_failed
+```
+
+`/data` never initialises, so the system never reaches the point of loading a Wi-Fi driver. Restoring it
+means a factory reset, which erases the phone — not something to do for a diagnostic.
+
+The fallback was to host the stock driver inside recovery by mounting `vendor` and loading QRTR. That is
+closed too, and now definitively:
+
+```
+Linux 4.19.325-cip136-st20-perf    (recovery)
+/dev/block/by-name:  super, vbmeta_product, vbmeta_system, vbmeta_vendor
+/dev/block/mapper:   No such file or directory
+lsmod:               empty
+find / -name '*.ko': nothing
+/proc/net/protocols: no QIPCRTR
+```
+
+`vendor` lives inside `super` with no device-mapper and no `dmctl`/`lptools` to map it; the recovery
+kernel is monolithic, so there is nothing to load even if we extracted a module; and QRTR is simply not
+compiled in. `losetup` and `erofs` exist, so super could in principle be mounted by computing the LP
+metadata offsets — but with no module loading that buys nothing.
+
+So there is no working reference on this hardware to diff against. Whatever we learn, we learn from the
+chip.
+
+## 1196-apollo-read-the-gdscr.patch
+
+Then read the register the firmware dies on, from the other side.
+
+By cnss2's map and the nibble swap, the WLAN1 GDSCR the firmware polls at `0xe0c300c4` is `0x00c300c4`
+from the host. k13n hung the phone reading `0xc30004`, but that was a blind sweep of a block whose clocks
+were off; here the read happens before INIT, with the chip idle and healthy and `wl_pwr_status` at 0x9.
+
+One number settles what twenty-six eliminations could not. The GDSCR carries PWR_ON at bit 31,
+SW_COLLAPSE at bit 0 and **HW_CONTROL at bit 1** — and HW_CONTROL is the question. The firmware never
+writes the GDSCR itself; it programs the PMM and waits for the hardware sequencer to collapse the domain.
+If HW_CONTROL is clear, the PMM does not own that GDSC, and no amount of correct sequencing will ever
+bring PWR_ON down. That would explain a sequence whose earlier steps all pass and whose last step never
+completes, and it would explain why nothing we send changes the outcome by a millisecond.
+
+The PMM's own `WLAN1_STATUS_REG2` is read first, being in the always-on part of WCSS, and each read is
+announced on its own line before it is taken. If the log stops after one of those lines, that read hung
+the bus — which is an answer too.

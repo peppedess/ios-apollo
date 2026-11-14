@@ -1,0 +1,44 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index a534177..61066ad 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2118,6 +2118,39 @@ wmi_init(void)
+ 		}
+ 		printf("SWEET WMI: WLAON_QFPROM_PWR_CTRL before INIT %#x -> %#x\n", pc, win_rd(0x1f8031c));
+ 	}
++	/*
++	 * Read the register the firmware dies on, from the other side.
++	 *
++	 * cnss2's map gives WCSS a host address — WFSS_PMM_R0 at 0x00b6xxxx, and by the same nibble swap the
++	 * WLAN1 GDSCR the firmware polls at 0xe0c300c4 is 0x00c300c4 here. k13n hung the phone reading
++	 * 0xc30004, so WCSS is not free to touch, but that was a blind sweep of a block whose clocks were off.
++	 * Here the chip is demonstrably healthy: INIT has not been sent, wl_pwr_status reads 0x9 and the
++	 * firmware is idle. If the read works, the GDSCR tells us in one number what twenty-six eliminations
++	 * could not: whether PWR_ON is set, whether SW_COLLAPSE is asserted, and above all whether HW_CONTROL
++	 * is on — that is, whether the PMM owns this domain at all. A GDSC the PMM does not own will never
++	 * collapse no matter how correct the sequence driving it.
++	 *
++	 * The PMM's own WLAN1 state register comes first because it sits in the always-on part of WCSS and is
++	 * the safer of the two, and each read is announced before it is taken: if the log stops after one of
++	 * these lines, that read is what hung the bus, and that is itself the answer.
++	 */
++	{
++		uint32_t g = 1;
++		(void)PE_parse_boot_argn("sweetgdsc", &g, sizeof(g));
++		if (g) {
++			printf("SWEET GDSC: reading WFSS_PMM_R0_WLAN1_STATUS_REG2 at 0xb6017c\n");
++			uint32_t sm = win_rd(0x00b6017c);
++			printf("SWEET GDSC: WLAN1_STATUS_REG2 %#x (WLAN1_SM)\n", sm);
++			printf("SWEET GDSC: reading WCSS_CC_WCSS_WLAN1_GDSCR at 0xc300c4\n");
++			uint32_t g1 = win_rd(0x00c300c4);
++			printf("SWEET GDSC: WLAN1_GDSCR %#x: pwr_on %u sw_collapse %u hw_ctrl %u\n",
++			    g1, (g1 >> 31) & 1u, g1 & 1u, (g1 >> 1) & 1u);
++			printf("SWEET GDSC: reading WCSS_CC_WCSS_WLAN2_GDSCR at 0xc30138\n");
++			uint32_t g2 = win_rd(0x00c30138);
++			printf("SWEET GDSC: WLAN2_GDSCR %#x: pwr_on %u sw_collapse %u hw_ctrl %u\n",
++			    g2, (g2 >> 31) & 1u, g2 & 1u, (g2 >> 1) & 1u);
++		}
++	}
+ 	{
+ 		uint32_t pwr = 1;
+ 		(void)PE_parse_boot_argn("sweetpwr", &pwr, sizeof(pwr));
