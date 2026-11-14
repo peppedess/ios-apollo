@@ -1215,3 +1215,21 @@ This is a crutch and not a fix — it does not teach the PMM to own the domain, 
 the domain back on the way up, which is why the hold is bounded and the release is logged. But if the
 assert stops firing, the diagnosis is confirmed to the last detail and we finally see what the firmware
 does next. That would be the first new ground past this wall.
+
+### k24: the crutch was defeated by the other crutch
+
+```
+[  41.752] SWEET GDSC: hw_control set, WLAN1 0xa0223802 WLAN2 0xa0223802
+[  41.912] SWEET GDSC: collapsed for the firmware at +50 ms, WLAN1 0xa0223803 WLAN2 0xa0223803
+[  41.942] SWEET MHI: SYSERR in mhistatus 0xff05 at +76 ms after INIT
+```
+
+`sweethwctrl` was still defaulting on, and the two are mutually exclusive by design: with HW_CONTROL set
+the GDSC ignores SW_COLLAPSE entirely. The write landed — 0xa0223803, both bits — and bit 31 stayed up,
+so the domain never came down and the firmware saw exactly what it saw in every other run. The test
+proved nothing except that I defeated it myself.
+
+## 1199-apollo-hwctrl-off-by-default.patch
+
+`sweethwctrl` now defaults off. k22 already showed setting it changes nothing on its own, and k24 showed
+it blocks the one thing that does work.

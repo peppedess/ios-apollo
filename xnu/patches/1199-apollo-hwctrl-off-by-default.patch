@@ -1,0 +1,18 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 25ef9c8..7d483a9 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2169,7 +2169,12 @@ wmi_init(void)
+ 			 * holding the rail up regardless of who is asking. It is off by default because it takes the
+ 			 * MAC and PHY down underneath a running firmware, and it restores the old value immediately.
+ 			 */
+-			uint32_t hw = 1, col = 0;
++			/*
++			 * hw defaults off now. k22 showed setting HW_CONTROL changes nothing, and k24 showed it
++			 * actively defeats the collapse: with bit 1 set the GDSC ignores SW_COLLAPSE, so the poke
++			 * wrote 0xa0223803 and PWR_ON stayed up. The two are mutually exclusive by design.
++			 */
++			uint32_t hw = 0, col = 0;
+ 			(void)PE_parse_boot_argn("sweethwctrl", &hw, sizeof(hw));
+ 			(void)PE_parse_boot_argn("sweetcollapse", &col, sizeof(col));
+ 			if (col) {
