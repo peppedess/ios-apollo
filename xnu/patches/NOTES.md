@@ -1399,3 +1399,17 @@ move the failure by a millisecond because none of them was about the host.
 What remains is the rest of the stock sequence: `mode OFF(4)`, the full hardware power-down, and a
 second bring-up with `cal_done` 1 — and then WMI_INIT on a chip that is finally in the state the
 firmware expects.
+
+## 1201-apollo-mission-after-calibration.patch
+
+The pass the chip has been waiting for.
+
+cnss2 closes the calibration pass with `mode OFF(4)` and then tears the chip all the way down — MHI
+POWER_OFF and DEINIT, WLAN_EN low, all five rails off — before bringing it back up for mission with
+`cal_done` 1. Replaying that from here means re-running the whole PCIe and MHI bring-up, so this patch
+tries the cheap version first: after the calibration-done indication, `mode OFF(4)`, then the ini sync
+and wlan_cfg that belong to mission, then `mode MISSION(0)`, all in the one session.
+
+If the firmware takes the transition, the WMI path below runs for the first time on a calibrated radio
+— which is the first time it will ever have been given a fair chance. If it refuses, the power cycle is
+load-bearing and we go and build it properly. `sweetcalthen=0` stops after the calibration, as k27 did.
