@@ -1353,3 +1353,22 @@ the missing piece is not in the INIT, it is everything the firmware expected to 
 3. mode OFF(4), then a full power-down: QFPROM 0x3, MHI POWER_OFF, DEINIT, WLAN_EN low, rails off.
 4. Power up again, `cal_done` 1 in host capability, regdb + bdf + m3, then the mission path we already
    have.
+
+## 1200-apollo-regdb-and-calibration.patch
+
+The first half of the stock sequence, implemented.
+
+**regdb.** `regdb.bin` is pulled back into the payload — 19348 bytes, byte-for-byte the size the stock
+log reports — and sent as BDF type 4 before the ELF board file. The download message, the segmentation
+and the TLVs are identical to the board-file path; only the type byte and the file change, so the same
+loop runs twice.
+
+**Calibration.** The mode-7 path no longer sends `wlan_ini` or `wlan_cfg` first. That is the whole of
+k14m's `result 1 error 90`: cnss2 sends `mode CALIBRATION(7)` straight after FW_READY, and the ini sync
+and wlan_cfg belong to the *mission* pass, which on this board is the second bring-up. We were
+configuring the chip for mission and then asking it to calibrate.
+
+`sweetmode=7` now runs the calibration pass as the stock driver does it. What it cannot yet do is the
+rest: mode OFF(4), the full hardware power-down (QFPROM 0x3, MHI POWER_OFF, DEINIT, WLAN_EN low, all
+five rails off) and a second bring-up with `cal_done` 1. That comes next, and only makes sense once the
+calibration itself is seen to complete.

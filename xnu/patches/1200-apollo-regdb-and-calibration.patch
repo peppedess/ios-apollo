@@ -1,0 +1,98 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 7d483a9..0029de4 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2480,14 +2480,27 @@ wifi_start(void)
+ 	 * wlan_cfg and wlan_mode; we have never sent it at all. It carries one optional byte, enablefwlog,
+ 	 * which ath11k sets to 1.
+ 	 */
+-	uint32_t ini = 1;
+-	(void)PE_parse_boot_argn("sweetini", &ini, sizeof(ini));
+-	if (ini) {
+-		const uint8_t inireq[] = { 0x10, 1, 0, 1 };
+-		(void)wlfw_req(0x2f, inireq, sizeof(inireq), "wlan_ini");
+-	}
+-	if (wlfw_req(0x23, t, o, "wlan_cfg") != 0) {
+-		return;
++	uint32_t fwmode = 0;
++	(void)PE_parse_boot_argn("sweetmode", &fwmode, sizeof(fwmode));
++	/*
++	 * Neither of these goes out on the calibration pass. k14m sent mode 7 after wlan_cfg and the
++	 * firmware answered result 1 error 90, which we recorded as "cold boot calibration is not
++	 * supported". Reading the stock driver's own boot log on this phone shows it plainly is supported —
++	 * `Sending mode message, mode: CALIBRATION(7)` is followed by `Calibration completed successfully` —
++	 * and that cnss2 sends it straight after FW_READY with no wlan_cfg and no ini sync at all. Those two
++	 * messages belong to the mission pass, which on this board is the *second* bring-up. We were
++	 * configuring a chip for mission and then asking it to calibrate.
++	 */
++	if (fwmode != 7) {
++		uint32_t ini = 1;
++		(void)PE_parse_boot_argn("sweetini", &ini, sizeof(ini));
++		if (ini) {
++			const uint8_t inireq[] = { 0x10, 1, 0, 1 };
++			(void)wlfw_req(0x2f, inireq, sizeof(inireq), "wlan_ini");
++		}
++		if (wlfw_req(0x23, t, o, "wlan_cfg") != 0) {
++			return;
++		}
+ 	}
+ 	/*
+ 	 * The mode the firmware is started in. ath11k on a laptop goes straight to mission mode, because
+@@ -2499,8 +2512,6 @@ wifi_start(void)
+ 	 * QMI_WLFW_COLD_BOOT_CAL_DONE_IND (0x3e), no WMI involved. If it survives that, the chip can run
+ 	 * its power sequences after all and what mission mode is missing is the calibration.
+ 	 */
+-	uint32_t fwmode = 0;
+-	(void)PE_parse_boot_argn("sweetmode", &fwmode, sizeof(fwmode));
+ 	uint8_t mode[] = { 0x01, 4, 0, (uint8_t)fwmode, 0, 0, 0,  0x10, 1, 0, 0 };
+ 	if (wlfw_req(0x22, mode, sizeof(mode), "wlan_mode") != 0) {
+ 		return;
+@@ -2710,6 +2721,48 @@ wlfw_board(void)
+ 	}
+ 	printf("SWEET WLFW: board file %s, %u bytes (%02x%02x%02x%02x)\n", bdname, bdlen, bd[0], bd[1], bd[2], bd[3]);
+ 	static uint8_t t[6144 + 64];
++	/*
++	 * The regulatory database goes first, as BDF type 4. ath11k never sends it on this chip —
++	 * .supports_regdb is false for QCA6390 in core.c — and we copied ath11k. The stock driver's boot log
++	 * on this phone shows it does:
++	 *
++	 *   Sending BDF download message, type: 4 / Downloading BDF: qca6390/regdb.bin, size: 19348
++	 *   Sending BDF download message, type: 1 / Downloading BDF: qca6390/bd_j3sgl.elf, size: 57968
++	 *
++	 * Same download message, same segmentation, only the type byte and the file differ, so the loop
++	 * below runs twice. sweetregdb=0 goes back to the board file alone.
++	 */
++	uint32_t wantregdb = 1;
++	(void)PE_parse_boot_argn("sweetregdb", &wantregdb, sizeof(wantregdb));
++	uint32_t rdblen = 0;
++	const uint8_t *rdb = wantregdb ? wlan_firmware("regdb.bin", &rdblen) : NULL;
++	if (rdb && rdblen) {
++		uint32_t rem = rdblen, s = 0;
++		printf("SWEET WLFW: regdb.bin %u bytes, type 4\n", rdblen);
++		while (rem) {
++			uint32_t dl = rem > 6144 ? 6144 : rem, o = 0;
++			t[o++] = 0x01; t[o++] = 1; t[o++] = 0; t[o++] = 1;
++			t[o++] = 0x10; t[o++] = 4; t[o++] = 0; memcpy(t + o, &board_id, 4); o += 4;
++			t[o++] = 0x11; t[o++] = 4; t[o++] = 0; memcpy(t + o, &rem, 4); o += 4;
++			t[o++] = 0x12; t[o++] = 4; t[o++] = 0; memcpy(t + o, &s, 4); o += 4;
++			t[o++] = 0x13; t[o++] = (uint8_t)(dl + 2); t[o++] = (uint8_t)((dl + 2) >> 8);
++			t[o++] = (uint8_t)dl; t[o++] = (uint8_t)(dl >> 8);
++			memcpy(t + o, rdb + (rdblen - rem), dl); o += dl;
++			t[o++] = 0x14; t[o++] = 1; t[o++] = 0; t[o++] = rem == dl;
++			t[o++] = 0x15; t[o++] = 1; t[o++] = 0; t[o++] = 4;
++			if (wlfw_req(0x25, t, o, "regdb_download") != 0) {
++				printf("SWEET WLFW: regdb stopped at segment %u\n", s);
++				break;
++			}
++			rem -= dl;
++			s++;
++		}
++		if (!rem) {
++			printf("SWEET WLFW: regdb sent, %u segments\n", s);
++		}
++	} else if (wantregdb) {
++		printf("SWEET WLFW: no regdb.bin in the payload\n");
++	}
+ 	uint32_t remaining = bdlen, seg = 0;
+ 	uint8_t type = bdlen >= 4 && bd[0] == 0x7f && bd[1] == 'E' && bd[2] == 'L' && bd[3] == 'F' ? 1 : 0;
+ 	while (remaining) {
