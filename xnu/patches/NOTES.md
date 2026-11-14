@@ -1233,3 +1233,38 @@ proved nothing except that I defeated it myself.
 
 `sweethwctrl` now defaults off. k22 already showed setting it changes nothing on its own, and k24 showed
 it blocks the one thing that does work.
+
+### k25: the domain went down, and the firmware asserted anyway
+
+This time the collapse took:
+
+```
+[  41.875] SWEET WMI: INIT (variant 0, 332 bytes, 2 chains, mask 0x3): ...
+[  41.933] SWEET GDSC: collapsed for the firmware at +50 ms, WLAN1 0x223801 WLAN2 0x223801
+[  41.964] SWEET MHI: SYSERR in mhistatus 0xff05 at +76 ms after INIT
+[  42.049] SWEET GDSC: released at +150 ms, WLAN1 0xa0222000 WLAN2 0xa0222000
+```
+
+`0x223801` — bit 31 clear. PWR_ON was genuinely zero from +50 ms to +150 ms, straddling the entire poll
+window, and the firmware asserted at +76 all the same.
+
+That is a hard negative, and it points at our own assumption rather than at the chip. The firmware polls
+`0xe0c300c4` for bit 31 clear; we drove bit 31 clear at `0x00c300c4`; the firmware did not see it. Either
+the Q6 and the host are not looking at the same register, or the nibble swap we inferred from cnss2's
+naming is wrong for WCSS_CC even though it holds for WFSS_PMM.
+
+`0x00c300c4` is certainly *a* GDSCR — it collapses on SW_COLLAPSE and comes back on release, which
+nothing else behaves like. It just may not be WLAN1's as the Q6 addresses it. Worth noting too that the
+register came back as `0xa0222000` rather than `0xa0223800`: CLK_DIS_WAIT changed under us between +50
+and +150 ms, so something other than our two writes is touching it.
+
+So the k21/k23 finding stands as fact — a GDSC the host can collapse in five milliseconds — but its
+identification as the one the firmware is waiting on does not. That is exactly the question a working
+chip can answer, and cnss2 hands us the instrument: `/sys/kernel/debug/cnss/reg_read` and `reg_write`
+perform the same windowed access from userspace. On a booted Android with Wi-Fi up we can read
+`0xc300c4` on a chip that works and see what it holds.
+
+Android cannot boot because its `/data` is the iOS root: `iosroot.img` was written to userdata (sda34) on
+2026-11-05. Restoring LineageOS therefore costs the iOS install, not user data — that was already gone
+nine days ago — and the ROM itself is intact in `super`, so formatting data should be enough. Giuseppe
+has asked to go that way after k25.
