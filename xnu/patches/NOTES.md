@@ -1039,3 +1039,55 @@ configuration, and if the collapse that hangs belongs to the dual-MAC bring-up i
 attempted at all.
 
 `sweetchains=1` forces it. Unset keeps whatever the service-ready event reported, which is 2.
+
+### k20: one chain changes nothing
+
+```
+[  43.443] SWEET WMI: INIT (variant 0, 332 bytes, 1 chains, mask 0x1): ...
++0 ms   wl_pwr_status 0x9  wcss_dbg_low 0x4402002
++55 ms  wl_pwr_status 0xd  wcss_dbg_low 0x3402001
++56 ms  wl_pwr_status 0xf  wcss_dbg_low 0x3402001
+[  43.532] SWEET MHI: SYSERR in mhistatus 0xff05 at +76 ms after INIT
+```
+
+The override took — mask 0x1, a single chain, no DBS — and the failure is identical to the millisecond.
+At 1 ms sampling we now see the move is two steps rather than one (bit 2 at +55, bit 1 at +56), which is
+the only new detail. The target configuration is not what decides this.
+
+### The firmware's whole register vocabulary
+
+The image contains exactly twenty `BLOCK_REG/FIELD` strings, and they are all polling targets. Laid out
+in address order they map the power code cleanly:
+
+```
+1378c2  WCSS_WCMN_R0_APPS_AGGRE_INTR_STATUS/PMM_WCMN_WLAN1_LS_DONE_INTR
+137924  WFSS_PMM_R0_PMM_WLAN1_CFG_REG1/MAC1_IDLE_STATUS
+137a08  _whal_pmm_wlan_pwr_seq_hwdtim_sleep___RAM
+137a32    WCSS_CC_WCSS_WLAN1_GDSCR/PWR_ON
+137a52    WCSS_CC_WCSS_WLAN2_GDSCR/PWR_ON
+137a72    WCSS_CC_WCSS_MAC0_MAC_CBCR/CLK_OFF
+137a95    WCSS_CC_WCSS_PHYA_320_CBCR/CLK_OFF
+137ab8    WFSS_PMM_R0_WLAN1_STATUS_REG2/WLAN1_SM
+137b4c  _whal_pmm_wlan_pwr_seq_partial_wake___RAM
+137b76  _whal_pmm_wlan_pwr_seq_full_wake___RAM
+137b9d  whal_stop_wlan_ss_seq___RAM
+137c04  whal_power_exit_lightsleep___RAM
+137c25  WHAL_PMAC_PRE_SLEEP_EVENT … POST_AWAKE_EVENT, SLEEP_ABORT_EVENT, PRE/POST_DTIM_CHAN_EVENT
+137d08  LPUTILS_WMAC_RECIPES_ID
+137e0a  whal_wmac_h2s_grant_check___RAM
+```
+
+This corrects something we had backwards. The strings sit in declaration order inside each function, and
+`WLAN1_GDSCR/PWR_ON` is the **first** one in `hwdtim_sleep` — so the GDSC poll is not the third check
+after MAC-idle and LS_DONE, it is the opening one. `MAC1_IDLE_STATUS` and `LS_DONE_INTR` belong to the
+function before it.
+
+Which makes the 55 ms the real question. If the preceding function's own waits were healthy they would
+take microseconds, not 55 ms. A 55 ms pause followed by the power status moving and then a 21 ms timeout
+reads like the *preceding* handshake also timing out and the firmware carrying on regardless — so the
+first thing to go wrong may be the LS_DONE interrupt never arriving, with the GDSC assert as the
+consequence rather than the cause.
+
+`whal_wmac_h2s_grant_check` and the `H2S_GRANT_ISSUED` / `O_WLAN1_H2S_GRANT_INT` pair are new: there is a
+grant handshake in this chip's sleep arbitration. They sit after `full_wake` in address order, so they
+are not in the failing path, but they confirm the sleep sequence is arbitrated rather than unilateral.
