@@ -1372,3 +1372,30 @@ configuring the chip for mission and then asking it to calibrate.
 rest: mode OFF(4), the full hardware power-down (QFPROM 0x3, MHI POWER_OFF, DEINIT, WLAN_EN low, all
 five rails off) and a second bring-up with `cal_done` 1. That comes next, and only makes sense once the
 calibration itself is seen to complete.
+
+### k27: cold boot calibration completes
+
+```
+[  41.304] SWEET WLFW: board file bd_j3sgl.elf, 57968 bytes (7f454c46)
+[  41.304] SWEET WLFW: regdb.bin 19348 bytes, type 4
+[  41.348] SWEET WLFW: regdb sent, 4 segments
+[  41.459] SWEET WLFW: board data sent, 10 segments, type 1
+[  41.619] SWEET WLFW: cold boot calibration started
+[  45.252] SWEET WLFW: *** cold boot calibration done after 3600 ms ***
+```
+
+No SYSERR. No assert. Three and a half seconds of the firmware calibrating the radio by itself, and a
+clean `QMI_WLFW_COLD_BOOT_CAL_DONE_IND`.
+
+To calibrate, the firmware runs the PHY through its power sequences — the same `hwdtim_sleep` path, the
+same WLAN1 GDSC, the same collapse that has killed every run since the first. It did all of it and came
+back. The radio works under our driver.
+
+So the wall was never the GDSC, never the register mapping, never anything we spent twenty-seven
+eliminations on. It was that the chip had never been calibrated and had never been given its regulatory
+database, and we were asking an uninitialised radio to do radio things. Every host-side theory failed to
+move the failure by a millisecond because none of them was about the host.
+
+What remains is the rest of the stock sequence: `mode OFF(4)`, the full hardware power-down, and a
+second bring-up with `cal_done` 1 — and then WMI_INIT on a chip that is finally in the state the
+firmware expects.
