@@ -1,0 +1,25 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 79464d9..a534177 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -1899,6 +1899,20 @@ wmi_init(void)
+ 	uint32_t *cfg = w + 9;                                          /* cfg[0] = its TLV header */
+ 	RC(0, (0x4fu << 16) | 288u);
+ 	uint32_t chains = g_htc.rf_chains ? g_htc.rf_chains : 2u;
++	/*
++	 * Every elimination so far has been host-side plumbing: wakes, votes, clocks, board files, QMI shapes.
++	 * The one axis never varied is what the INIT actually asks the firmware to build. The chain count is
++	 * the sharpest knob on it — with two chains and mask 0x3 the firmware configures both MACs and the
++	 * DBS path, and the power sequence it then runs touches WLAN1 and WLAN2 (the same function polls both
++	 * GDSCRs, at lines 495 and 598). Asking for a single chain is a materially different target
++	 * configuration, and if the collapse that hangs belongs to the dual-MAC setup it should not happen at
++	 * all. sweetchains=1 forces it; unset keeps whatever the service-ready event reported.
++	 */
++	uint32_t cforce = 0;
++	(void)PE_parse_boot_argn("sweetchains", &cforce, sizeof(cforce));
++	if (cforce) {
++		chains = cforce;
++	}
+ 	uint32_t mask = (1u << chains) - 1u;
+ 	/*
+ 	 * k13b: the firmware asserts in cmnos_thread.c line 502 right after INIT, which reads like it ran out of

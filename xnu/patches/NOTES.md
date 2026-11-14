@@ -973,3 +973,69 @@ nothing.
 Move the measurement to before the INIT is sent, where the chip is demonstrably healthy, and take the
 counter once more at the end of the window so the run says whether it kept running while the power
 sequence failed. Nothing else changes.
+
+### k19: the always-on clock is fine, and the measurement was mine to get wrong
+
+With the chip healthy before INIT (`soc_power_ctrl 0x117`, `wl_pwr_status 0x9`):
+
+```
+[  41.380] SWEET WLFW: device counter frequency 19200000 Hz
+[  41.911] SWEET PWR: WLAON counter 127548504 -> 127548504 in 100 ms = 0 Hz
+```
+
+The counter looked dead, and it is not. 127548504 ticks at 19.2 MHz is 6.643 s, and the chip was reset
+at 35.3 s with INIT at 41.911 s — 6.6 s. The always-on counter tracks wall time exactly.
+
+The zero delta was the method. cnss2's sequence is clear, enable, read **immediately**, clear:
+
+```c
+cnss_pci_clear_time_sync_counter(pci_priv);
+cnss_pci_enable_time_sync_counter(pci_priv);
+host_time_us = cnss_get_host_timestamp(plat_priv);
+ret = cnss_pci_get_device_timestamp(pci_priv, &device_time_us);
+cnss_pci_clear_time_sync_counter(pci_priv);
+```
+
+CTRL5 is not a free-run enable, it is a capture: it latches the global counter into CTRL3/CTRL4. Reading
+the same pair 100 ms later returns the same latched sample. So the clock hypothesis is dead, and we have
+gained something instead — a calibrated 19.2 MHz timestamp of the chip's own always-on domain, readable
+from the host.
+
+### The stock driver's own log, read today
+
+Running the recovery reference again and grepping it properly settled two things and killed a third.
+
+```
+cnss: BT_EN_GPIO State: Off. Delay WLAN_GPIO enable
+cnss: Assert WLAN_EN GPIO successfully          (105 ms later)
+cnss: Read register offset 0x1f8031c, val = 0x6
+cnss: Write val 0x2 to register offset 0x1f8031c
+cnss: MHI status cb is called with reason MISSION_MODE(6)
+```
+
+- The QFPROM write is confirmed from the other side: the stock driver reads the same 0x6 and writes the
+  same 0x2 we now write in 1190. Identical.
+- The BT_EN rule is real but we already satisfy it. cnss2 waits 100 ms before WLAN_EN only when BT_EN is
+  off; when BT_EN is on it asserts WLAN_EN straight away, which is our default path.
+- **No BDF line at all.** This path never downloads a board file — it goes
+  `COLD_BOOT_CAL_START` → MHI `POWER_ON` → `MISSION_MODE` with no QMI, because recovery has no QRTR. So
+  the reference cannot give us ground truth on which board file the stock driver picks. That question
+  stays open, and `bd_j3sgl.elf` stays an inference.
+
+Cold boot calibration is also confirmed dead rather than untried: `QMI_WLFW_CALIBRATION_V01` is 7, which
+is exactly what k14m sent, and the firmware refused it with `result 1 error 90`.
+
+## 1195-apollo-init-chain-override.patch
+
+Twenty-some eliminations in and every one of them has been host-side plumbing — wakes, votes, clocks,
+board files, QMI message shapes. The INIT payload itself has never changed. The three `sweetwmivar`
+variants only ever altered the frame's *length*; the resource config inside it has been byte-identical
+since the first run.
+
+The chain count is the sharpest knob on it. At two chains and mask 0x3 the firmware configures both MACs
+and the DBS path, and the power sequence it then runs covers WLAN1 and WLAN2 — the same function polls
+both GDSCRs, at line 495 and line 598. A single-chain INIT is a materially different target
+configuration, and if the collapse that hangs belongs to the dual-MAC bring-up it should not be
+attempted at all.
+
+`sweetchains=1` forces it. Unset keeps whatever the service-ready event reported, which is 2.
