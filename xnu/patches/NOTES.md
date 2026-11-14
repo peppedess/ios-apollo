@@ -1143,3 +1143,43 @@ completes, and it would explain why nothing we send changes the outcome by a mil
 The PMM's own `WLAN1_STATUS_REG2` is read first, being in the always-on part of WCSS, and each read is
 announced on its own line before it is taken. If the log stops after one of those lines, that read hung
 the bus — which is an answer too.
+
+### k21: HW_CONTROL is clear
+
+The read went through — no hang, nothing upset, and the number is unambiguous:
+
+```
+[  42.761] SWEET GDSC: WLAN1_STATUS_REG2 0x1 (WLAN1_SM)
+[  42.761] SWEET GDSC: WLAN1_GDSCR 0xa0223800: pwr_on 1 sw_collapse 0 hw_ctrl 0
+[  42.761] SWEET GDSC: WLAN2_GDSCR 0xa0223800: pwr_on 1 sw_collapse 0 hw_ctrl 0
+```
+
+Both domains: powered, not collapsed, and **HW_CONTROL clear**.
+
+That last bit is the whole story. A Qualcomm GDSC with HW_CONTROL clear is in software control: it comes
+down only when SW_COLLAPSE is written, and it ignores the hardware sequencer entirely. And the firmware
+never writes SW_COLLAPSE — every write in the sequence we disassembled goes to the PMM at `0xe0b6xxxx`
+and `0xe0b7xxxx`, and nothing anywhere in it touches WCSS_CC at `0xe0c3xxxx`. The firmware programs a
+sequencer and waits for the domain to come down, while the domain is not listening to that sequencer.
+
+It accounts for every observation we have collected, including the ones that made the fault look
+impossible:
+
+- The earlier steps pass because they are real handshakes with blocks that do respond — MAC idle,
+  LS_DONE, the clock branches gating off.
+- The last step can never complete, no matter how correct the sequence driving it.
+- The timing is identical to the millisecond in every run, because it is a fixed firmware timeout with
+  nothing racing against it.
+- Nothing we sent from the host ever changed it, because none of it was ever about the host.
+
+## 1197-apollo-gdsc-hw-control.patch
+
+`sweethwctrl` (default on) sets bit 1 on both GDSCRs before INIT, handing the domains to the hardware
+sequencer the firmware is talking to. If the stock bring-up does this somewhere we never reproduced, this
+is the missing write.
+
+`sweetcollapse` (default off) answers the other question if the first does not: can WLAN1's domain
+collapse at all? Asserting SW_COLLAPSE and watching PWR_ON costs one write, and distinguishes "the PMM
+has no authority" from "something is holding this rail up regardless of who asks". It stays off by
+default because it takes the MAC and PHY down underneath a running firmware; the old value goes straight
+back.

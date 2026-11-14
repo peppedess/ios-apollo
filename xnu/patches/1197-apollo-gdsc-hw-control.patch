@@ -1,0 +1,49 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 61066ad..cf2ed12 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2149,6 +2149,44 @@ wmi_init(void)
+ 			uint32_t g2 = win_rd(0x00c30138);
+ 			printf("SWEET GDSC: WLAN2_GDSCR %#x: pwr_on %u sw_collapse %u hw_ctrl %u\n",
+ 			    g2, (g2 >> 31) & 1u, g2 & 1u, (g2 >> 1) & 1u);
++			/*
++			 * k21 read 0xa0223800 on both: powered, not collapsed, and HW_CONTROL clear. That last bit
++			 * is the whole story. With HW_CONTROL clear a GDSC obeys only SW_COLLAPSE — a register the
++			 * firmware never writes. Every write in the disassembled sequence goes to the PMM at
++			 * 0xe0b6xxxx and 0xe0b7xxxx; nothing touches WCSS_CC at 0xe0c3xxxx. So the firmware programs
++			 * a hardware sequencer and waits for it to bring the domain down, while the domain is not
++			 * listening to that sequencer at all. The earlier steps pass because they are real handshakes
++			 * with blocks that do respond; the last one cannot ever complete.
++			 *
++			 * Two ways to act on it, both from here, both before INIT.
++			 *
++			 * sweethwctrl hands the domain to the hardware by setting bit 1, which is what the stock
++			 * bring-up must do somewhere we have not reproduced. If the firmware then collapses WLAN1 and
++			 * INIT returns a READY, that is the bug found.
++			 *
++			 * sweetcollapse answers a different question: can this domain collapse at all? Asserting
++			 * SW_COLLAPSE and watching PWR_ON costs one write and tells us whether something else is
++			 * holding the rail up regardless of who is asking. It is off by default because it takes the
++			 * MAC and PHY down underneath a running firmware, and it restores the old value immediately.
++			 */
++			uint32_t hw = 1, col = 0;
++			(void)PE_parse_boot_argn("sweethwctrl", &hw, sizeof(hw));
++			(void)PE_parse_boot_argn("sweetcollapse", &col, sizeof(col));
++			if (col) {
++				win_wr(0x00c300c4, g1 | 1u);
++				pc_msleep(5);
++				uint32_t after = win_rd(0x00c300c4);
++				win_wr(0x00c300c4, g1);
++				pc_msleep(5);
++				printf("SWEET GDSC: sw_collapse test: %#x -> %#x (pwr_on %u), restored to %#x\n",
++				    g1, after, (after >> 31) & 1u, win_rd(0x00c300c4));
++			}
++			if (hw) {
++				win_wr(0x00c300c4, win_rd(0x00c300c4) | 2u);
++				win_wr(0x00c30138, win_rd(0x00c30138) | 2u);
++				printf("SWEET GDSC: hw_control set, WLAN1 %#x WLAN2 %#x\n",
++				    win_rd(0x00c300c4), win_rd(0x00c30138));
++			}
+ 		}
+ 	}
+ 	{
