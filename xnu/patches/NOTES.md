@@ -1552,3 +1552,18 @@ time the driver has ever reached the data-path plumbing.
 The CE block is one of the allocations that survives the restart, so the obvious suspect is the same
 class of bug as k30: something in the copy-engine or HTC state that pass 1 left behind and pass 2 reads.
 That is the next thing to look at.
+
+### k32: a wasted run, and what it was meant to test
+
+k32 passed `sweetcaloff=1` to send `mode OFF(4)` at the end of the calibration pass. Nothing happened,
+because 1203 had replaced the block that read it: the flag survived in the boot arguments and nowhere
+else. The run is identical to k31 — mission mode at 52.400, crash at 52.494.
+
+## 1205-apollo-close-the-calibration-pass.patch
+
+So put it back, in the right place: `mode OFF(4)` immediately before the reset, not after it.
+
+In k28 the OFF was fatal because the WLFW service dies with it and we were trying to continue in the
+same session. Now the firmware is reset a few lines later, so losing the service costs nothing — and
+OFF is plausibly how the firmware is told to finalise the calibration rather than leaving it
+half-closed. cnss2 sends it; we have never managed to.

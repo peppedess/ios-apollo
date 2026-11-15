@@ -1,0 +1,24 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index fd3ef2b..f080ff9 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2572,6 +2572,19 @@ wifi_start(void)
+ 		if (!cont) {
+ 			return;
+ 		}
++		/*
++		 * Close the calibration pass the way cnss2 does. In k28 this killed us, because the WLFW
++		 * service goes away with it and we were trying to carry on in the same session. Now that the
++		 * firmware is about to be reset anyway, losing the service costs nothing — and OFF is plausibly
++		 * what tells the firmware to finalise the calibration it has just done rather than leaving it
++		 * half-closed. sweetcaloff=0 skips it.
++		 */
++		uint32_t sendoff = 1;
++		(void)PE_parse_boot_argn("sweetcaloff", &sendoff, sizeof(sendoff));
++		if (sendoff) {
++			uint8_t off[] = { 0x01, 4, 0, 4, 0, 0, 0,  0x10, 1, 0, 0 };
++			(void)wlfw_req(0x22, off, sizeof(off), "wlan_mode off");
++		}
+ 		printf("SWEET WLFW: calibration pass done, restarting the firmware for mission\n");
+ 		g_pass = 2;
+ 		g_q.memreq = g_q.memready = g_q.initdone = g_q.fwready = g_q.caldone = 0;
