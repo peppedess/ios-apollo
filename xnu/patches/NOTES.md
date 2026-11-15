@@ -1495,3 +1495,29 @@ The rails stay up. cnss2 cuts them, but doing that here would drop the PCIe link
 the root complex bring-up as well; resetting the firmware over MHI is what cnss2's POWER_OFF/DEINIT
 then INIT/POWER_ON actually does to the chip, and it is the part that matters for the firmware's own
 state machine. If the second pass still will not take MISSION, the rails are the next thing to cut.
+
+### k30: the second pass runs, and dies on a stale window
+
+```
+[  41.441] SWEET WLFW: host_cap (cnss2 shape): cal_done 0, ddr_range 0xc0000000 + 0x40000000
+[  45.535] SWEET WLFW: *** cold boot calibration done after 3600 ms ***
+[  45.535] SWEET WLFW: calibration pass done, restarting the firmware for mission
+[  52.016] SWEET WLFW: host_cap (cnss2 shape): cal_done 1, ddr_range 0xd4800000 + 0x9d8000
+[  52.251] SWEET MHI: *** SYS_ERR: the QCA6390 firmware crashed ***
+```
+
+The architecture works. `ath11k_sw_reset()` plus a second `mhi_probe()` re-downloads the firmware over
+BHI, re-arms the channels, walks QRTR and QMI from the start and gets all the way to a host capability
+with **cal_done 1** — a second, independent bring-up of the chip inside one boot.
+
+Then it crashes, and the reason is in the line above it. `ddr_range` is derived from `g_seg`, with a
+fallback to the whole pool window when no segments exist yet, which is the case on a first bring-up
+because host_cap goes out before respond_mem. On the second pass the segments were still there from the
+first, so we declared `0xd4800000 + 0x9d8000` — the old allocation, ten megabytes — instead of
+`0xc0000000 + 0x40000000`. The firmware was about to ask for memory that would not fit in the window we
+had just promised it.
+
+## 1204-apollo-reset-fw-segments.patch
+
+Clear `g_nseg` with the rest of the state before the restart, so the second bring-up declares the same
+window as the first and allocates fresh when respond_mem arrives.

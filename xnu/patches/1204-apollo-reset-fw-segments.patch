@@ -1,0 +1,21 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index f4628b1..fd3ef2b 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2579,6 +2579,16 @@ wifi_start(void)
+ 		g_wlfw_node = g_wlfw_port = 0;
+ 		g_cmd_wp = CMD_RING; g_er1_rp = ER1_RING; g_ch20_wp = CH20_RING; g_ch21_wp = CH21_RING;
+ 		g_er0_rp = 0; g_ch4_wp = CH4_RING; g_ch5_wp = CH5_RING;
++		/*
++		 * And the firmware's memory segments, which k30 showed are the thing that kills the second pass.
++		 * host_cap derives ddr_range from g_seg, falling back to the whole pool window when there are no
++		 * segments yet — which is the case on a first bring-up, before respond_mem. On the second pass
++		 * they were still there from the first, so instead of 0xc0000000 + 0x40000000 we declared
++		 * 0xd4800000 + 0x9d8000: the old allocation, a window far too small for the one the firmware was
++		 * about to ask for. It crashed 235 ms later. Clearing them makes the second bring-up declare the
++		 * same window as the first, and allocate fresh when respond_mem comes.
++		 */
++		g_nseg = 0;
+ 		ath11k_sw_reset();
+ 		pc_msleep(100);
+ 		mhi_probe();
