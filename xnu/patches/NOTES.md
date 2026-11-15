@@ -1413,3 +1413,32 @@ and wlan_cfg that belong to mission, then `mode MISSION(0)`, all in the one sess
 If the firmware takes the transition, the WMI path below runs for the first time on a calibrated radio
 — which is the first time it will ever have been given a fair chance. If it refuses, the power cycle is
 load-bearing and we go and build it properly. `sweetcalthen=0` stops after the calibration, as k27 did.
+
+### k28: calibration again, and mode OFF ends the conversation
+
+```
+[  41.293] SWEET WLFW: regdb.bin 19348 bytes, type 4
+[  41.611] SWEET WLFW: cold boot calibration started
+[  45.340] SWEET WLFW: *** cold boot calibration done after 3700 ms ***
+[  45.351] SWEET WLFW: response 0x22: result 0 error 0 (7 bytes)
+[  45.351] SWEET WLFW: calibration pass closed, arming mission mode
+[  50.726] SWEET WLFW: wlan_ini: nothing in 5000 ms
+[  56.079] SWEET WLFW: wlan_cfg: nothing in 5000 ms
+```
+
+The calibration reproduces exactly — 3700 ms this time against 3600 — so it is solid, not a fluke.
+
+`mode OFF(4)` was accepted, `result 0 error 0`, and then the firmware stopped answering QMI entirely.
+Both follow-ups timed out at the full five seconds. OFF tears the WLFW service down. That is harmless
+for cnss2, which is about to cut the power anyway, and fatal for us, who are trying to stay in the same
+session.
+
+## 1202-apollo-no-mode-off.patch
+
+So do not send it. Go from the calibration-done indication straight to the ini sync, wlan_cfg and
+`mode MISSION(0)`. `sweetcaloff=1` restores the OFF for anyone who wants to watch the service die.
+
+If the firmware will not take MISSION after a calibration in the same session either, then the power
+cycle really is load-bearing and the next step is to build it: MHI POWER_OFF and DEINIT, QFPROM 0x3,
+WLAN_EN low, rails off, and a second run through mhi_probe, ipcr_start and wlfw_handshake with
+`cal_done` 1.
