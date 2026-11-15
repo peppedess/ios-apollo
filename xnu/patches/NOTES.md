@@ -1567,3 +1567,35 @@ In k28 the OFF was fatal because the WLFW service dies with it and we were tryin
 same session. Now the firmware is reset a few lines later, so losing the service costs nothing — and
 OFF is plausibly how the firmware is told to finalise the calibration rather than leaving it
 half-closed. cnss2 sends it; we have never managed to.
+
+### k33: the OFF goes out cleanly and changes nothing
+
+```
+[  45.492] SWEET WLFW: *** cold boot calibration done after 3600 ms ***
+[  45.503] SWEET WLFW: response 0x22: result 0 error 0        <- mode OFF, accepted
+[  51.986] SWEET WLFW: host_cap (cnss2 shape): cal_done 1, ddr_range 0xc0000000 + 0x40000000
+[  52.332] SWEET WLFW: mission mode on
+[  52.425] SWEET MHI: *** SYS_ERR: the QCA6390 firmware crashed ***
+```
+
+The calibration pass is now closed exactly as cnss2 closes it, and the second pass still dies 93 ms
+after mission mode, in the same place as k31 and k32. Three runs, same millisecond. Whatever the second
+instance is missing, it is not the OFF.
+
+### What is left of the difference
+
+cnss2's cycle between the two passes is: mode OFF, MHI POWER_OFF, MHI DEINIT, QFPROM 0x3, WLAN_EN low,
+all five regulators disabled, a pause, and then the whole thing up again. We now do the first and the
+last of those. What we still do not do is **cut the power**: `ath11k_sw_reset()` resets PCIe, MHI and
+the Q6, and the second firmware instance comes up far enough to reach mission mode, but WCSS keeps
+whatever the calibration left in it, because nothing has taken its rails away.
+
+That is the remaining candidate, and it is also the expensive one: dropping the rails drops the PCIe
+link, so the second pass would have to re-run stages 1 to 6 of `pcie_main` — rails, GDSC and clocks,
+PARF, PHY, LTSSM, iATU — before `mhi_probe` could run again. About 220 lines that currently only ever
+execute once, to be factored into something callable twice.
+
+Worth noting what that would buy and what it would not: it is the last structural difference from the
+stock sequence we know of, but the crash is 93 ms into the copy-engine and HTC bring-up, which is code
+that has never run successfully on this chip in any configuration. It may equally be a plain bug in a
+path we have only now reached.
