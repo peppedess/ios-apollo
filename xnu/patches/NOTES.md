@@ -1521,3 +1521,34 @@ had just promised it.
 
 Clear `g_nseg` with the rest of the state before the restart, so the second bring-up declares the same
 window as the first and allocates fresh when respond_mem arrives.
+
+### k31: mission mode
+
+```
+[  41.480] SWEET WLFW: host_cap (cnss2 shape): cal_done 0, ddr_range 0xc0000000 + 0x40000000
+[  45.558] SWEET WLFW: *** cold boot calibration done after 3600 ms ***
+[  45.558] SWEET WLFW: calibration pass done, restarting the firmware for mission
+[  52.038] SWEET WLFW: host_cap (cnss2 shape): cal_done 1, ddr_range 0xc0000000 + 0x40000000
+[  52.384] SWEET WLFW: mission mode on
+```
+
+**The firmware accepted MISSION.** Two complete bring-ups of the chip in one boot — calibrate, restart
+the firmware over MHI, come back with `cal_done` 1 and the right DDR window, and walk the whole QMI
+sequence again to mission mode. That is the sequence the stock driver runs, reproduced.
+
+It does not survive what comes next:
+
+```
+[  52.384] SWEET PCIE: L1 substates 0xf enabled
+[  52.390] SWEET CE: rings at 0xd1f68000: CE0 base 0xd1f68400 misc 0xc2, CE1 dst base 0xd1f69000 ...
+[  52.477] SWEET MHI: *** SYS_ERR: the QCA6390 firmware crashed ***
+[  52.678] SWEET MHI: crash state: ee 3 mhistatus 0xff05 bhi status 0xba58db5b err 0x9
+```
+
+Ninety-three milliseconds after mission mode, during the copy-engine setup that follows it. A different
+failure in a different place from anything before — the WMI_INIT wall is behind us and this is the first
+time the driver has ever reached the data-path plumbing.
+
+The CE block is one of the allocations that survives the restart, so the obvious suspect is the same
+class of bug as k30: something in the copy-engine or HTC state that pass 1 left behind and pass 2 reads.
+That is the next thing to look at.
