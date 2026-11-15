@@ -1442,3 +1442,37 @@ If the firmware will not take MISSION after a calibration in the same session ei
 cycle really is load-bearing and the next step is to build it: MHI POWER_OFF and DEINIT, QFPROM 0x3,
 WLAN_EN low, rails off, and a second run through mhi_probe, ipcr_start and wlfw_handshake with
 `cal_done` 1.
+
+### k29: ini and cfg are accepted, MISSION crashes the firmware
+
+```
+[  45.532] SWEET WLFW: *** cold boot calibration done after 3600 ms ***
+[  45.532] SWEET WLFW: calibration pass closed, arming mission mode
+[  45.543] SWEET WLFW: response 0x2f: result 0 error 0        <- wlan_ini
+[  45.554] SWEET WLFW: response 0x23: result 0 error 0        <- wlan_cfg
+[  45.739] SWEET MHI: *** SYS_ERR: the QCA6390 firmware crashed ***
+[  51.015] SWEET WLFW: wlan_mode mission: nothing in 5000 ms
+```
+
+Better than k28 and still a no. Without the OFF the service stays up: the ini sync and the full
+wlan_cfg both come back clean. Then `mode MISSION(0)` goes out and 185 ms later the firmware is gone.
+
+So the firmware will not walk from CALIBRATION to MISSION inside one session, with or without the OFF
+in between. The power cycle cnss2 does between the two passes is load-bearing, and that is now
+established by evidence rather than assumed from the log.
+
+### Where this leaves the port
+
+Three things are settled that were not settled yesterday:
+
+- The radio calibrates. 3600 ms, reproduced three times, with the firmware running every PHY power
+  sequence including the one that had killed every run since the first.
+- The board file, the regulatory database and the counter frequency all match the stock driver exactly.
+- `hwdtim_sleep` and the WLAN1 GDSC were never the bug. They were the first thing an uncalibrated radio
+  happened to trip over.
+
+What remains for mission mode is a faithful power cycle between the passes: `mode OFF(4)`, MHI
+POWER_OFF and DEINIT, QFPROM 0x3, WLAN_EN low, all five rails off, a pause, and then a second run
+through the bring-up — `mhi_probe`, `ipcr_start`, `wlfw_handshake` — with `cal_done` 1 in the host
+capability and the regdb and board file sent again. Every one of those steps already exists as code
+that runs once; the work is making them run twice.
