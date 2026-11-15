@@ -1,0 +1,127 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 889db13..f4628b1 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -1038,6 +1038,14 @@ wlan_crash_dump(void)
+ 	}
+ }
+ static uint32_t g_wlfw_node, g_wlfw_port;
++/*
++ * Which of the two bring-ups we are in. cnss2 runs the chip twice: once to calibrate, with cal_done 0,
++ * and once for mission, with cal_done 1, and it power-cycles the chip in between. k29 showed why the
++ * cycle cannot be skipped — the firmware answers wlan_ini and wlan_cfg happily after a calibration and
++ * then dies 185 ms into mode MISSION. g_pass is 1 for the calibration bring-up and 2 for the mission
++ * one, and it decides the cal_done bit in the host capability and the mode we ask for.
++ */
++static uint32_t g_pass = 1;
+ static uint16_t g_txn = 1;
+ static struct {
+ 	uint16_t want_id;
+@@ -2408,6 +2416,7 @@ wifi_wait(volatile int *flag, int timeout_ms, const char *what)
+ }
+ 
+ static int wlfw_req(uint16_t id, const uint8_t *tlv, uint32_t n, const char *what);
++static void mhi_probe(void);                    /* the second bring-up calls it again, for mission */
+ 
+ static void
+ wifi_start(void)
+@@ -2482,6 +2491,9 @@ wifi_start(void)
+ 	 */
+ 	uint32_t fwmode = 0;
+ 	(void)PE_parse_boot_argn("sweetmode", &fwmode, sizeof(fwmode));
++	if (g_pass == 2) {
++		fwmode = 0;                                             /* the second bring-up is for mission */
++	}
+ 	/*
+ 	 * Neither of these goes out on the calibration pass. k14m sent mode 7 after wlan_cfg and the
+ 	 * firmware answered result 1 error 90, which we recorded as "cold boot calibration is not
+@@ -2537,53 +2549,40 @@ wifi_start(void)
+ 			return;
+ 		}
+ 		/*
+-		 * And now the pass the chip has been waiting for since the first run.
++		 * Now run the chip a second time, for mission.
+ 		 *
+-		 * cnss2 ends the calibration pass with mode OFF(4) and then tears the chip all the way down —
+-		 * MHI POWER_OFF and DEINIT, WLAN_EN low, all five rails off — before bringing it up again for
+-		 * mission with cal_done 1 in its host capability. We cannot replay that from here without
+-		 * re-running the whole PCIe and MHI bring-up, so try the cheap version first: mode OFF, then the
+-		 * ini sync and wlan_cfg that belong to mission, then mode MISSION(0), in this one session.
++		 * k28 and k29 between them close the cheap routes. With mode OFF the WLFW service goes away and
++		 * nothing is answered again; without it the ini sync and wlan_cfg are both accepted and then the
++		 * firmware dies 185 ms into mode MISSION. The firmware will not walk from CALIBRATION to MISSION
++		 * inside one session, which is exactly why cnss2 power-cycles the chip between its two passes.
+ 		 *
+-		 * If the firmware accepts the transition we are in mission mode on a calibrated radio and the
+-		 * WMI path below runs for the first time on a chip that is actually ready. If it refuses, we
+-		 * will know the power cycle is load-bearing and can go and build it. sweetcalthen=0 stops after
+-		 * the calibration, as k27 did.
++		 * We do not cut the rails — that would drop the PCIe link and mean re-running the root complex
++		 * bring-up — but we do what cnss2 does to the firmware itself: reset it and load it again. The
++		 * sw reset puts MHI back to its pre-boot state, and mhi_probe re-downloads the image over BHI,
++		 * re-arms the channels and walks QRTR and QMI from the start. Everything those stages keep in
++		 * globals has to go back to where it was before the first pass, or the second one reads the
++		 * leftovers of the first: the QMI indication flags, the service address, the MHI ring pointers.
++		 *
++		 * g_pass is what makes the second bring-up different from the first — cal_done 1 in the host
++		 * capability, and mode MISSION instead of CALIBRATION. sweetcalthen=0 stops after the
++		 * calibration, as k27 did.
+ 		 */
+ 		uint32_t cont = 1;
+ 		(void)PE_parse_boot_argn("sweetcalthen", &cont, sizeof(cont));
+ 		if (!cont) {
+ 			return;
+ 		}
+-		/*
+-		 * k28 says mode OFF is exactly what we must not send. The firmware took it — result 0, error 0 —
+-		 * and then stopped answering QMI altogether: wlan_ini and wlan_cfg both timed out at 5000 ms.
+-		 * OFF tears the service down, which is fine for cnss2 because it is about to cut the power
+-		 * anyway, and fatal for us because we are staying in the same session. sweetcaloff=1 sends it
+-		 * again for anyone who wants to see that happen.
+-		 */
+-		uint32_t sendoff = 0;
+-		(void)PE_parse_boot_argn("sweetcaloff", &sendoff, sizeof(sendoff));
+-		if (sendoff) {
+-			uint8_t off[] = { 0x01, 4, 0, 4, 0, 0, 0,  0x10, 1, 0, 0 };
+-			if (wlfw_req(0x22, off, sizeof(off), "wlan_mode off") != 0) {
+-				return;
+-			}
+-		}
+-		printf("SWEET WLFW: calibration pass closed, arming mission mode\n");
+-		uint32_t ini2 = 1;
+-		(void)PE_parse_boot_argn("sweetini", &ini2, sizeof(ini2));
+-		if (ini2) {
+-			const uint8_t inireq[] = { 0x10, 1, 0, 1 };
+-			(void)wlfw_req(0x2f, inireq, sizeof(inireq), "wlan_ini");
+-		}
+-		if (wlfw_req(0x23, t, o, "wlan_cfg") != 0) {
+-			return;
+-		}
+-		uint8_t miss[] = { 0x01, 4, 0, 0, 0, 0, 0,  0x10, 1, 0, 0 };
+-		if (wlfw_req(0x22, miss, sizeof(miss), "wlan_mode mission") != 0) {
+-			return;
+-		}
++		printf("SWEET WLFW: calibration pass done, restarting the firmware for mission\n");
++		g_pass = 2;
++		g_q.memreq = g_q.memready = g_q.initdone = g_q.fwready = g_q.caldone = 0;
++		g_q.rsplen = 0;
++		g_wlfw_node = g_wlfw_port = 0;
++		g_cmd_wp = CMD_RING; g_er1_rp = ER1_RING; g_ch20_wp = CH20_RING; g_ch21_wp = CH21_RING;
++		g_er0_rp = 0; g_ch4_wp = CH4_RING; g_ch5_wp = CH5_RING;
++		ath11k_sw_reset();
++		pc_msleep(100);
++		mhi_probe();
++		return;
+ 	}
+ 	printf("SWEET WLFW: mission mode on\n");
+ 
+@@ -2911,6 +2910,9 @@ wlfw_handshake(void)
+ 	 */
+ 	uint32_t cal = 1;
+ 	(void)PE_parse_boot_argn("sweetcal", &cal, sizeof(cal));
++	if (g_pass == 2) {
++		cal = 1;                                                /* the second bring-up: it is done now */
++	}
+ 	/*
+ 	 * Two shapes of this message. ath11k's is what we have sent all along; cnss2's is what actually ran
+ 	 * this chip on this phone for years, and it differs in three ways. It sends no nm_modem at all (0x13)

@@ -1476,3 +1476,22 @@ POWER_OFF and DEINIT, QFPROM 0x3, WLAN_EN low, all five rails off, a pause, and 
 through the bring-up — `mhi_probe`, `ipcr_start`, `wlfw_handshake` — with `cal_done` 1 in the host
 capability and the regdb and board file sent again. Every one of those steps already exists as code
 that runs once; the work is making them run twice.
+
+## 1203-apollo-second-pass-for-mission.patch
+
+Run the chip twice, the way cnss2 does.
+
+`g_pass` is 1 for the calibration bring-up and 2 for the mission one, and it decides two things: the
+`cal_done` bit in the host capability, and the mode we ask for. Everything else about the two passes is
+the same code.
+
+When the calibration-done indication arrives, the first pass resets the state the second one rebuilds —
+the QMI indication flags, the service address, the MHI ring pointers — calls `ath11k_sw_reset()` to put
+MHI back to its pre-boot state, and calls `mhi_probe()` again. That re-downloads the firmware over BHI,
+re-arms the channels and walks QRTR and QMI from the start, with `cal_done` 1 this time and
+`mode MISSION(0)` at the end.
+
+The rails stay up. cnss2 cuts them, but doing that here would drop the PCIe link and mean re-running
+the root complex bring-up as well; resetting the firmware over MHI is what cnss2's POWER_OFF/DEINIT
+then INIT/POWER_ON actually does to the chip, and it is the part that matters for the firmware's own
+state machine. If the second pass still will not take MISSION, the rails are the next thing to cut.
