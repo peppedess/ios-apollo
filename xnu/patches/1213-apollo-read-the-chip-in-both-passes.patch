@@ -1,0 +1,33 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 555309a..3e2c8c8 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -3710,6 +3710,28 @@ mhi_probe(void)
+ 	printf("SWEET MHI: serial %#x sbl-arb %#x numseg %u hwid %x %x %x %x\n", rd(g_bar, bhi + 0x40),
+ 	    rd(g_bar, bhi + 0x44), rd(g_bar, bhi + 0x48), rd(g_bar, bhi + 0x4c), rd(g_bar, bhi + 0x50),
+ 	    rd(g_bar, bhi + 0x54), rd(g_bar, bhi + 0x58));
++	/*
++	 * What the chip looks like before anything of ours has touched it, printed identically in both
++	 * passes so the two can be read side by side. k43 says the second instance asserts at line 367 of a
++	 * PMM power sequence — `cmp.gt(r19,#11)`, an index past the end of a twelve-entry table — and reports
++	 * no otp_version in its capability response, where the first instance reports 0x48001d. Both of those
++	 * say the chip underneath is not in the state the firmware expects, so: read the chip.
++	 */
++	{
++		uint32_t cs = 1;
++		(void)PE_parse_boot_argn("sweetchipdump", &cs, sizeof(cs));
++		if (cs) {
++			static const uint32_t regs[] = {
++				0x01f8031c, 0x01f8002c, 0x01f80000, 0x01f80024, 0x01f80028, 0x01f80118,
++				0x01f8011c, 0x01f80120, 0x00b60164, 0x00b6017c, 0x00c300c4, 0x00c30138,
++				0x01e03140, 0x01e0313c,
++			};
++			for (unsigned i = 0; i < sizeof(regs) / sizeof(regs[0]); i += 2) {
++				printf("SWEET PCIE: chip (pass %u) %#09x = %#010x   %#09x = %#010x\n", g_pass,
++				    regs[i], win_rd(regs[i]), regs[i + 1], win_rd(regs[i + 1]));
++			}
++		}
++	}
+ 	if (ee == 0 && g_step >= 8) {
+ 		ath11k_sw_reset();
+ 		printf("SWEET MHI: after reset: ee %u status %#x mhictrl %#x mhistatus %#x\n", rd(g_bar, bhi + 0x28),

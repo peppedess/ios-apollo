@@ -1739,3 +1739,35 @@ response is where it shows. So: dump it whole, in hex, and diff the two.
 The crash scan also only ever looked at the first 256 KiB of the 6 MB segment, which has returned
 "no text" on every mission crash. Now it reads the whole segment (`sweetwidescan=0` to go back) and prints
 up to 24 runs.
+
+## 1213 — leggere il chip prima di ogni download, nei due passaggi
+
+k43 got the firmware to say what it is dying of. The wide scan found, at +0x2ffe80 of the first segment:
+
+```
+Asserted in0x171fe48s:367
+```
+
+which is the format string at 0x1391db of amss20.bin, `Asserted in0x%xs:%d`, with the address 0x171fe48
+and the line 367. Disassembling there:
+
+```
+0171fad4  { call 0xffddb288 allocframe(#184) }            <- function entry
+0171fadc  { r19:18 = combine(r1,r4) r17:16 = combine(r2,r3) r21 = r0 }
+0171faec  { p0 = cmp.gt(r19,#11); if (p0.new) jump ... r0 = #367 }
+0171faf4  { r2 = add(r21,mpyi(r19,##584)) }
+```
+
+an index into a twelve-entry table of 584-byte structures, asserted when the index is past the end — and
+0x171fe48 sits in the same region as the lines 487 and 495 we have been staring at since the GDSC days,
+which is the PMM power sequencing.
+
+The capability response says the same thing from the other side: the first instance reports TLV 0x18,
+otp_version = 0x0048001d; the second instance, after a calibration pass, does not report it at all. A
+firmware that cannot read the chip's fuses is exactly a firmware that would then index a power-sequence
+table with something it should not have.
+
+So before each BHI download, in both passes, read the same fourteen WLAON, WFSS_PMM, WCSS_CC and
+WCSS_STATUS_FOR_DEBUG registers and print them with the pass number. If the chip really comes up identical
+both times, these fourteen lines will match and the difference is somewhere we have not looked; if they do
+not, the difference is right there.
