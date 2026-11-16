@@ -1721,3 +1721,21 @@ ours alone, so a shared supply stays up for whoever else is asking. `sweetrailso
 Also from that log: the copy-engine rings in the stock driver go up *after* the mode message
 (`ce_srng_dest_ring_setup` at 14.569, mode at 14.547), so 1210's `sweetceearly` is not the stock order
 after all — only `hif_pci_enable_bus` comes earlier, and that is the bus, not the rings. Ours was right.
+
+## 1212 — leggere la capability per intero, e tutto il segmento dopo il crash
+
+k39 and k42 are the pair that matters. Both power-cycle the chip between the passes, both drop the rails,
+both hand the second instance fresh zeroed memory and `cal_done = 0`. The only difference is what the
+*first* instance did: in k39 it stopped at `firmware init done` and did nothing; in k42 it ran the cold
+boot calibration. k39's second instance reaches HTC READY, WMI service ready and WMI INIT. k42's dies 94
+ms into mission mode.
+
+And the second instance can tell the difference: its capability response is 164 bytes after the dry first
+pass and 157 after the calibrating one. Seven bytes — one TLV — in a message that arrives before anything
+else we send could matter. The WLAON power-control register reads its power-on default 0x6 in both second
+passes, so the chip really did lose its rails; something is crossing that gap anyway, and the capability
+response is where it shows. So: dump it whole, in hex, and diff the two.
+
+The crash scan also only ever looked at the first 256 KiB of the 6 MB segment, which has returned
+"no text" on every mission crash. Now it reads the whole segment (`sweetwidescan=0` to go back) and prints
+up to 24 runs.

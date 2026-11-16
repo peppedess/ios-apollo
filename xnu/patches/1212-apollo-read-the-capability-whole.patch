@@ -1,0 +1,54 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 2d762b0..555309a 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -1037,8 +1037,18 @@ wlan_crash_dump(void)
+ 		unsigned shown = 0;
+ 		char run[96];
+ 		unsigned n = 0;
+-		uint32_t cap = g_seg[k].size < 0x40000u ? g_seg[k].size : 0x40000u;
+-		for (uint32_t o = 0; o < cap && shown < 8; o++) {
++		/*
++		 * The whole segment, not the first 256 KiB. Six megabytes of byte reads over a mapped window is
++		 * slow but it is the firmware's own account of what went wrong, and the 256 KiB window has
++		 * returned "no text" on every mission crash so far — the Q6 does not put its assert at the top.
++		 */
++		uint32_t cap = g_seg[k].size;
++		uint32_t wide = 1;
++		(void)PE_parse_boot_argn("sweetwidescan", &wide, sizeof(wide));
++		if (!wide) {
++			cap = g_seg[k].size < 0x40000u ? g_seg[k].size : 0x40000u;
++		}
++		for (uint32_t o = 0; o < cap && shown < 24; o++) {
+ 			uint8_t ch = *(volatile uint8_t *)(g_seg[k].va + o);
+ 			if (ch >= 0x20 && ch < 0x7f) {
+ 				if (n < sizeof(run) - 1) {
+@@ -2843,6 +2853,28 @@ wlfw_board(void)
+ 		memcpy(&g_timefreq, v, 4);
+ 		printf("SWEET WLFW: device counter frequency %u Hz\n", g_timefreq);
+ 	}
++	/*
++	 * And the response whole, in hex. k39 and k42 differ by exactly seven bytes here — one TLV — and the
++	 * only thing that separates those two runs is whether the *previous* firmware instance ran a
++	 * calibration, on a chip we then power-cycled down to the rails. Something is crossing that gap, and
++	 * this is the one place we can see it crossing.
++	 */
++	{
++		uint32_t dumpcap = 1;
++		(void)PE_parse_boot_argn("sweetcapdump", &dumpcap, sizeof(dumpcap));
++		for (uint32_t o = 0; dumpcap && o < g_q.rsplen; o += 24) {
++			char hex[80];
++			unsigned n = 0;
++			for (uint32_t i = o; i < o + 24 && i < g_q.rsplen; i++) {
++				const char *d = "0123456789abcdef";
++				hex[n++] = d[g_q.rsp[i] >> 4];
++				hex[n++] = d[g_q.rsp[i] & 15];
++				hex[n++] = ' ';
++			}
++			hex[n] = 0;
++			printf("SWEET WLFW: cap +%03x: %s\n", o, hex);
++		}
++	}
+ 
+ 	/*
+ 	 * Which board file. The chip reports board id 0xff, and cnss2's rule for 0xff is not the plain
