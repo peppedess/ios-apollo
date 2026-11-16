@@ -1,0 +1,35 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 3e2c8c8..1f17266 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -3730,6 +3730,19 @@ mhi_probe(void)
+ 				printf("SWEET PCIE: chip (pass %u) %#09x = %#010x   %#09x = %#010x\n", g_pass,
+ 				    regs[i], win_rd(regs[i]), regs[i + 1], win_rd(regs[i + 1]));
+ 			}
++			/*
++			 * k44 found exactly one register that differs between the two passes:
++			 * WCSS_STATUS_FOR_DEBUG high, 0x03707000 on the first pass and 0x05707000 on the
++			 * second — two bits of a state field, where the other thirteen registers match to
++			 * the bit. Either the chip settles into that state over time and we are simply
++			 * reading it earlier in its life on the second pass, or it is genuinely in another
++			 * state. Sampling it says which.
++			 */
++			for (unsigned i = 0; i < 6; i++) {
++				printf("SWEET PCIE: chip (pass %u) +%u ms: status %#010x %#010x, pmm %#010x\n",
++				    g_pass, i * 25, win_rd(0x01e0313c), win_rd(0x01e03140), win_rd(0x00b6017c));
++				pc_msleep(25);
++			}
+ 		}
+ 	}
+ 	if (ee == 0 && g_step >= 8) {
+@@ -4037,7 +4050,9 @@ wlan_power_down(void)
+ 		unvote("smpa6");                                        /* vdd-wlan-aon and -dig 0.95 V */
+ 		unvote("smpa4");                                        /* vdd-wlan-io 1.8 V */
+ 	}
+-	pc_msleep(300);
++	uint32_t down = 300;
++	(void)PE_parse_boot_argn("sweetdowntime", &down, sizeof(down));
++	pc_msleep(down);
+ }
+ 
+ static void

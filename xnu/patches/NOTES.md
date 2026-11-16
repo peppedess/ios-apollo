@@ -1771,3 +1771,24 @@ So before each BHI download, in both passes, read the same fourteen WLAON, WFSS_
 WCSS_STATUS_FOR_DEBUG registers and print them with the pass number. If the chip really comes up identical
 both times, these fourteen lines will match and the difference is somewhere we have not looked; if they do
 not, the difference is right there.
+
+## 1214 — l'unico registro che non combacia
+
+k44 read fourteen chip registers before each BHI download, in both passes. Thirteen match to the bit:
+
+```
+chip (pass 1) 0x1f8031c = 0x00000006   0x1f8002c = 0x0000000f
+chip (pass 1) 0x0c300c4 = 0x00222001   0x0c30138 = 0x00222001
+chip (pass 1) 0x1e03140 = 0x03402001   0x1e0313c = 0x03707000
+chip (pass 2) ... identical ...        0x1e0313c = 0x05707000
+```
+
+WCSS_STATUS_FOR_DEBUG high: `0x03707000` on the first pass, `0x05707000` on the second. Bits 25 and 26,
+one state swapped for another, with everything else — WLAON, the QFPROM power control, both GDSCRs, the
+PMM control — reading the same reset values. That rules out a chip that merely kept its state: the chip
+did reset, and one state field came up elsewhere.
+
+Two readings of that: either the field settles over time and the second pass simply reads it younger
+(300 ms after the rails came back, against seconds on the first pass), or the chip really is in another
+state. So sample it six times at 25 ms and watch, and make the power-down wait a boot argument
+(`sweetdowntime`, default 300) to try the long version.
