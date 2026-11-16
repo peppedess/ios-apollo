@@ -1640,3 +1640,24 @@ whether the 220-line power-cycle refactor is worth building.
 (Also noted while reading k34: `015dae40 050000c8 008a4fb4 008a5050` at the start of segment 0, which we
 have been reading as a crash record since k31, is in every log from 41 s onwards, healthy runs included.
 It is a firmware header, not a dump. The real crash record is in RDDM, which `sweetrddm=1` collects.)
+
+## 1208 — il secondo passaggio riparte dalle alimentazioni
+
+k36 answered the question 1207 asked. With `sweetcal2=0` the second instance does not claim the
+calibration, never reads the caldb, and dies at exactly the same place: 88 ms into mission mode, no HTC
+READY, same as k34 and k35 with cal_done 1. So it is neither the calibration nor the memory we hand it.
+What is left is the chip: `ath11k_sw_reset` resets PCIe, MHI and the Q6, and WCSS keeps whatever the
+calibration left in it, because nothing takes its rails away. k25 — a single cold pass — had HTC READY
+back in the same millisecond as the copy-engine rings.
+
+So the body of `pcie_main` becomes `pcie_bringup(step)`, callable twice, and the calibration pass stops
+restarting the firmware from inside the QMI handler: it sets `g_restart` and returns. `pcie_main` unwinds,
+runs `wlan_power_down` — QFPROM SHUTDOWN_EN and VDD4BLOW back on, MHICTRL RESET while the link can still
+carry it, PERST# and both enables low, 300 ms — and calls `pcie_bringup` again. Stage 1 of that is already
+a power cycle, so the second pass gets rails, GDSC, clocks, PARF, PHY, LTSSM, iATU and BHI from scratch,
+the way cnss2 does it. The host DDR with the calibration in it is ours and survives, which is the whole
+point of keeping it across the cycle.
+
+`sweetsoftpass=1` keeps the old behaviour for comparison. The RDDM collector, incidentally, hangs: k35
+prepared all 9 pieces of the dump area and the thread never printed again, so the crash dump is still not
+readable and the reasoning above is from the logs alone.

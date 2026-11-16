@@ -1,0 +1,128 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 739eec9..bd31af6 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -1060,6 +1060,7 @@ static uint32_t g_wlfw_node, g_wlfw_port;
+  * one, and it decides the cal_done bit in the host capability and the mode we ask for.
+  */
+ static uint32_t g_pass = 1;
++static uint32_t g_restart;                              /* the calibration pass is done: cycle the chip and go again */
+ static uint16_t g_txn = 1;
+ static struct {
+ 	uint16_t want_id;
+@@ -2628,9 +2629,20 @@ wifi_start(void)
+ 		g_nsaved = g_nseg < 4 ? g_nseg : 4;
+ 		g_reuse = 0;
+ 		g_nseg = 0;
+-		ath11k_sw_reset();
+-		pc_msleep(100);
+-		mhi_probe();
++		/*
++		 * And hand the restart to pcie_main rather than doing it here. sweetsoftpass=1 goes back to the
++		 * k31-k36 behaviour — a software reset and another mhi_probe from inside this call — which reached
++		 * mission mode and died there, three builds running.
++		 */
++		uint32_t soft = 0;
++		(void)PE_parse_boot_argn("sweetsoftpass", &soft, sizeof(soft));
++		if (soft) {
++			ath11k_sw_reset();
++			pc_msleep(100);
++			mhi_probe();
++			return;
++		}
++		g_restart = 1;
+ 		return;
+ 	}
+ 	printf("SWEET WLFW: mission mode on\n");
+@@ -3641,21 +3653,20 @@ config_sid(void)
+ 	}
+ }
+ 
++/*
++ * Everything from the rails to MHI, as one callable piece. It used to be the body of pcie_main, which ran
++ * once per boot; the mission pass needs it a second time. k36 settled why: the second firmware instance
++ * dies 88 ms into mission mode whether we claim the calibration or not (sweetcal2=0 changed nothing), and
++ * it dies without sending HTC READY, while k25 — one cold pass — had HTC READY back in the same
++ * millisecond as the copy-engine rings. The firmware is not the variable; the chip underneath it is.
++ * ath11k_sw_reset resets PCIe, MHI and the Q6, but WCSS keeps whatever the calibration left in it, because
++ * nothing ever takes its rails away. cnss2 does exactly that between its two passes, and stage 1 below is
++ * already a power cycle — WLAN_EN and BT_EN low for 100 ms, which is long enough for the chip's own PMU to
++ * drop everything — so the second pass gets the real thing simply by starting here again.
++ */
+ static void
+-pcie_main(void *arg __unused, wait_result_t w __unused)
++pcie_bringup(uint32_t step)
+ {
+-	uint32_t step = 0xff;
+-	(void)PE_parse_boot_argn("sweetpciestep", &step, sizeof(step));
+-	g_step = step;
+-	/*
+-	 * k12h died before the first UFS log flush (nothing of that boot in the log): start late, so the log is being
+-	 * written to UFS by then, and wait one flush period before each risky step (sweetpciedelay, default 20 s).
+-	 */
+-	uint32_t late = 20;
+-	(void)PE_parse_boot_argn("sweetpciedelay", &late, sizeof(late));
+-	pc_msleep(late * 1000u);
+-	printf("SWEET PCIE: start (sweetpciestep=%u, after %u s)\n", step, late);
+-
+ 	/* 1. power: the RC's PHY rails, the QCA6390's rails, then WLAN_EN (cnss: rails, 10 ms, WLAN_EN, 100 ms) */
+ 	vote_ldo("ldoa5", 880);
+ 	vote_ldo("ldoa9", 1200);
+@@ -3863,6 +3874,57 @@ pcie_main(void *arg __unused, wait_result_t w __unused)
+ 	mhi_probe();
+ }
+ 
++/*
++ * The other half of the cycle: what cnss2 does on the way down between calibration and mission. The QFPROM
++ * bits go back on (its cnss_pci_set_wlaon_pwr_ctrl sets SHUTDOWN_EN on every power-down, and they live in
++ * the always-on domain, so this is also what our own next boot will find), MHI is told to reset while the
++ * link is still up to say it, and then the chip loses PERST# and both enables. The rails themselves are
++ * RPMh votes shared with the rest of the SoC; the enables are what the chip's PMU watches.
++ */
++static void
++wlan_power_down(void)
++{
++	uint32_t pc = win_rd(0x1f8031c);
++	win_wr(0x1f8031c, pc | 5u);
++	printf("SWEET MHI: power down: mhistatus %#x, WLAON_QFPROM_PWR_CTRL %#x -> %#x\n", rd(g_bar, 0x48), pc,
++	    win_rd(0x1f8031c));
++	wr(g_bar, 0x38, 2u);                                            /* MHICTRL <- RESET */
++	pc_msleep(50);
++	gpio_out(GPIO_PERST, 0);
++	gpio_out(GPIO_WLAN_EN, 0);
++	gpio_out(GPIO_BT_EN, 0);
++	printf("SWEET PCIE: chip down, WAKE# reads %d\n", gpio_in(GPIO_WAKE));
++	pc_msleep(300);
++}
++
++static void
++pcie_main(void *arg __unused, wait_result_t w __unused)
++{
++	uint32_t step = 0xff;
++	(void)PE_parse_boot_argn("sweetpciestep", &step, sizeof(step));
++	g_step = step;
++	/*
++	 * k12h died before the first UFS log flush (nothing of that boot in the log): start late, so the log is being
++	 * written to UFS by then, and wait one flush period before each risky step (sweetpciedelay, default 20 s).
++	 */
++	uint32_t late = 20;
++	(void)PE_parse_boot_argn("sweetpciedelay", &late, sizeof(late));
++	pc_msleep(late * 1000u);
++	printf("SWEET PCIE: start (sweetpciestep=%u, after %u s)\n", step, late);
++	pcie_bringup(step);
++	/*
++	 * And round again for mission, if the calibration pass asked for it. Unwinding to here rather than
++	 * calling the bring-up from inside the QMI handler keeps this one thread's stack flat: the second
++	 * pass is a second pass, not a nested one.
++	 */
++	while (g_restart) {
++		g_restart = 0;
++		wlan_power_down();
++		printf("SWEET PCIE: *** second bring-up, from the rails up (pass %u) ***\n", g_pass);
++		pcie_bringup(step);
++	}
++}
++
+ void
+ apollo_pcie_init(void)
+ {
