@@ -1,0 +1,56 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index bd31af6..e90ae47 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2931,6 +2931,39 @@ wlfw_board(void)
+ 		return;
+ 	}
+ 	printf("SWEET WLFW: firmware init done\n");
++	/*
++	 * sweetdryrun=1: the first instance stops right here — no ini, no cfg, no mode, no calibration — and
++	 * asks for the power cycle anyway. k38 showed a single pass reaching HTC READY, WMI service ready and
++	 * WMI INIT with everything we now send, regdb included, so the mission path itself is sound; k37
++	 * showed the second instance dying before HTC READY even with the chip fully power-cycled. This
++	 * separates the two readings of that: if a second instance crashes after a first one that did nothing
++	 * at all, the fault is in our own re-initialisation, and if it does not, it is something the
++	 * calibration leaves behind.
++	 */
++	if (g_pass == 1) {
++		uint32_t dry = 0;
++		(void)PE_parse_boot_argn("sweetdryrun", &dry, sizeof(dry));
++		if (dry) {
++			printf("SWEET WLFW: dry run: first instance stops here, cycling for the second\n");
++			for (unsigned k = 0; k < g_nseg && k < 4; k++) {
++				g_saved[k].pa = g_seg[k].pa;
++				g_saved[k].size = g_seg[k].size;
++				g_saved[k].type = g_seg[k].type;
++				g_saved[k].va = g_seg[k].va;
++			}
++			g_nsaved = g_nseg < 4 ? g_nseg : 4;
++			g_reuse = 0;
++			g_nseg = 0;
++			g_pass = 2;
++			g_q.memreq = g_q.memready = g_q.initdone = g_q.fwready = g_q.caldone = 0;
++			g_q.rsplen = 0;
++			g_wlfw_node = g_wlfw_port = 0;
++			g_cmd_wp = CMD_RING; g_er1_rp = ER1_RING; g_ch20_wp = CH20_RING; g_ch21_wp = CH21_RING;
++			g_er0_rp = ER0_RING; g_ch4_wp = CH4_RING; g_ch5_wp = CH5_RING;
++			g_restart = 1;
++			return;
++		}
++	}
+ 	if (g_step >= 13) {
+ 		wifi_start();
+ 	}
+@@ -3082,7 +3115,10 @@ wlfw_handshake(void)
+ 			 * cursor and give each one straight back — same address, contents untouched. The calibration
+ 			 * the firmware wrote in the first pass is in there, and cal_done=1 tells it to go and read it.
+ 			 */
+-			if (g_reuse < g_nsaved && g_saved[g_reuse].type == type && g_saved[g_reuse].size == size) {
++			uint32_t keepmem = 1;
++			(void)PE_parse_boot_argn("sweetkeepmem", &keepmem, sizeof(keepmem));
++			if (keepmem && g_reuse < g_nsaved && g_saved[g_reuse].type == type &&
++			    g_saved[g_reuse].size == size) {
+ 				pa = g_saved[g_reuse].pa;
+ 				va = g_saved[g_reuse].va;
+ 				g_reuse++;

@@ -1661,3 +1661,17 @@ point of keeping it across the cycle.
 `sweetsoftpass=1` keeps the old behaviour for comparison. The RDDM collector, incidentally, hangs: k35
 prepared all 9 pieces of the dump area and the thread never printed again, so the crash dump is still not
 readable and the reasoning above is from the logs alone.
+
+## 1209 — un secondo firmware dopo un primo che non ha fatto niente
+
+k37 built the power cycle and the second instance still died 87 ms into mission mode. k38 then ran a
+single pass with everything the two-pass build sends, regdb included, and it went all the way: HTC READY,
+service 0x100 and 0x300, WMI service ready with 2 RF chains, WMI INIT, and then the old WMI_INIT death of
+an uncalibrated radio 440 ms later. So the mission path is sound and regdb is innocent — the only broken
+thing is being the *second* instance, and the chip being warm was not it either.
+
+`sweetdryrun=1` stops the first instance at `firmware init done` — no ini, no cfg, no mode, no calibration
+at all — and asks for the cycle anyway. `sweetkeepmem=0` makes the second one allocate fresh segments
+instead of getting the first one's back. Together they make the second instance as close to k38's single
+pass as this code can get: if it still crashes, the fault is in our own re-initialisation and nowhere near
+the firmware; if it does not, it is something the calibration leaves behind.
