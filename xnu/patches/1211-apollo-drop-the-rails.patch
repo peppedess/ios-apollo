@@ -1,0 +1,43 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 9e2f5d6..2d762b0 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -170,6 +170,23 @@ vote_clk(const char *res)
+ 	return e;
+ }
+ 
++/*
++ * And taking a vote back. cnss2 disables all five of the chip's rails between the calibration and the
++ * mission pass — vdd-wlan-rfa2, rfa1, dig, aon, io, in that order — and WLAN_EN alone does not stand in
++ * for that: WLAON is by definition the domain that survives the chip's own power collapse, so as long as
++ * vdd-wlan-aon is up, part of the chip remembers the calibration pass. Clearing the enable bit withdraws
++ * our vote only; any other master still asking for the rail keeps it up, which is what makes this safe to
++ * do with a shared supply.
++ */
++static int
++unvote(const char *res)
++{
++	const uint32_t o[1] = { 4 }, v[1] = { 0 };
++	int e = sweet_rpmh_write(res, 1, o, v);
++	printf("SWEET PCIE: rpmh %s off -> %d\n", res, e);
++	return e;
++}
++
+ static int
+ vote_smps(const char *res, unsigned mv)
+ {
+@@ -3958,6 +3975,14 @@ wlan_power_down(void)
+ 	gpio_out(GPIO_WLAN_EN, 0);
+ 	gpio_out(GPIO_BT_EN, 0);
+ 	printf("SWEET PCIE: chip down, WAKE# reads %d\n", gpio_in(GPIO_WAKE));
++	uint32_t rails = 1;
++	(void)PE_parse_boot_argn("sweetrailsoff", &rails, sizeof(rails));
++	if (rails) {
++		unvote("smpc8");                                        /* vdd-wlan-rfa2 1.352 V */
++		unvote("smpa5");                                        /* vdd-wlan-rfa1 1.9 V */
++		unvote("smpa6");                                        /* vdd-wlan-aon and -dig 0.95 V */
++		unvote("smpa4");                                        /* vdd-wlan-io 1.8 V */
++	}
+ 	pc_msleep(300);
+ }
+ 

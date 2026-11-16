@@ -1699,3 +1699,25 @@ host capability declares `iova starting 0xa0000000 with size 0x10010000`, which 
 chip is actually given — we declare 0xc0000000 + 0x40000000 and hand it physical addresses at 0xd0000000,
 outside what we declared. That has been true of every run including the ones that work, so it is not the
 crash, but it is on the list.
+
+## 1211 — togliere davvero le alimentazioni
+
+Reading the Android log through the gap between the two passes, cnss2 does five things we were not doing:
+
+```
+cnss: Read register offset 0x1f8031c, val = 0x2 / Write val 0x3
+cnss: Setting MHI state: POWER_OFF(4)
+cnss: Suspending PCI link / msm_pcie_disable: Assert the reset of endpoint
+cnss: Setting MHI state: DEINIT(1) / De-assert WLAN_EN GPIO successfully
+cnss: Regulator vdd-wlan-rfa2 / rfa1 / dig / aon / io is being disabled
+```
+
+1208 did the first four. The fifth is the one that matters most and it is the one WLAN_EN cannot stand in
+for: WLAON is by definition the domain that survives the chip's own collapse — it is where the QFPROM
+power-control bits live, the ones we have spent weeks on — so while vdd-wlan-aon is up, part of the chip
+still remembers the calibration pass. `unvote()` clears our enable bit on the four chip rails; the vote is
+ours alone, so a shared supply stays up for whoever else is asking. `sweetrailsoff=0` keeps them on.
+
+Also from that log: the copy-engine rings in the stock driver go up *after* the mode message
+(`ce_srng_dest_ring_setup` at 14.569, mode at 14.547), so 1210's `sweetceearly` is not the stock order
+after all — only `hif_pci_enable_bus` comes earlier, and that is the bus, not the rings. Ours was right.
