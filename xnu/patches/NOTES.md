@@ -1599,3 +1599,27 @@ Worth noting what that would buy and what it would not: it is the last structura
 stock sequence we know of, but the crash is 93 ms into the copy-engine and HTC bring-up, which is code
 that has never run successfully on this chip in any configuration. It may equally be a plain bug in a
 path we have only now reached.
+
+## 1206 — la memoria della calibrazione va restituita, non ricreata
+
+The 93 ms crash was ours, and it was in the reset. The firmware does not keep its calibration inside the
+chip: it writes it into the DDR blocks the host hands it at `respond_mem`, and `cal_done = 1` on the second
+pass is the host telling it "the result is in there, go and read it". Patch 1204 cleared `g_nseg` so that the
+second `host_cap` would declare the same `ddr_range` as the first — which it had to — but clearing it also
+sent the second `respond_mem` down the allocation path: fresh pool blocks, at new addresses, zeroed, handed
+over with `cal_done = 1`. So the second firmware instance was told it was calibrated and then given zeroes
+where the calibration should have been. It got as far as mission mode on that lie and died 93 ms later, in
+the copy-engine and radio bring-up — the first code that actually reads the thing.
+
+Linux never had this problem because ath11k's `target_mem` chunks outlive the reset: the same addresses go
+back in the second `respond_mem`, contents untouched.
+
+So: copy the blocks aside before clearing `g_nseg` (`g_saved`, `g_nsaved`), and in `respond_mem` walk them
+with a cursor and hand each one straight back when the type and size match what is being asked for — same
+address, not zeroed, not re-allocated. `host_cap` still declares the first pass's window, because `g_nseg`
+is still cleared, so k31's 235 ms failure mode does not come back. It also stops the second pass leaking a
+second copy of every block out of the GPU pool.
+
+Also `g_er0_rp`, which 1203 reset to 0 while every other ring pointer went to its ring base. Harmless as it
+turns out — `mhi_bringup` sets it to `ER0_RING` on the way through — but wrong, and it was the first thing
+that looked like the bug.

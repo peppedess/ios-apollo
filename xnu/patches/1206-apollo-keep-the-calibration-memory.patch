@@ -1,0 +1,108 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index f080ff9..beaa5ac 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -808,6 +808,20 @@ static struct {
+ 	vm_offset_t va;
+ } g_seg[4];
+ static unsigned g_nseg;
++/*
++ * The same blocks, kept aside across the calibration reset. The firmware writes the calibration it has just
++ * computed into this DDR, and the second pass declares cal_done=1 — so it reads it straight back out of these
++ * blocks. Handing it fresh, zeroed memory instead means telling it "you are calibrated" and then giving it
++ * zeroes where the calibration should be, which is the one thing a mission-mode bring-up cannot survive.
++ * Linux keeps ath11k's target_mem allocated for exactly this reason: the chunks outlive the reset.
++ */
++static struct {
++	uint64_t pa;
++	uint32_t size, type;
++	vm_offset_t va;
++} g_saved[4];
++static unsigned g_nsaved;                               /* how many blocks the calibration pass left behind */
++static unsigned g_reuse;                                /* cursor: the firmware asks for them in the same order */
+ 
+ /*
+  * The QCA6390 answers a firmware assert by entering RDDM (execution environment 3) with a RAM dump ready. Linux
+@@ -2591,7 +2605,7 @@ wifi_start(void)
+ 		g_q.rsplen = 0;
+ 		g_wlfw_node = g_wlfw_port = 0;
+ 		g_cmd_wp = CMD_RING; g_er1_rp = ER1_RING; g_ch20_wp = CH20_RING; g_ch21_wp = CH21_RING;
+-		g_er0_rp = 0; g_ch4_wp = CH4_RING; g_ch5_wp = CH5_RING;
++		g_er0_rp = ER0_RING; g_ch4_wp = CH4_RING; g_ch5_wp = CH5_RING;
+ 		/*
+ 		 * And the firmware's memory segments, which k30 showed are the thing that kills the second pass.
+ 		 * host_cap derives ddr_range from g_seg, falling back to the whole pool window when there are no
+@@ -2600,7 +2614,19 @@ wifi_start(void)
+ 		 * 0xd4800000 + 0x9d8000: the old allocation, a window far too small for the one the firmware was
+ 		 * about to ask for. It crashed 235 ms later. Clearing them makes the second bring-up declare the
+ 		 * same window as the first, and allocate fresh when respond_mem comes.
++		 *
++		 * Fresh, though, only as far as host_cap is concerned. The blocks themselves have to come back
++		 * untouched: the calibration lives in them. So keep a copy, clear g_nseg so the declared window is
++		 * the same as the first pass, and let respond_mem hand the firmware its own memory back.
+ 		 */
++		for (unsigned k = 0; k < g_nseg && k < 4; k++) {
++			g_saved[k].pa = g_seg[k].pa;
++			g_saved[k].size = g_seg[k].size;
++			g_saved[k].type = g_seg[k].type;
++			g_saved[k].va = g_seg[k].va;
++		}
++		g_nsaved = g_nseg < 4 ? g_nseg : 4;
++		g_reuse = 0;
+ 		g_nseg = 0;
+ 		ath11k_sw_reset();
+ 		pc_msleep(100);
+@@ -3026,22 +3052,38 @@ wlfw_handshake(void)
+ 			}
+ 			uint64_t pa = 0, raw = 0;
+ 			uint32_t span = (uint32_t)((size + 0xfffu) & ~0xfffull);
+-			if (fail || sweet_gpu_pool_alloc(span + align, &raw) != 0) {
+-				printf("SWEET WLFW: segment %u: %u bytes type %u: NO MEMORY\n", i, size, type);
+-				fail = 1;
+-				continue;
+-			}
+-			pa = (raw + align - 1) & ~(align - 1);
+-			if (pa + size > 0x100000000ull) {
+-				printf("SWEET WLFW: segment %u: %u bytes type %u: above 4 GiB\n", i, size, type);
+-				fail = 1;
+-				continue;
+-			}
+-			vm_offset_t va = ml_io_map((vm_offset_t)pa, span);
+-			for (uint32_t z = 0; va && z < size; z += 4) {
+-				*(volatile uint32_t *)(va + z) = 0;
++			vm_offset_t va = 0;
++			/*
++			 * The second pass asks for the same list in the same order, so walk the kept blocks with a
++			 * cursor and give each one straight back — same address, contents untouched. The calibration
++			 * the firmware wrote in the first pass is in there, and cal_done=1 tells it to go and read it.
++			 */
++			if (g_reuse < g_nsaved && g_saved[g_reuse].type == type && g_saved[g_reuse].size == size) {
++				pa = g_saved[g_reuse].pa;
++				va = g_saved[g_reuse].va;
++				g_reuse++;
++				printf("SWEET WLFW: segment %u: %u bytes type %u at %#llx (kept, calibration inside)\n",
++				    i, size, type, pa);
++			} else {
++				if (fail || sweet_gpu_pool_alloc(span + align, &raw) != 0) {
++					printf("SWEET WLFW: segment %u: %u bytes type %u: NO MEMORY\n", i, size,
++					    type);
++					fail = 1;
++					continue;
++				}
++				pa = (raw + align - 1) & ~(align - 1);
++				if (pa + size > 0x100000000ull) {
++					printf("SWEET WLFW: segment %u: %u bytes type %u: above 4 GiB\n", i, size,
++					    type);
++					fail = 1;
++					continue;
++				}
++				va = ml_io_map((vm_offset_t)pa, span);
++				for (uint32_t z = 0; va && z < size; z += 4) {
++					*(volatile uint32_t *)(va + z) = 0;
++				}
++				printf("SWEET WLFW: segment %u: %u bytes type %u at %#llx\n", i, size, type, pa);
+ 			}
+-			printf("SWEET WLFW: segment %u: %u bytes type %u at %#llx\n", i, size, type, pa);
+ 			if (g_nseg < 4) {
+ 				g_seg[g_nseg].pa = pa;
+ 				g_seg[g_nseg].size = size;
