@@ -1,0 +1,100 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index e90ae47..9e2f5d6 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2433,6 +2433,38 @@ wifi_wait(volatile int *flag, int timeout_ms, const char *what)
+ static int wlfw_req(uint16_t id, const uint8_t *tlv, uint32_t n, const char *what);
+ static void mhi_probe(void);                    /* the second bring-up calls it again, for mission */
+ 
++/*
++ * The copy engines: ring memory, and the chip's CE registers pointed at it. This used to run after the
++ * mission mode request, which is not the order the stock driver uses — in the Android log qcacld's
++ * hif_pci_enable_bus comes *before* the ini sync, the wlan_cfg and the mode message, and the firmware's
++ * HTC READY lands 33 ms after the mode request. Ours arrives 7 ms after it, which means the firmware
++ * starts writing into the rings at about the moment we are still programming them. The single pass wins
++ * that race; whether the second one does is exactly the kind of thing that would differ. sweetceearly=1
++ * puts it where the stock driver has it.
++ */
++static int g_ce_done;
++
++static void
++ce_setup(void)
++{
++	if (g_ce_done) {
++		return;
++	}
++	g_ce_done = 1;
++	win_wr(0x3004, 1);                                              /* ath11k_pci_force_wake */
++	delay(5000);
++	ce_src_init(&g_ce0);
++	ce_src_init(&g_ce3);
++	ce_src_init(&g_ce4);
++	ce_src_init(&g_ce7);
++	for (unsigned k = 0; k < 3; k++) {
++		ce_dst_init(&g_cer[k]);
++	}
++	printf("SWEET CE: rings at %#llx: CE0 base %#x misc %#x, CE1 dst base %#x ctrl %#x head %u, status base %#x misc %#x\n",
++	    g_cpa, win_rd(0xa00000), win_rd(0xa00010), win_rd(0xa03000), win_rd(0xa030b0), win_rd(0xa03400),
++	    win_rd(0xa03058), win_rd(0xa03068));
++}
++
+ static void
+ wifi_start(void)
+ {
+@@ -2519,6 +2551,11 @@ wifi_start(void)
+ 	 * configuring a chip for mission and then asking it to calibrate.
+ 	 */
+ 	if (fwmode != 7) {
++		uint32_t ceearly = 0;
++		(void)PE_parse_boot_argn("sweetceearly", &ceearly, sizeof(ceearly));
++		if (ceearly) {
++			ce_setup();
++		}
+ 		uint32_t ini = 1;
+ 		(void)PE_parse_boot_argn("sweetini", &ini, sizeof(ini));
+ 		if (ini) {
+@@ -2607,6 +2644,7 @@ wifi_start(void)
+ 		g_wlfw_node = g_wlfw_port = 0;
+ 		g_cmd_wp = CMD_RING; g_er1_rp = ER1_RING; g_ch20_wp = CH20_RING; g_ch21_wp = CH21_RING;
+ 		g_er0_rp = ER0_RING; g_ch4_wp = CH4_RING; g_ch5_wp = CH5_RING;
++		g_ce_done = 0;
+ 		/*
+ 		 * And the firmware's memory segments, which k30 showed are the thing that kills the second pass.
+ 		 * host_cap derives ddr_range from g_seg, falling back to the whole pool window when there are no
+@@ -2662,18 +2700,7 @@ wifi_start(void)
+ 		printf("SWEET PCIE: PARF_PM_CTRL %#x -> %#x\n", pm, rd(g_parf, 0x20));
+ 	}
+ 
+-	win_wr(0x3004, 1);                                              /* ath11k_pci_force_wake */
+-	delay(5000);
+-	ce_src_init(&g_ce0);
+-	ce_src_init(&g_ce3);
+-	ce_src_init(&g_ce4);
+-	ce_src_init(&g_ce7);
+-	for (unsigned k = 0; k < 3; k++) {
+-		ce_dst_init(&g_cer[k]);
+-	}
+-	printf("SWEET CE: rings at %#llx: CE0 base %#x misc %#x, CE1 dst base %#x ctrl %#x head %u, status base %#x misc %#x\n",
+-	    g_cpa, win_rd(0xa00000), win_rd(0xa00010), win_rd(0xa03000), win_rd(0xa030b0), win_rd(0xa03400),
+-	    win_rd(0xa03058), win_rd(0xa03068));
++	ce_setup();
+ 	if (wifi_wait(&g_htc.ready, 5000, "ready") != 0) {
+ 		return;
+ 	}
+@@ -2960,6 +2987,7 @@ wlfw_board(void)
+ 			g_wlfw_node = g_wlfw_port = 0;
+ 			g_cmd_wp = CMD_RING; g_er1_rp = ER1_RING; g_ch20_wp = CH20_RING; g_ch21_wp = CH21_RING;
+ 			g_er0_rp = ER0_RING; g_ch4_wp = CH4_RING; g_ch5_wp = CH5_RING;
++			g_ce_done = 0;
+ 			g_restart = 1;
+ 			return;
+ 		}
+@@ -3921,7 +3949,7 @@ static void
+ wlan_power_down(void)
+ {
+ 	uint32_t pc = win_rd(0x1f8031c);
+-	win_wr(0x1f8031c, pc | 5u);
++	win_wr(0x1f8031c, pc | 1u);                                     /* cnss writes 0x3 over the 0x2 it finds */
+ 	printf("SWEET MHI: power down: mhistatus %#x, WLAON_QFPROM_PWR_CTRL %#x -> %#x\n", rd(g_bar, 0x48), pc,
+ 	    win_rd(0x1f8031c));
+ 	wr(g_bar, 0x38, 2u);                                            /* MHICTRL <- RESET */

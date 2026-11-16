@@ -1675,3 +1675,27 @@ at all — and asks for the cycle anyway. `sweetkeepmem=0` makes the second one 
 instead of getting the first one's back. Together they make the second instance as close to k38's single
 pass as this code can get: if it still crashes, the fault is in our own re-initialisation and nowhere near
 the firmware; if it does not, it is something the calibration leaves behind.
+
+## 1210 — i copy engine prima del mode, come fa il driver stock
+
+Reading the Android log again, line by line, the stock mission pass is:
+
+```
+cnss: Sending ini sync request
+wlan: hif_pci_enable_bus: con_mode = 0x0        <- the copy engines, here
+cnss: Mode: 0, config: ..., host_version: 5.2.022.12B   <- wlan_cfg
+cnss: Sending mode message, mode: MISSION(0)
+wlan: htc_wait_target: Target Ready!            <- 33 ms later
+```
+
+The copy engines are up before the ini sync, before the cfg and before the mode message. Ours go up
+*after* the mode message, and the firmware's HTC READY comes back 7 ms later — so in k38 we were
+programming the rings at about the moment the firmware started writing into them, and won the race.
+`sweetceearly=1` puts the setup where the stock driver has it.
+
+Also in that log: on the way down cnss reads 0x1f8031c as 0x2 and writes 0x3, not the 0x7 we were
+writing (SHUTDOWN_EN yes, VDD4BLOW no), so 1208's power-down now writes what cnss writes. And the stock
+host capability declares `iova starting 0xa0000000 with size 0x10010000`, which is the SMMU range the
+chip is actually given — we declare 0xc0000000 + 0x40000000 and hand it physical addresses at 0xd0000000,
+outside what we declared. That has been true of every run including the ones that work, so it is not the
+crash, but it is on the list.
