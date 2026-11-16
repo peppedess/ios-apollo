@@ -1623,3 +1623,20 @@ second copy of every block out of the GPU pool.
 Also `g_er0_rp`, which 1203 reset to 0 while every other ring pointer went to its ring base. Harmless as it
 turns out — `mhi_bringup` sets it to `ER0_RING` on the way through — but wrong, and it was the first thing
 that looked like the bug.
+
+## 1207 — which of the two differences kills the second pass
+
+k34 handed the second instance its own calibration memory back, same addresses, untouched — the log shows
+both blocks kept and the caldb full of firmware data where k31's was zeroes. It died anyway, 88 ms into
+mission mode, without sending HTC READY at all. Necessary, then, but not the cause.
+
+Lined up against k25, a single cold pass, the shape of the failure is sharp: there, `SWEET HTC: READY` came
+back in the same millisecond as the copy-engine rings. Here nothing comes back and the firmware asserts.
+Two things still differ between those runs: the chip is warm (`ath11k_sw_reset`, rails never cut) and we
+claim `cal_done`. `sweetcal2` flips the second one on its own — with 0 the second instance runs its own
+cold boot calibration at INIT and never reads the caldb — so one boot says which of the two it is, and
+whether the 220-line power-cycle refactor is worth building.
+
+(Also noted while reading k34: `015dae40 050000c8 008a4fb4 008a5050` at the start of segment 0, which we
+have been reading as a crash record since k31, is in every log from 41 s onwards, healthy runs included.
+It is a firmware header, not a dump. The real crash record is in RDDM, which `sweetrddm=1` collects.)

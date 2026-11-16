@@ -1,0 +1,25 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index beaa5ac..739eec9 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2960,7 +2960,19 @@ wlfw_handshake(void)
+ 	uint32_t cal = 1;
+ 	(void)PE_parse_boot_argn("sweetcal", &cal, sizeof(cal));
+ 	if (g_pass == 2) {
+-		cal = 1;                                                /* the second bring-up: it is done now */
++		/*
++		 * The second bring-up: the calibration is done now. sweetcal2=0 says it the other way round, and
++		 * that is a test, not a configuration. k34 gave the second instance its own calibration memory
++		 * back, untouched and at the same addresses, and it still died 88 ms into mission mode without so
++		 * much as sending HTC READY — while k25, a single cold pass, had HTC READY back in the same
++		 * millisecond as the copy-engine rings. Two things differ between those runs: the chip is warm
++		 * (sw reset, rails never cut) and we claim cal_done. Flipping this one tells us which, because
++		 * with cal_done 0 the firmware runs its own cold boot calibration at INIT and never reads what we
++		 * left in the caldb. If it crashes anyway, the warm restart is the problem and the power cycle has
++		 * to be built; if it gets to HTC READY, the problem is in what we are handing it as calibration.
++		 */
++		cal = 1;
++		(void)PE_parse_boot_argn("sweetcal2", &cal, sizeof(cal));
+ 	}
+ 	/*
+ 	 * Two shapes of this message. ath11k's is what we have sent all along; cnss2's is what actually ran
