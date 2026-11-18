@@ -1,0 +1,39 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 476e95b..5a97f04 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -3780,6 +3780,13 @@ mhi_probe(void)
+ 					    a, win_rd(a), win_rd(a + 4), win_rd(a + 8), win_rd(a + 12));
+ 				}
+ 			}
++			if (g_pass == 2 && win_rd(0x1f80024) == 0x5a5a5a5au) {
++				printf("SWEET PCIE: *** WLAON KEPT OUR MARKER: that domain never lost power ***\n");
++				win_wr(0x1f80024, 0x25112222u);
++			} else if (g_pass == 2) {
++				printf("SWEET PCIE: WLAON marker gone (0x1f80024 = %#010x): the domain was reset\n",
++				    win_rd(0x1f80024));
++			}
+ 			for (unsigned i = 0; i < 6; i++) {
+ 				printf("SWEET PCIE: chip (pass %u) +%u ms: status %#010x %#010x, pmm %#010x\n",
+ 				    g_pass, i * 25, win_rd(0x01e0313c), win_rd(0x01e03140), win_rd(0x00b6017c));
+@@ -4111,6 +4118,20 @@ wlan_power_down(void)
+ 		unvote("lnbclka2");
+ 		unvote("lnbclka3");
+ 	}
++	/*
++	 * A marker in WLAON, to settle whether that domain actually loses its supply. WLAON survives the
++	 * chip's own power collapse by design, so if it keeps a value we wrote before the rails came down,
++	 * the rails did not really come down — somebody else is voting for vdd-wlan-aon — and every
++	 * conclusion that rests on "the chip power-cycled" has to be re-read. 0x1f80024 is a GDSC delay
++	 * setting, read back as 0x25112222 on a fresh chip; the second pass prints it in its dump and puts
++	 * it back if it finds the marker.
++	 */
++	uint32_t mark = 1;
++	(void)PE_parse_boot_argn("sweetmark", &mark, sizeof(mark));
++	if (mark) {
++		win_wr(0x1f80024, 0x5a5a5a5au);
++		printf("SWEET PCIE: WLAON marker written, 0x1f80024 reads %#010x\n", win_rd(0x1f80024));
++	}
+ 	uint32_t down = 1000;
+ 	(void)PE_parse_boot_argn("sweetdowntime", &down, sizeof(down));
+ 	pc_msleep(down);

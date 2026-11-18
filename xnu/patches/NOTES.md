@@ -1855,3 +1855,29 @@ rfclkd3-4 and lnbclka1-3 are RPMh resources exactly like the rails, and we had b
 voted across the cycle. So withdraw them too (`sweetclksoff`), and hold the chip down for a second rather
 than 300 ms. The counter at 0x1e0313c is the instrument: if it comes back changed by something other than
 +2, the chip finally went away.
+
+## 1218 — un marcatore in WLAON
+
+The bisection is finished and the result is sharper than expected. k50 ran a first instance that stops at
+`firmware init done` with every default left alone — memory reused, cal_done 1 — and its second instance
+is healthy: HTC READY, both services, WMI service ready with 2 RF chains, WMI INIT, and then the ordinary
+death of an uncalibrated radio (`Asserted in0x1503340s:502`, a different address and a different line
+from the one we have been chasing). k48 and k49 send `wlan_mode(CALIBRATION)` in the first pass and
+nothing else — no calibration time, no closing OFF — and their second instance dies at line 367.
+
+So one QMI message in the first pass decides it. And the diff of the two second passes says where it
+first shows: the capability response. The healthy one carries
+
+```
+cap +090: 04 00 b4 03 00 00 17 04 00 00 f8 24 01 18 04 00 1d 00 48 00
+```
+
+— TLV 0x18, otp_version 0x48001d, 164 bytes. The poisoned one is 157 bytes and has no 0x18 at all. The
+second firmware cannot read the chip's fuses, and that is already true long before mission mode.
+
+Which leaves one assumption worth re-testing rather than trusting: that the chip loses power between the
+passes. k49 withdrew the clock votes too and the WCSS debug counter did restart — but a counter stopping
+is also what happens when you take its clock away, so it proves less than it looks. `sweetmark` writes
+0x5a5a5a5a into WLAON's GDSC delay register before the rails come down. WLAON is the domain that survives
+the chip's own collapse by design: if it still holds the marker on the second pass, vdd-wlan-aon never
+went away, somebody else is voting for it, and the fuse array is simply never being re-sensed.
