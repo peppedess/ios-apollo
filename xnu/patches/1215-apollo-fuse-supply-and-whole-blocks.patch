@@ -1,0 +1,48 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 1f17266..dcacf9f 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -498,8 +498,18 @@ ath11k_sw_reset(void)
+ 	{
+ 		uint32_t qf = 1;
+ 		(void)PE_parse_boot_argn("sweetqfprom", &qf, sizeof(qf));
++		/*
++		 * sweetblow=1 leaves VDD4BLOW standing and clears only SHUTDOWN_EN. The name is the chip's:
++		 * bit 2 of this register is the supply the fuse array needs, and the second firmware instance
++		 * is precisely one that comes up without an otp_version to report — while asserting on an
++		 * index into a twelve-entry table, in a firmware whose own component list has an
++		 * HcaHwComponentTrxHastings_efuse sitting next to the calibration state machines. A fuse read
++		 * that quietly fails is one way to get an index nobody meant.
++		 */
++		uint32_t blow = 0;
++		(void)PE_parse_boot_argn("sweetblow", &blow, sizeof(blow));
+ 		uint32_t pc = win_rd(0x1f8031c);
+-		win_wr(0x1f8031c, qf ? (pc & ~5u) : (pc & ~4u));
++		win_wr(0x1f8031c, blow ? (pc & ~1u) : (qf ? (pc & ~5u) : (pc & ~4u)));
+ 		printf("SWEET MHI: WLAON_QFPROM_PWR_CTRL %#x -> %#x (shutdown_en was %u, vdd4blow was %u)\n",
+ 		    pc, win_rd(0x1f8031c), pc & 1u, (pc >> 2) & 1u);
+ 	}
+@@ -3738,6 +3748,23 @@ mhi_probe(void)
+ 			 * reading it earlier in its life on the second pass, or it is genuinely in another
+ 			 * state. Sampling it says which.
+ 			 */
++			/*
++			 * And, once, the blocks whole: WLAON, WFSS_PMM, WCSS_CC and the PCIe/WCSS debug
++			 * status, every word, with the pass number in front of it. k44 compared fourteen
++			 * registers by hand and found one that differs; this compares six hundred, and
++			 * whatever else the calibration leaves behind has to show up in one of them.
++			 */
++			uint32_t wide = 1;
++			(void)PE_parse_boot_argn("sweetregblocks", &wide, sizeof(wide));
++			static const uint32_t base[] = { 0x01f80000, 0x00b60000, 0x00c30000, 0x01e03100 };
++			static const uint32_t words[] = { 256, 128, 128, 64 };
++			for (unsigned b = 0; wide && b < 4; b++) {
++				for (uint32_t i = 0; i < words[b]; i += 4) {
++					uint32_t a = base[b] + i * 4;
++					printf("SWEET PCIE: blk%u %#09x %#010x %#010x %#010x %#010x\n", g_pass,
++					    a, win_rd(a), win_rd(a + 4), win_rd(a + 8), win_rd(a + 12));
++				}
++			}
+ 			for (unsigned i = 0; i < 6; i++) {
+ 				printf("SWEET PCIE: chip (pass %u) +%u ms: status %#010x %#010x, pmm %#010x\n",
+ 				    g_pass, i * 25, win_rd(0x01e0313c), win_rd(0x01e03140), win_rd(0x00b6017c));

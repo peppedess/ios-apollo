@@ -1792,3 +1792,20 @@ Two readings of that: either the field settles over time and the second pass sim
 (300 ms after the rails came back, against seconds on the first pass), or the chip really is in another
 state. So sample it six times at 25 ms and watch, and make the power-down wait a boot argument
 (`sweetdowntime`, default 300) to try the long version.
+
+## 1215 — l'alimentazione dei fusibili, e i blocchi interi
+
+Two things, from reading amss20.bin while the phone was away.
+
+The firmware's own component list is in its RTTI names, and among the twenty-four calibration state
+machines — `HcaHwComponentTrxHastings_calSmLna`, `_calSmRxIq`, `_calSmTxLo`, `_calSmDpdMemory` and the
+rest — sits `HcaHwComponentTrxHastings_efuse`. The second instance is the one that reports no
+otp_version, and it is the one that asserts on an index into a twelve-entry table. A fuse read that
+quietly fails is one way to end up with an index nobody meant, and bit 2 of WLAON_QFPROM_PWR_CTRL — the
+one named VDD4BLOW, the supply the fuse array needs — is a bit *we clear* on the way up, in both passes,
+because cnss2 clears it. `sweetblow=1` leaves it standing and clears only SHUTDOWN_EN.
+
+And since k44 compared fourteen registers by hand and found exactly one that differs, `sweetregblocks`
+(default on) now prints four blocks whole before each BHI download — WLAON 0x1f80000, WFSS_PMM 0x00b60000,
+WCSS_CC 0x00c30000 and the debug status at 0x01e03100, around six hundred words — with the pass number in
+front of each line, so the two passes can be diffed outright instead of guessed at.
