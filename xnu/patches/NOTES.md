@@ -1832,3 +1832,26 @@ first pass itself: k39's first instance did nothing and the second was healthy, 
 second was not. `sweetcalwait` is how long the first pass is allowed to calibrate before we turn round —
 0 sends the mode request and restarts immediately, 30000 is the whole thing. Somewhere between those two
 the second instance stops working, and wherever that is, it names the mechanism.
+
+## 1217 — anche i clock, e il contatore che non si azzera
+
+The bisection of the first pass finished early and in the most useful way. k47 sent the calibration mode
+request and turned round immediately — `cut the calibration short at 0 ms` — and the second instance
+still died at line 367. k48 did the same without even the closing `mode OFF`, and died the same way. So
+the calibration does not have to run, and does not have to be closed: *asking for it once* is enough.
+
+Which should be impossible if the chip is power-cycled in between, so look again at whether it is. Two
+registers change across the power-down, and neither is the free-running counter I took them for:
+
+```
+k44   0x1e0313c   0x03707000 -> 0x05707000
+k46   0x1e0313c   0x0e207000 -> 0x10287000
+```
+
+Different values on the two runs, and exactly +0x02000000 between the passes on both. That is a counter
+that survives the power-down and ticks twice for a bring-up. The chip is not losing its power, and the
+reason is in plain sight: we withdraw the four rail votes and never touch the clocks. rfclka1-3,
+rfclkd3-4 and lnbclka1-3 are RPMh resources exactly like the rails, and we had been leaving all eight
+voted across the cycle. So withdraw them too (`sweetclksoff`), and hold the chip down for a second rather
+than 300 ms. The counter at 0x1e0313c is the instrument: if it comes back changed by something other than
++2, the chip finally went away.

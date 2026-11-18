@@ -1,0 +1,32 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 815b73d..476e95b 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -4092,7 +4092,26 @@ wlan_power_down(void)
+ 		unvote("smpa6");                                        /* vdd-wlan-aon and -dig 0.95 V */
+ 		unvote("smpa4");                                        /* vdd-wlan-io 1.8 V */
+ 	}
+-	uint32_t down = 300;
++	/*
++	 * And the clocks, which we had been leaving on. The chip's XO and LNB buffers are RPMh resources like
++	 * the rails, and a chip whose clocks never stop is a chip whose counters never stop: across the
++	 * power-down, WCSS_STATUS_FOR_DEBUG high went 0x03707000 -> 0x05707000 in k44 and 0x0e207000 ->
++	 * 0x10287000 in k46 — different values on the two runs, the same +0x02000000 between the passes. That
++	 * is a counter surviving what was supposed to be a power cycle. sweetclksoff=0 leaves them voted.
++	 */
++	uint32_t clks = 1;
++	(void)PE_parse_boot_argn("sweetclksoff", &clks, sizeof(clks));
++	if (clks) {
++		unvote("rfclka1");
++		unvote("rfclka2");
++		unvote("rfclka3");
++		unvote("rfclkd3");
++		unvote("rfclkd4");
++		unvote("lnbclka1");
++		unvote("lnbclka2");
++		unvote("lnbclka3");
++	}
++	uint32_t down = 1000;
+ 	(void)PE_parse_boot_argn("sweetdowntime", &down, sizeof(down));
+ 	pc_msleep(down);
+ }
