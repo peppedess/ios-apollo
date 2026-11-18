@@ -1,0 +1,40 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index dcacf9f..815b73d 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2619,7 +2619,19 @@ wifi_start(void)
+ 	}
+ 	if (fwmode == 7) {
+ 		printf("SWEET WLFW: cold boot calibration started\n");
+-		for (uint32_t ms = 0; ms < 30000; ms += 100) {
++		/*
++		 * How much of the first pass is enough to poison the second. k39 settled that a first instance
++		 * which stops at `firmware init done` leaves a second instance that reaches HTC READY, WMI
++		 * service ready and WMI INIT; k43 settled that a first instance which calibrates leaves one that
++		 * asserts 94 ms into mission mode. And k46 settled that the chip is not the carrier: of 576
++		 * registers across WLAON, WFSS_PMM, WCSS_CC and the debug block, the two passes differ in two
++		 * free-running counters and nothing else. So bisect the first pass instead of guessing at a
++		 * mechanism. sweetcalwait is how many milliseconds of calibration to allow before restarting:
++		 * 0 sends the mode request and turns round immediately, 30000 (the default) is the whole thing.
++		 */
++		uint32_t maxms = 30000;
++		(void)PE_parse_boot_argn("sweetcalwait", &maxms, sizeof(maxms));
++		for (uint32_t ms = 0; ms < maxms; ms += 100) {
+ 			uint32_t st = rd(g_bar, 0x48);
+ 			if (st & 4u) {
+ 				printf("SWEET MHI: SYSERR in mhistatus %#x at +%u ms into calibration\n", st, ms);
+@@ -2633,10 +2645,13 @@ wifi_start(void)
+ 			(void)er1_poll();
+ 			pc_msleep(100);
+ 		}
+-		if (!g_q.caldone) {
++		if (!g_q.caldone && maxms >= 30000) {
+ 			printf("SWEET WLFW: calibration did not finish, mhistatus %#x\n", rd(g_bar, 0x48));
+ 			return;
+ 		}
++		if (!g_q.caldone) {
++			printf("SWEET WLFW: cut the calibration short at %u ms, going round anyway\n", maxms);
++		}
+ 		/*
+ 		 * Now run the chip a second time, for mission.
+ 		 *

@@ -1809,3 +1809,26 @@ And since k44 compared fourteen registers by hand and found exactly one that dif
 (default on) now prints four blocks whole before each BHI download — WLAON 0x1f80000, WFSS_PMM 0x00b60000,
 WCSS_CC 0x00c30000 and the debug status at 0x01e03100, around six hundred words — with the pass number in
 front of each line, so the two passes can be diffed outright instead of guessed at.
+
+## 1216 — bisezionare il primo passaggio
+
+k46 closed the hardware question. Six hundred registers read before each BHI download — WLAON 0x1f80000,
+WFSS_PMM 0x00b60000, WCSS_CC 0x00c30000, the debug block at 0x01e03100 — and the two passes differ in
+exactly two words:
+
+```
+0x1e0313c  0x0e207000  ->  0x10287000
+0x1f80108  0x0020b0b9  ->  0x0020af49
+```
+
+Both are free-running counters: k44 saw the same register at 0x03707000/0x05707000, different values on a
+different run. Everything else is identical to the bit. The chip the second firmware wakes up on is the
+same chip the first one woke up on. And leaving VDD4BLOW standing (`sweetblow=1`, k46) changed nothing
+either — same assert, same line 367.
+
+So the carrier is not the chip, and the list of things it could be has been cut by k41 (rails), k42 and
+k43 (fresh memory, cal_done 0) and k46 (fuse supply). What is left is to stop guessing and bisect the
+first pass itself: k39's first instance did nothing and the second was healthy, k43's calibrated and the
+second was not. `sweetcalwait` is how long the first pass is allowed to calibrate before we turn round —
+0 sends the mode request and restarts immediately, 30000 is the whole thing. Somewhere between those two
+the second instance stops working, and wherever that is, it names the mechanism.
