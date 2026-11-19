@@ -261,3 +261,34 @@ il più grande:
 
 Da A a B è una giornata di lavoro una volta sbloccato A. Da B a D sono settimane, non ore, e il grosso
 è il percorso dati.
+
+## 20 novembre, notte — l'assert alla riga 502 riletto da capo
+
+Tre cose sono cambiate, tutte dal disassemblato e dai log che avevamo già.
+
+**La sequenza di sleep era letta male.** L'ingresso non è 0x156be40 (è il suo centro) ma **0x156bdc4**, e
+lo 0xf non va al GDSCR ma a **0xE0B700C4**, in WFSS_PMM. L'indirizzo del poll — 0xE0C300C4, maschera
+0x80000000, atteso 0 — è confermato, e l'unico caricamento della costante 502 in tutti i 4 MB
+dell'immagine sta quattro pacchetti dopo quel poll, a 0x156bfb4: su quale poll fallisca non c'è più
+dubbio. L'helper di poll aggiunge 100 µs e 1000 tentativi e salta nella ROM a 0x880F24, che
+nell'immagine non c'è: staticamente, oltre non si va.
+
+**«Il firmware asserisce a +440 ms» non è mai stata una misura.** Nel log di k61 il SYS_ERR compare a
+72.380, nello stesso millisecondo in cui finisce il ciclo dei 400 ms — perché il SYS_ERR arriva su ER0, e
+ER0 veniva interrogato solo dentro `wifi_wait`, che parte dopo le finestre. L'evento è rimasto nel ring
+non letto fino a 1,4 secondi. Il crash può stare ovunque da +60 ms in poi, e +60 ms è esattamente quando
+i due GDSC passano da 0xa0223800 a 0x00222001. Da 1231 i tre cicli interrogano anche ER0.
+
+**E forse il colpevole siamo noi.** Il firmware dà 100 ms al collasso del dominio, e in ogni run che
+abbiamo mai fatto l'host leggeva dentro WCSS attraverso la finestra ogni 40 ms mentre succedeva. k59 e
+k60 sembravano averlo escluso ma non lo escludono: il primo interrogava WLAON ogni millisecondo e
+lasciava in piedi il ciclo dei 40 ms, il secondo toglieva il wake e continuava a leggere WCSS.
+
+Due immagini pronte, in quest'ordine:
+
+- **k69** — `sweetwake=1 sweetsilence=600`: 600 ms senza un solo accesso al bus, e poi, a finestra
+  passata, una lettura sola dei nove registri che la sequenza scrive. Un run risponde a due domande: se
+  il silenzio fa passare l'INIT, e se `0x00b700c4` tiene il 15 che il firmware ci mette — cioè se la
+  regola del nibble vale anche per il Q6 o se guardiamo la metà sbagliata del chip.
+- **k70** — `sweetpmm=900`: gli stessi nove registri campionati ogni 2 ms, con il crash finalmente
+  datato. Da fare se k69 muore lo stesso.
