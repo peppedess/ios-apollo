@@ -1898,3 +1898,37 @@ pass 2   cap +090: 04 00 b4 03 00 00 17 04 00 00 f8 24 01
 
 Same chip, same boot, twenty seconds apart: the first firmware reports otp_version 0x48001d, the second
 stops at time_freq_hz and has no 0x18 at all.
+
+## 1220 — l'immagine del firmware era quella di prima
+
+k52 settled the last open question the right way round: the marker went into WLAON while the chip was
+still answering (`0x1f80024 reads 0x5a5a5a5a`) and the second pass found it gone (`0x25112222`). WLAON
+loses its supply, the chip really does power-cycle, and together with k46's 576 identical registers that
+closes the hardware off completely. Which left one thing never checked — what we actually download the
+second time:
+
+```c
+mhi_mem_prepare(void)
+{
+	if (g_mva) {
+		return 0;
+	}
+```
+
+The MHI control block and our only copy of the firmware image are allocated and filled once per boot.
+The second bring-up calls this, gets 0 back, and BHI-downloads whatever is in that block now. And the
+block comes out of the pool at 0xd0000000-odd — inside the DDR window host_cap declares to the firmware,
+0xc0000000 plus a gigabyte, which is everything we own. A firmware told to calibrate allocates and writes
+in that window; a firmware that stops at `firmware init done` does not.
+
+So the second instance was never a second instance of our firmware. It was a second instance of whatever
+the first one left of it — which is why it reports no otp_version (the fuse code is not the code we
+shipped), why it then indexes a twelve-entry power-sequence table with a number nobody meant, and why
+`wlan_mode(CALIBRATION)` alone, cut to zero milliseconds and without even its closing OFF, was enough to
+cause it.
+
+Now the block is re-allocated and re-filled once per pass (`filled` remembers which pass owns it, since
+mhi_mem_prepare is called twice per bring-up). `sweetkeepmhi=1` restores the old behaviour. The declared
+ddr_range is still wrong and still overlaps everything we own — the stock driver declares an SMMU window,
+`iova starting 0xa0000000 with size 0x10010000` — and that is the next thing to fix, but this is the one
+that has been killing the mission pass.

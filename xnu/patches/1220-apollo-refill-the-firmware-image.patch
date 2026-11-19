@@ -1,0 +1,38 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 36faa6f..d0afea4 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -3332,9 +3332,32 @@ ipcr_start(void)
+ static int
+ mhi_mem_prepare(void)
+ {
+-	if (g_mva) {
++	/*
++	 * Once per boot was wrong. This block holds the MHI control structures *and* our only copy of the
++	 * firmware image, the one BHI downloads from — and it is allocated inside the DDR window we declare
++	 * to the firmware in host_cap (0xc0000000 plus a gigabyte, which is everything we own). A firmware
++	 * that is told to calibrate starts allocating and writing in that window; one that stops at
++	 * `firmware init done` does not. So after a calibration pass the image sitting here is no longer the
++	 * image we built, and the second bring-up downloads whatever is left of it. That is the whole of it:
++	 * the second instance reports no otp_version because the code that reads the fuses is not the code
++	 * we shipped, and then it indexes a twelve-entry power-sequence table with a number nobody meant and
++	 * asserts at line 367. The chip was never the problem — k52's marker proves WLAON loses power
++	 * properly, and k46 found 576 registers identical across the cycle.
++	 *
++	 * So: a fresh block, freshly filled, for every bring-up. sweetkeepmhi=1 restores the old behaviour.
++	 */
++	static uint32_t filled;                                 /* which pass last filled this block */
++	uint32_t keep = 0;
++	(void)PE_parse_boot_argn("sweetkeepmhi", &keep, sizeof(keep));
++	if (g_mva && (keep || filled == g_pass)) {
+ 		return 0;
+ 	}
++	filled = g_pass;
++	if (g_mva) {
++		printf("SWEET MHI: pass %u: re-allocating the control block and re-copying the firmware image\n",
++		    g_pass);
++		g_mva = 0;
++	}
+ 	uint32_t fwlen = 0;
+ 	const uint8_t *fw = wlan_firmware(use_linux_firmware() ? "amss_lf.bin" : "amss20.bin", &fwlen);
+ 	unsigned nseg = (fwlen + SEG_LEN - 1) / SEG_LEN;
