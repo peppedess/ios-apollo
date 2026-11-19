@@ -2249,3 +2249,25 @@ sola. Un solo run dice tutt'e due le cose: se il silenzio fa passare l'INIT, e s
 del nibble vale anche per il Q6 o se abbiamo guardato la metà sbagliata del chip.
 
 La lista dei nove registri diventa `pmm_regs`, condivisa fra le due strade.
+
+## 1231 — «l'assert a +440 ms» non è mai stata una misura
+
+Rileggendo il log di k61 riga per riga:
+
+	70.952  INIT
+	70.957  GDSC +0 ms   WLAN1 0xa0223800  (acceso)
+	71.022  GDSC +60 ms  WLAN1 0x00222001  (collassato) — e non cambia più
+	71.943  finestra gwatch finita, "firmware alive"
+	72.380  "WMI ready flag 0", evento di stato MHI, "SYS_ERR: il firmware è crashato"
+	73.128  record di crash: Asserted in0x1503340s:502
+
+Il SYS_ERR compare a 72.380 nello stesso millisecondo in cui finisce il ciclo dei 400 ms. Non è
+l'istante in cui il firmware è morto: è l'istante in cui l'abbiamo guardato. Il SYS_ERR arriva su **ER0**,
+e fino a ora ER0 veniva interrogato solo dentro `wifi_wait`, che parte dopo tutt'e due le finestre. Il
+ciclo di gwatch e quello dei 400 ms interrogano ER1 e le copy engine e basta, quindi l'evento è rimasto
+nel ring non letto fino a 1,4 secondi.
+
+Quindi «il firmware asserisce ~440 ms dopo l'INIT» non è mai stato un dato: era il momento in cui
+cambiava il nostro modo di guardare. Il crash può stare ovunque da +60 ms in poi — e +60 ms è esattamente
+quando il dominio collassa. Un `er0_poll` in ciascuno dei tre cicli trasforma il timestamp del log nella
+risposta vera.

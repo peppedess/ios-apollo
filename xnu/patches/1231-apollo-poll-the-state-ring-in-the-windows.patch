@@ -1,0 +1,49 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 9251faf..8f1d6b1 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2520,6 +2520,20 @@ wmi_init(void)
+ 	 * have never looked and where the assert actually lands. sweetgwatch=<ms> samples every 10 ms for that
+ 	 * long, printing only when something changes.
+ 	 */
++	/*
++	 * And poll the *state* ring in all three windows, not only the control ring.
++	 *
++	 * k61's log reads, in order: INIT at 70.952, the GDSCs collapsing at +60 ms, nine hundred quiet
++	 * milliseconds, the 400 ms dump loop, and then at 72.380 — in the same millisecond as "WMI ready
++	 * flag 0" — the MHI state event and "SYS_ERR: the QCA6390 firmware crashed". That is not when the
++	 * firmware died. It is when we first looked: SYS_ERR arrives on ER0, and until now ER0 was polled
++	 * only inside wifi_wait, which runs after both windows. The gwatch loop and the dump loop poll ER1
++	 * and the copy engines and nothing else, so the event sat in the ring unread for up to 1.4 seconds.
++	 *
++	 * So "the firmware asserts ~440 ms after INIT" was never a measurement — it was the moment our
++	 * polling changed. The crash could be anywhere from +60 ms on, and +60 ms is exactly when the
++	 * domain collapses. One er0_poll in each loop turns the log timestamp into the real answer.
++	 */
+ 	uint32_t gw = 0;
+ 	(void)PE_parse_boot_argn("sweetgwatch", &gw, sizeof(gw));
+ 	if (gw) {
+@@ -2531,6 +2545,7 @@ wmi_init(void)
+ 				    ms, v, v8, win_rd(0x00c30138), win_rd(0x00b60178));
+ 				last = v; last8 = v8;
+ 			}
++			(void)er0_poll();
+ 			(void)er1_poll();
+ 			ce_poll();
+ 			pc_msleep(10);
+@@ -2596,6 +2611,7 @@ wmi_init(void)
+ 					}
+ 				}
+ 			}
++			(void)er0_poll();
+ 			(void)er1_poll();
+ 			ce_poll();
+ 			pc_msleep(2);
+@@ -2659,6 +2675,7 @@ wmi_init(void)
+ 			snprintf(lbl, sizeof(lbl), "INIT +%d ms", ms);
+ 			wcss_cc_dump(lbl);
+ 		}
++		(void)er0_poll();
+ 		(void)er1_poll();
+ 		ce_poll();
+ 		pc_msleep(10);
