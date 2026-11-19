@@ -2149,3 +2149,25 @@ firmware to skip the assert is not available — amss20.bin is signed and the PB
 angles are (a) what the stock host does differently to the WCSS access path around INIT, from the Android
 log, and (b) sampling the registers of a poll that *succeeds* in the same sequence, to see whether the
 Q6's view of WCSS_CC is ever in agreement with ours.
+
+## 1227 — il percorso dati, e perché k64 non è tornato
+
+Reading the Android log for every register the stock driver touches turns up exactly three lines, all of
+them the QFPROM power control we already write. So nothing is missing from our register writes, and the
+difference at INIT has to be in what the host has *built* by then.
+
+And there it was, switched off: `sweetdp` defaults to 0. The HAL data path — REO, TCL, WBM, the idle link
+list — is written and has never been part of a run since the two-pass bring-up started working. ath11k
+builds all of it before it sends WMI_INIT, and the comment above our own implementation says why: at INIT
+the firmware brings up its data path and expects those rings to exist. It was tried once, months ago, on
+an uncalibrated single pass where the crash came 80 ms after INIT; today's crash comes at 440 ms on a
+calibrated radio, so it is a different experiment.
+
+k64 ran it and never came back: the log stops at `settling 200 ms before INIT`, with none of wifi_dp's
+own prints and not even its "no memory" line. By the second bring-up the pool has served two passes of
+firmware segments, two MHI control blocks and two copies of m3, and this asks for another 4 MiB of link
+descriptors mapped in one piece.
+
+So: print the pool's free space and each step as it happens — allocation, mapping, zeroing — and make
+the descriptor count a boot argument. ath11k asks for 32768; a first association needs far fewer, and
+`sweetdplinks=2048` is 256 KiB instead of four megabytes.

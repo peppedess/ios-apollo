@@ -1,0 +1,70 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index dbdd28e..774b5c7 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -574,6 +574,7 @@ ath11k_sw_reset(void)
+  * uncached; the stream is in identity, so IOVA == PA.
+  */
+ extern int sweet_gpu_pool_alloc(uint64_t bytes, uint64_t *pa);
++extern uint64_t sweet_gpu_pool_avail(void);
+ 
+ #define MHI_CTRL_SIZE   0x40000u        /* contexts, rings, MSI word, IPCR buffers; segments after */
+ #define SEG_LEN         0x80000u
+@@ -1864,16 +1865,42 @@ dp_dscp_map(void)
+ static void
+ wifi_dp(void)
+ {
+-	if (sweet_gpu_pool_alloc(DP_RING_BLOCK, &g_dpa) != 0 || g_dpa + DP_RING_BLOCK > 0x100000000ull ||
+-	    !(g_dva = ml_io_map((vm_offset_t)g_dpa, DP_RING_BLOCK)) ||
+-	    sweet_gpu_pool_alloc(DP_LINK_BLOCK, &g_lpa) != 0 || g_lpa + DP_LINK_BLOCK > 0x100000000ull ||
+-	    !(g_lva = ml_io_map((vm_offset_t)g_lpa, DP_LINK_BLOCK))) {
+-		printf("SWEET DP: no memory\n");
++	/*
++	 * k64 called this for the first time on a second bring-up and never came back: the log stops at the
++	 * settle before INIT, with none of the prints below and not even the "no memory" line. By then the
++	 * pool has served two passes of firmware segments, two MHI blocks and two copies of m3, and this
++	 * wants another 4 MiB of link descriptors on top, mapped in one piece. So say where we are at every
++	 * step, and let the descriptor count be tuned: sweetdplinks=<n> builds that many instead of 32768,
++	 * which is what ath11k asks for but far more than a first association needs.
++	 */
++	uint32_t links = DP_LINK_DESCS;
++	(void)PE_parse_boot_argn("sweetdplinks", &links, sizeof(links));
++	uint32_t linkblock = links * DP_LINK_DESC_SIZE + DP_LINK_DESC_SIZE;
++	printf("SWEET DP: %u link descriptors, %u KiB for them, %u KiB of rings, pool has %llu KiB\n",
++	    links, linkblock >> 10, DP_RING_BLOCK >> 10, sweet_gpu_pool_avail() >> 10);
++	if (sweet_gpu_pool_alloc(DP_RING_BLOCK, &g_dpa) != 0 || g_dpa + DP_RING_BLOCK > 0x100000000ull) {
++		printf("SWEET DP: no pool for the rings\n");
++		return;
++	}
++	printf("SWEET DP: ring block at %#llx, mapping it\n", g_dpa);
++	if (!(g_dva = ml_io_map((vm_offset_t)g_dpa, DP_RING_BLOCK))) {
++		printf("SWEET DP: the ring block would not map\n");
++		return;
++	}
++	if (sweet_gpu_pool_alloc(linkblock, &g_lpa) != 0 || g_lpa + linkblock > 0x100000000ull) {
++		printf("SWEET DP: no pool for the link descriptors\n");
++		return;
++	}
++	printf("SWEET DP: link block at %#llx, mapping it\n", g_lpa);
++	if (!(g_lva = ml_io_map((vm_offset_t)g_lpa, linkblock))) {
++		printf("SWEET DP: the link block would not map\n");
+ 		return;
+ 	}
+-	for (uint32_t o = 0; o < DP_LINK_BLOCK; o += 4) {
++	printf("SWEET DP: zeroing the link block\n");
++	for (uint32_t o = 0; o < linkblock; o += 4) {
+ 		*(volatile uint32_t *)(g_lva + o) = 0;
+ 	}
++	printf("SWEET DP: zeroed\n");
+ 	g_doff = 0;
+ 	if (dp_alloc(0x400, 0x100, &g_rdp_va, &g_rdp_pa) != 0) {
+ 		return;
+@@ -1892,7 +1919,7 @@ wifi_dp(void)
+ 	 */
+ 	uint64_t desc = (g_lpa + (DP_LINK_DESC_SIZE - 1)) & ~(uint64_t)(DP_LINK_DESC_SIZE - 1);
+ 	uint32_t filled = 0;
+-	for (uint32_t i = 0; i + 1 < idle.entries && i < DP_LINK_DESCS; i++) {
++	for (uint32_t i = 0; i + 1 < idle.entries && i < links; i++) {
+ 		volatile uint32_t *e = (volatile uint32_t *)(idle.va + i * 8u);
+ 		e[0] = (uint32_t)desc;
+ 		e[1] = (uint32_t)((desc >> 32) & 0xffu) | (1u << 8);
