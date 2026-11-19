@@ -1,0 +1,108 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 8f1d6b1..8a8667e 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2003,6 +2003,81 @@ gdsc_peek(const char *when)
+  * they come alive during the calibration and stay dead at mission INIT, whatever the firmware does to
+  * them is the thing we are missing; if they are dead in both, the address is not the one we think.
+  */
++/*
++ * A whole 512 KiB window, snapshotted before INIT and read again after the crash, so the chip itself
++ * says where the firmware's power sequence writes.
++ *
++ * k69 made that necessary. With six hundred milliseconds of total silence — not one MMIO access while
++ * the firmware ran its sequence — it asserted at line 502 anyway, so the host is not in its way. But
++ * the nine registers read on the way out say something worse:
++ *
++ *	0x00b700c4 = 0x00000fff      the firmware writes 15 here
++ *	0x00b60088 = 0              it sets bits 0 and 1 here
++ *	0x00b600f8 = 0x00000003      it sets bit 2 here, so this should be at least 4
++ *	0x00b5ff88 = 0              it clears bit 31 here
++ *	0x00b6203c = 0xdeadc0de      unmapped: reads of this return the chip's "nothing here" value
++ *	0x00c300c4 = 0x00222001      collapsed, PWR_ON clear — exactly what it polls for, and it timed out
++ *
++ * Not one of those agrees with what the sequence does, and one of them is not mapped at all. The nibble
++ * rule — firmware 0xE0Bxxxxx is host 0x00Bxxxxx — is an assumption about *our* window arithmetic, and
++ * the Q6 reaches these blocks over a bus of its own. On this evidence it does not hold, which would
++ * mean every reading of the line-502 assert so far has been of the wrong registers.
++ *
++ * So stop guessing addresses and let the chip answer. Snapshot the window, let the firmware run, read
++ * it again, print what moved. Two passes back to back first, to find the words that tick on their own:
++ * those are free-running counters, and whether any exist at all is the other open question, because the
++ * WLAON counter we do read has been standing still at 0 Hz where the firmware expects 19.2 MHz.
++ */
++#define DIFF_WORDS      (0x80000u / 4u)
++static uint32_t g_diffbuf[DIFF_WORDS];
++static uint8_t g_difftick[DIFF_WORDS / 8];
++static uint32_t g_diffbase;
++
++static void
++diff_snap(void)
++{
++	uint32_t win = 0x16;    /* 0x00b00000: every WFSS_PMM address the sequence names lives here */
++	(void)PE_parse_boot_argn("sweetdiffwin", &win, sizeof(win));
++	g_diffbase = win * 0x80000u;
++	memset(g_difftick, 0, sizeof(g_difftick));
++	for (uint32_t i = 0; i < DIFF_WORDS; i++) {
++		g_diffbuf[i] = win_rd(g_diffbase + 4u * i);
++	}
++	uint32_t ticking = 0, dead = 0;
++	for (uint32_t i = 0; i < DIFF_WORDS; i++) {
++		uint32_t v = win_rd(g_diffbase + 4u * i);
++		if (v != g_diffbuf[i]) {
++			g_difftick[i / 8u] |= (uint8_t)(1u << (i % 8u));
++			g_diffbuf[i] = v;
++			ticking++;
++		}
++		if (v == 0xdeadc0deu) {
++			dead++;
++		}
++	}
++	printf("SWEET DIFF: window %#x (%#x..%#x) taken twice: %u words tick on their own, %u read deadc0de\n",
++	    win, g_diffbase, g_diffbase + 0x80000u - 4u, ticking, dead);
++}
++
++static void
++diff_show(const char *when)
++{
++	uint32_t changed = 0, shown = 0;
++	for (uint32_t i = 0; i < DIFF_WORDS; i++) {
++		uint32_t v = win_rd(g_diffbase + 4u * i);
++		if (v == g_diffbuf[i] || (g_difftick[i / 8u] & (1u << (i % 8u)))) {
++			continue;
++		}
++		changed++;
++		if (shown < 300u) {
++			shown++;
++			printf("SWEET DIFF: %s: %#010x %#010x -> %#010x%s\n", when, g_diffbase + 4u * i,
++			    g_diffbuf[i], v, (v == 0xfu || g_diffbuf[i] == 0xfu) ? "   <<< the 15" : "");
++		}
++	}
++	printf("SWEET DIFF: %s: %u words changed, %u printed\n", when, changed, shown);
++}
++
+ /*
+  * The nine registers the sleep sequence at 0x156bdc4 writes or polls, in host spelling. 0x00b700c4 is
+  * the witness: the firmware puts a 15 there two packets before it starts polling the GDSCR, and nothing
+@@ -2371,6 +2446,11 @@ wmi_init(void)
+ 	}
+ 	printf("SWEET WMI: INIT (variant %u, %u bytes, %u chains, mask %#x): vdevs %u peers %u tids %u msdu %u frag %u wow %u pdev_id %u\n",
+ 	    var, len, chains, mask, cfg[1], cfg[2], cfg[6], cfg[29], cfg[30], cfg[35], cfg[54]);
++	uint32_t wdiff = 0;
++	(void)PE_parse_boot_argn("sweetdiff", &wdiff, sizeof(wdiff));
++	if (wdiff) {
++		diff_snap();
++	}
+ 	if (!wake) {
+ 		win_wr(0x3004, 0);
+ 	}
+@@ -2680,6 +2760,9 @@ wmi_init(void)
+ 		ce_poll();
+ 		pc_msleep(10);
+ 	}
++	if (wdiff) {
++		diff_show("after INIT");
++	}
+ 	printf("SWEET WMI: WMI ready flag %d after the INIT window\n", g_htc.wmi_ready);
+ 	gdsc_peek("after INIT");
+ 	printf("SWEET WMI: after INIT: CE3 head %u tail %u (hardware %u), firmware %s\n",

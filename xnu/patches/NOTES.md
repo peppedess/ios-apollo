@@ -2288,3 +2288,35 @@ la **mappatura** del blocco da 4 MiB in un pezzo solo, non l'allocazione. Con 25
 E il firmware muore lo stesso, con la stessa identica sequenza di k61: GDSC collassati a +80 ms, SYS_ERR
 letto alla fine del ciclo dei 400 ms, `Asserted in0x1503340s:502`. Quindi il data path mancante non era
 la causa — ma adesso c'è, e servirà comunque appena il blocco cade.
+
+## k69 e 1232 — la regola del nibble non regge
+
+k69 ha tenuto l'host fuori dal bus per 600 ms interi, non un solo accesso MMIO mentre il firmware faceva
+la sua sequenza. Ha asserito lo stesso alla riga 502, e il SYS_ERR era già lì quando siamo tornati a
+guardare: **il crash avviene nel silenzio totale**, quindi non siamo noi a impedire il collasso. Quella
+strada è chiusa, e con essa l'ipotesi dell'interferenza.
+
+Ma i nove registri letti all'uscita dicono una cosa peggiore:
+
+	0x00b700c4 = 0x00000fff      il firmware ci scrive 15
+	0x00b60088 = 0               ci mette i bit 0 e 1
+	0x00b600f8 = 0x00000003      ci mette il bit 2, quindi dovrebbe valere almeno 4
+	0x00b5ff88 = 0               ci azzera il bit 31
+	0x00b6203c = 0xdeadc0de      non mappato: è il valore che il chip dà dove non c'è niente
+	0x00c300c4 = 0x00222001      collassato, PWR_ON a zero — esattamente ciò che aspetta, e va in timeout
+
+Nessuno di questi torna con quello che la sequenza fa, e uno non è mappato per niente. La regola del
+nibble — 0xE0Bxxxxx del firmware = 0x00Bxxxxx nostro — è un'affermazione sull'aritmetica della *nostra*
+finestra, e il Q6 arriva a quei blocchi su un bus suo. Su questa evidenza non regge, il che vuol dire
+che ogni lettura dell'assert alla riga 502 fatta finora era sui registri sbagliati.
+
+E c'è il secondo filo: `WLAON counter 129695644 -> 129695644 in 100 ms = 0 Hz`, dove il firmware si
+aspetta 19.2 MHz. O quel contatore non è dove crediamo, o l'orologio di sleep non gira — e una macchina
+a stati del PMM che aspetta quell'orologio non finirebbe mai la sua stretta di mano, che è esattamente
+un timeout di 100 ms.
+
+Quindi basta indovinare indirizzi: che risponda il chip. 1232 fotografa un'intera finestra da 512 KiB
+(la 0x16, 0x00b00000–0x00b7ffff, dove stanno tutti gli indirizzi WFSS_PMM che la sequenza nomina) prima
+dell'INIT, lascia correre il firmware, la rilegge dopo il crash e stampa cosa si è mosso. Prima due
+passate di fila, per riconoscere le parole che ticchettano da sole: quelle sono contatori liberi, e
+sapere se ne esiste anche uno solo risponde al secondo filo.
