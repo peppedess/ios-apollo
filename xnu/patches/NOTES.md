@@ -1945,3 +1945,23 @@ Then nothing. On the first pass the firmware answers 20 ms later with the contro
 was told about those rings lives in the block that just moved, so print it — ER0 and ER1 contexts, both
 channel contexts, the first ch21 TRE, our own read pointer and the channel doorbell — in both passes,
 and diff them.
+
+## 1222 — i puntatori degli anelli vanno azzerati dove gli anelli nascono
+
+k54 printed the ring contexts after HELLO in both passes, and the two lines say it outright:
+
+```
+pass 1   block at 0xcf8cc000, first ch21 TRE 0xcf8dc000 len 0x2000, our rp 0x3000
+pass 2   block at 0xd0e48000, first ch21 TRE 0          len 0,      our rp 0x3380
+```
+
+The second pass queued its sixteen receive buffers 44 TREs into a freshly zeroed ring and left TRE 0
+empty, so the firmware had nowhere to put its answer to our HELLO. Channels started, HELLO went out,
+silence — exactly what k53 looked like.
+
+The cause is where 1203 put the resets: in the restart block, which runs in the calibration pass, before
+the power cycle and before the whole second bring-up. Everything between there and `ipcr_start` polls —
+er0_poll and er1_poll run in every wait loop — and walks those pointers on again over a device that is
+being reset underneath. So g_er0_rp, g_er1_rp and g_cmd_wp now go back to their bases where the ring
+contexts are programmed, and g_ch20_wp/g_ch21_wp at the top of ipcr_start, next to the chan_ctx calls
+that create those rings. The copies in the restart blocks are harmless and stay as they are.

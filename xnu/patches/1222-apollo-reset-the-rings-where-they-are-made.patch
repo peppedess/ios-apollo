@@ -1,0 +1,32 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 8f78675..189096e 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -3289,6 +3289,8 @@ static void
+ ipcr_start(void)
+ {
+ 	g_chdb = rd(g_bar, 0x18);
++	g_ch20_wp = CH20_RING;                                          /* the rings start empty, so do we */
++	g_ch21_wp = CH21_RING;
+ 	chan_ctx(20, CH20_RING, 1);
+ 	chan_ctx(21, CH21_RING, 2);
+ 	__asm__ volatile ("dsb sy" ::: "memory");
+@@ -3426,7 +3428,18 @@ mhi_bringup(uint32_t bhi)
+ 	ctx_ring(ER_CTX + 44, ER1_RING, 256, true, 2, 1);
+ 	ctx_ring(CMD_CTX, CMD_RING, 128, false, 0, 0);
+ 	__asm__ volatile ("dsb sy" ::: "memory");
++	/*
++	 * The ring pointers belong here, where the rings are created, and not in the restart block that
++	 * 1203 put them in. k54 caught what that costs: between the calibration pass setting them back to
++	 * their bases and this point, the polling loops of the second bring-up walk them on again, over a
++	 * device that is being reset underneath. By the time the second pass got here, g_er1_rp was at
++	 * 0x3380 — slot 56 — and ipcr_start then queued the receive buffers 44 TREs into a freshly zeroed
++	 * ring, leaving TRE 0 empty. The firmware had nowhere to put its answer to our HELLO, which is
++	 * exactly what the second pass looked like: channels started, HELLO sent, silence.
++	 */
+ 	g_er0_rp = ER0_RING;
++	g_er1_rp = ER1_RING;
++	g_cmd_wp = CMD_RING;
+ 	printf("SWEET MHI: 2c: BHIe at %#x, %u segments\n", bhie, nseg);
+ 
+ 	/*
