@@ -2171,3 +2171,42 @@ descriptors mapped in one piece.
 So: print the pool's free space and each step as it happens — allocation, mapping, zeroing — and make
 the descriptor count a boot argument. ath11k asks for 32768; a first association needs far fewer, and
 `sweetdplinks=2048` is 256 KiB instead of four megabytes.
+
+## 1228 — il testimone per la mappa degli indirizzi
+
+Tutto quello che abbiamo detto sull'assert alla riga 502 poggia su un'ipotesi mai verificata: che
+l'`0xE0C300C4` del firmware e il nostro `0x00C300C4` passato dalla finestra siano lo stesso registro.
+È vero per le *nostre* due scritture — la finestra prende i bit 24:19 dell'indirizzo e tutt'e due danno
+finestra 0x18, offset 0x300c4 — ma non dice niente su cosa veda il Q6, che esce su un bus suo con una
+mappa sua. Il ragionamento «le sue scritture arrivano dove leggiamo noi, le sue letture evidentemente
+no» è circolare se quella mappa è diversa.
+
+Rilettura del disassemblato, e due correzioni alla prima lettura:
+
+- la funzione non comincia a 0x156be40, che è in mezzo: l'ingresso è a **0x156bdc4**
+  (`allocframe(#40)`), e la sequenza di collasso si esegue solo quando il byte 1 della struttura
+  restituita da 0x156c150 vale 0;
+- lo 0xf non va al GDSCR ma a **0xE0B700C4**, in WFSS_PMM. L'indirizzo del poll, 0xE0C300C4, è confermato
+  (`r0 = ##-524091196`), e l'unico caricamento della costante 502 in tutta l'immagine è a 0x156bfb4,
+  quattro pacchetti dopo quel poll: su *quale* poll fallisca non c'è dubbio.
+
+I dodici pacchetti prima dell'assert:
+
+	0156bf20  memw(0xE0B5FF88) = clrbit(#31)
+	0156bf40  r3 = memw(0xE0B700C4);  memw(0xE0B700C4) = #15
+	0156bf50  0xE0B60088 = (v & 30) | 1,  poi (v & 29) | 2
+	0156bf74  0xE0B600F8 = (v & ~0x10000004) | 4
+	0156bf88  call dell'helper di poll (r0 = 0xE0C300C4, r1 = 0x80000000, r2 = 0)
+	0156bfb0  r0 = #502 -> assert
+
+L'helper a 0x156c17c aggiunge 100 µs e 1000 tentativi e salta alla ROM a 0x880F24, che nell'immagine non
+c'è: più in là di così, staticamente, non si va.
+
+Ma quella scrittura di 15 è un testimone. È l'unica cosa della sequenza che da fuori si riconosce senza
+ambiguità. `sweetpmm=<ms>` legge una volta ciascuno i nove registri che la sequenza tocca — stampando
+l'indirizzo *prima* di leggerlo, così un blocco dice da solo chi è stato, come in k13n con 0xc30004 — e
+poi li campiona ogni 2 ms stampando solo i cambiamenti.
+
+Se `0x00b700c4` diventa 15 mentre guardiamo, la regola del nibble vale anche per il Q6, stiamo leggendo
+il registro che lui interroga, e la contraddizione è reale. Se non diventa mai 15, abbiamo guardato la
+metà sbagliata del chip per tutto il tempo e l'analisi della riga 502 ricomincia da capo.
