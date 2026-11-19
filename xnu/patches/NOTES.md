@@ -1965,3 +1965,28 @@ er0_poll and er1_poll run in every wait loop — and walks those pointers on aga
 being reset underneath. So g_er0_rp, g_er1_rp and g_cmd_wp now go back to their bases where the ring
 contexts are programmed, and g_ch20_wp/g_ch21_wp at the top of ipcr_start, next to the chan_ctx calls
 that create those rings. The copies in the restart blocks are harmless and stay as they are.
+
+## k55 — il doppio passaggio funziona
+
+With 1220 and 1222 in, the whole sequence runs end to end for the first time:
+
+```
+48.4  service at 7:0x1                        (first instance)
+52.5  *** cold boot calibration done after 3600 ms ***
+      power cycle: rails, clocks, WLAN_EN, 1 s
+70.3  block at 0xd45d4000, first ch21 TRE 0xd45e4000, our rp 0x3000   (re-allocated, re-filled)
+70.4  service at 7:0x1                        (second instance)
+70.7  mission mode on
+70.7  HTC READY: 2 credits of 2176 bytes, 5 endpoints
+70.7  service 0x100 endpoint 1, service 0x300 endpoint 2
+70.7  WMI service ready: 2 RF chains
+71.0  WMI INIT (332 bytes, 2 chains, mask 0x3)
+71.5  SYS_ERR, Asserted in0x1503340s:502
+```
+
+A calibrated radio, a clean second firmware, and the mission path reached in full. The death that
+remains is 440 ms after WMI INIT — and it is the *same* assert, at the same address and the same line,
+that k50 got with a first pass that never calibrated at all. So the WMI_INIT failure we have been
+calling "the uncalibrated radio" for six weeks is nothing of the kind: it survives a real calibration
+untouched, which means it is in what we send at INIT, or in what we leave out before it. That is the
+next thing, and it is a different problem from everything above.
