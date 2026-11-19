@@ -1,0 +1,48 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 00c5753..7613a12 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -1959,9 +1959,18 @@ gdsc_peek(const char *when)
+ static void
+ wcss_cc_dump(const char *when)
+ {
+-	printf("SWEET WMI: WCSS_CC %s: +00 %#010x +04 %#010x +08 %#010x +0c %#010x | c4 %#010x c8 %#010x cc %#010x\n",
+-	    when, win_rd(0x00c30000), win_rd(0x00c30004), win_rd(0x00c30008), win_rd(0x00c3000c),
+-	    win_rd(0x00c300c4), win_rd(0x00c300c8), win_rd(0x00c300cc));
++	/*
++	 * The registers the firmware itself names, read out of its own code. `_whal_pmm_wlan_pwr_seq_hwdtim_
++	 * sleep___RAM` at 0x156be40 writes 0xf to 0xE0C300C4 (WLAN1 GDSCR), pokes 0xE0B60148 and 0xE0B60178
++	 * in WFSS_PMM, and then calls the poll helper with address 0xE0C30104 and mask 0x80000000, asserting
++	 * at line 502 when it times out. Under the nibble rule those are 0x00c300c4, 0x00b60148, 0x00b60178
++	 * and 0x00c30104 — and k56 says 0x00c30104 reads 0 from here while the firmware waits on it, so
++	 * either it is not reading what we are reading, or it wants that bit *set*. Its neighbour at
++	 * 0x00c30108 is the one holding 0x80000220, bit 31 and all.
++	 */
++	printf("SWEET WMI: WCSS_CC %s: 100 %#010x 104 %#010x 108 %#010x 10c %#010x | c4 %#010x 138 %#010x | pmm 148 %#010x 178 %#010x\n",
++	    when, win_rd(0x00c30100), win_rd(0x00c30104), win_rd(0x00c30108), win_rd(0x00c3010c),
++	    win_rd(0x00c300c4), win_rd(0x00c30138), win_rd(0x00b60148), win_rd(0x00b60178));
+ }
+ 
+ static void
+@@ -2439,7 +2448,21 @@ wmi_init(void)
+ 		win_wr(0x3004, 1);
+ 		delay(5000);
+ 	}
++	uint32_t poke = 0;
++	(void)PE_parse_boot_argn("sweetpoke108", &poke, sizeof(poke));
+ 	for (int ms = 0; ms < 400; ms += 10) {
++		/*
++		 * And, if asked, take the one register that does have bit 31 standing and ask it to collapse,
++		 * the way the firmware asks WLAN1 to: set SW_COLLAPSE. If the firmware then walks past its poll
++		 * and WMI READY arrives, 0x00c30108 is what it was really waiting on and the address mapping is
++		 * off by one register.
++		 */
++		if (poke && ms == (int)poke) {
++			uint32_t v = win_rd(0x00c30108);
++			win_wr(0x00c30108, v | 1u);
++			printf("SWEET WMI: poked 0x00c30108 %#010x -> %#010x at +%d ms\n", v,
++			    win_rd(0x00c30108), ms);
++		}
+ 		if (ms % 40 == 0) {
+ 			char lbl[24];
+ 			snprintf(lbl, sizeof(lbl), "INIT +%d ms", ms);

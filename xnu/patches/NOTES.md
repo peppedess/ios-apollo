@@ -2012,3 +2012,35 @@ during the calibration and stay dead at INIT, whatever the firmware does to them
 the thing mission mode is missing. If they are dead in both, then 0x00c30004 is not where the firmware
 is looking and the nibble rule does not hold for this block — which is a different hunt, but a shorter
 one than the four weeks we have spent assuming it does.
+
+## 1224 — i registri che il firmware si nomina da solo
+
+k56 sampled the wrong registers, and in doing so paid for itself: during the calibration the WLAN1 GDSCR
+reads 0xa0223800 — powered on — and 80 ms after WMI INIT it goes to 0x00222001, PWR_ON clear and
+SW_COLLAPSE set, while its two neighbours go the other way. The collapse the firmware asks for happens.
+It then waits another 360 ms and asserts anyway.
+
+So read the firmware's own code instead of guessing. `_whal_pmm_wlan_pwr_seq_hwdtim_sleep___RAM` begins
+at 0x156be40, and the relevant packets are:
+
+```
+0156bf20  r2 = ##0xE0C300C4   memw(0xE0B60108) = clrbit(#31)
+0156bf34  r1 = ##0x80000000   r4 = #495
+0156bf40  r5 = ##0x15A4A32 ("WCSS_CC_WCSS_WLAN1_GDSCR/PWR_ON")  memw(r2) = #15
+0156bf50  r2 = memw(r16=##0xE0B60148) ... setbit 0, setbit 1
+0156bf74  r3:2 = combine(##0x15A4A08 ("_whal_pmm_wlan_pwr_seq_hwdtim_sleep___RAM"), #0)
+0156bf80  r6 = memw(r17=##0xE0B60178) & 0xEFFFFFFB, setbit #2
+0156bf88  call <poll>        r0 = ##0xE0C30104, r1 = 0x80000000
+0156bf94  p0 = cmp.eq(r0,#-1) ...
+0156bfb0  call <assert>      r0 = #502
+```
+
+So it writes 0xf to the WLAN1 GDSCR, pokes two WFSS_PMM registers, and polls **0xE0C30104** with mask
+0x80000000 — not 0xE0C300C4, which is what we have been watching for weeks, and not 0xe0c30004 either.
+The poll helper itself tail-calls into ROM at 0x880f24, so the polarity is not readable statically.
+
+Under the nibble rule that is host 0x00c30104, and every block dump we have says it reads 0 — already
+what a "wait for PWR_ON to clear" would want. Its neighbour 0x00c30108 is the one standing at
+0x80000220, bit 31 and all. So sample the registers the firmware actually names, every 40 ms through the
+INIT window, and offer `sweetpoke108=<ms>` to set SW_COLLAPSE on 0x00c30108 while it waits: if the
+firmware then walks past the poll, the mapping is off by one register and we have the answer.
