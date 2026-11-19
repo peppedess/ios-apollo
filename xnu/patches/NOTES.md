@@ -2271,3 +2271,20 @@ Quindi «il firmware asserisce ~440 ms dopo l'INIT» non è mai stato un dato: e
 cambiava il nostro modo di guardare. Il crash può stare ovunque da +60 ms in poi — e +60 ms è esattamente
 quando il dominio collassa. Un `er0_poll` in ciascuno dei tre cicli trasforma il timestamp del log nella
 risposta vera.
+
+## k65 — il data path si costruisce, e non c'entra
+
+Con il tracciamento di 1227 e `sweetdplinks=2048` il data path si tira su tutto:
+
+	SWEET DP: 2048 link descriptors, 256 KiB for them, 3072 KiB of rings, pool has 728928 KiB
+	SWEET DP: ring block at 0xd1430000, mapping it
+	SWEET DP: link block at 0xd1730000, mapping it
+	SWEET DP: idle list: 2048 link descriptors, head 4096
+	SWEET DP: 15 rings up, 2072 KiB used; REO gen 0xc0000dc, TCL ctrl 0x9e000, idle misc 0xc2
+
+Il pool aveva 712 MiB liberi, quindi k64 non si era fermato per mancanza di memoria: a non riuscire era
+la **mappatura** del blocco da 4 MiB in un pezzo solo, non l'allocazione. Con 256 KiB passa.
+
+E il firmware muore lo stesso, con la stessa identica sequenza di k61: GDSC collassati a +80 ms, SYS_ERR
+letto alla fine del ciclo dei 400 ms, `Asserted in0x1503340s:502`. Quindi il data path mancante non era
+la causa — ma adesso c'è, e servirà comunque appena il blocco cade.
