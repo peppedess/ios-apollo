@@ -1,0 +1,31 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 5ca314d..dbdd28e 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -1052,6 +1052,26 @@ wlan_crash_dump(void)
+ 		 * slow but it is the firmware's own account of what went wrong, and the 256 KiB window has
+ 		 * returned "no text" on every mission crash so far — the Q6 does not put its assert at the top.
+ 		 */
++		/*
++		 * And the crash record itself, whole. Every mission crash has put its text at +0x2ffe80 of the
++		 * first segment, and the text is only the tail of a structure: the firmware's assert carries a
++		 * file pointer, a function pointer and a line, and whatever it was polling may well be in the
++		 * words around them. One hexdump of the 256 bytes before and after is cheaper than another
++		 * boot's worth of inference.
++		 */
++		if (k == 0 && g_seg[k].va && g_seg[k].size > 0x300000u) {
++			for (uint32_t o = 0x2ffe00; o < 0x2fff80; o += 16) {
++				volatile uint32_t *q = (volatile uint32_t *)(g_seg[k].va + o);
++				char txt[20];
++				for (unsigned i = 0; i < 16; i++) {
++					uint8_t b = ((volatile uint8_t *)(g_seg[k].va + o))[i];
++					txt[i] = (b >= 32 && b < 127) ? (char)b : '.';
++				}
++				txt[16] = 0;
++				printf("SWEET MHI: crash +%06x: %08x %08x %08x %08x  %s\n", o, q[0], q[1], q[2], q[3],
++				    txt);
++			}
++		}
+ 		uint32_t cap = g_seg[k].size;
+ 		uint32_t wide = 1;
+ 		(void)PE_parse_boot_argn("sweetwidescan", &wide, sizeof(wide));

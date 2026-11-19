@@ -2096,3 +2096,27 @@ GDSCR and WFSS_PMM 0x00b60178 every 10 ms, printing only on change, for as long 
 
 k60, for the record, held the MHI device wake asserted across INIT (`sweetwake=1`, the opposite of what
 1179 settled on) and changed nothing: same +80 ms collapse, same assert.
+
+## 1226 — il record di crash per intero
+
+k61 watched the GDSCR every 10 ms for 900 ms after INIT, printing on change, and the result is as flat
+as it could be:
+
+```
++0 ms   WLAN1 0xa0223800  0x108 0x00000f11  WLAN2 0xa0223800  pmm178 0x40000001
++60 ms  WLAN1 0x00222001  0x108 0x80000220  WLAN2 0x00222001  pmm178 0x7c000000
+        window over, firmware alive
+```
+
+Two changes in nine hundred milliseconds. Both GDSCs collapse at +60 ms and stay collapsed — PWR_ON
+clear, which is exactly `(value & 0x80000000) == 0`, exactly what the sleep poll is documented by its
+own sibling call site to be waiting for — and the firmware sits there for another 400 ms and asserts.
+(It also shows the crash is not on a 440 ms timer: with the longer window it came at +1430 ms.)
+
+The host's writes clearly land where we think: 0x00c300c4 shows SW_COLLAPSE set at +60 ms, which is the
+firmware's own `memw(0xE0C300C4) = #15`. Its reads apparently do not come back from the same place.
+
+Both addresses in the crash record are stripped file and function pointers, so the line number is all
+the identification there is. Before spending more boots on inference: dump the 384 bytes around the
+record as hex and ASCII. The assert structure carries more than the text we have been printing, and
+whatever it was polling may be sitting in the words next to it.
