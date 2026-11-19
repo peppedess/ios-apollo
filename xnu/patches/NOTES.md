@@ -1932,3 +1932,16 @@ mhi_mem_prepare is called twice per bring-up). `sweetkeepmhi=1` restores the old
 ddr_range is still wrong and still overlaps everything we own — the stock driver declares an SMMU window,
 `iova starting 0xa0000000 with size 0x10010000` — and that is the next thing to fix, but this is the one
 that has been killing the mission pass.
+
+## 1221 — i contesti degli anelli dopo l'HELLO
+
+1220 works, and the failure moved. k53 ran the full calibration, re-allocated the control block for the
+second pass (`pool block 4864 KiB at 0xd0e68000`, a new address, `readback 0 bad pages`), downloaded the
+firmware again — and the second instance **does not crash**. No SYS_ERR, no assert, no line 367. It
+reaches AMSS mission mode, both IPCR channels start with completion code 1, and we send our QRTR HELLO.
+
+Then nothing. On the first pass the firmware answers 20 ms later with the control packets and
+`service at 7:0x1`; on the second it never answers, and er1 fills with empty slots. Everything the device
+was told about those rings lives in the block that just moved, so print it — ER0 and ER1 contexts, both
+channel contexts, the first ch21 TRE, our own read pointer and the channel doorbell — in both passes,
+and diff them.

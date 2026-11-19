@@ -1,0 +1,28 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index d0afea4..8f78675 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -3303,6 +3303,23 @@ ipcr_start(void)
+ 	}
+ 	qrtr_send_ctrl(2, 0xffffffffu);                                 /* HELLO */
+ 	printf("SWEET QRTR: HELLO sent from node 1\n");
++	/*
++	 * k53's second pass gets this far and then hears nothing: the firmware answered our HELLO 20 ms
++	 * later on the first pass and never on the second. The rings all live in the control block, which
++	 * 1220 now re-allocates at a new address for the second bring-up, so print what the device was
++	 * actually given — ring bases, read and write pointers, channel states — in both passes, and diff
++	 * them.
++	 */
++	printf("SWEET MHI: ER1 ctx base %#llx rp %#llx wp %#llx | ER0 base %#llx rp %#llx wp %#llx\n",
++	    m_r64(ER_CTX + 44 + 20), m_r64(ER_CTX + 44 + 28), m_r64(ER_CTX + 44 + 36),
++	    m_r64(ER_CTX + 20), m_r64(ER_CTX + 28), m_r64(ER_CTX + 36));
++	printf("SWEET MHI: ch20 state %#x base %#llx rp %#llx wp %#llx | ch21 state %#x base %#llx rp %#llx wp %#llx\n",
++	    *(volatile uint32_t *)(g_mva + CH_CTX + 44 * 20) & 0xffu, m_r64(CH_CTX + 44 * 20 + 20),
++	    m_r64(CH_CTX + 44 * 20 + 28), m_r64(CH_CTX + 44 * 20 + 36),
++	    *(volatile uint32_t *)(g_mva + CH_CTX + 44 * 21) & 0xffu, m_r64(CH_CTX + 44 * 21 + 20),
++	    m_r64(CH_CTX + 44 * 21 + 28), m_r64(CH_CTX + 44 * 21 + 36));
++	printf("SWEET MHI: block at %#llx, first ch21 TRE %#llx len %#x, our rp %#x, chdb %#x\n", g_mpa,
++	    m_r64(CH21_RING), *(volatile uint32_t *)(g_mva + CH21_RING + 8), g_er1_rp, g_chdb);
+ 	for (int ms = 0; ms < 3000 && !g_wlfw_port; ms += 20) {
+ 		(void)er0_poll();
+ 		(void)er1_poll();
