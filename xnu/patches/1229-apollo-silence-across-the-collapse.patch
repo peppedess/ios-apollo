@@ -1,0 +1,47 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 14a09bf..28678f3 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2594,6 +2594,33 @@ wmi_init(void)
+ 		}
+ 		printf("SWEET PMM: window over after %u ms, firmware %s\n", pmmw, g_sysfail ? "DEAD" : "alive");
+ 	}
++	/*
++	 * The question nobody has asked yet: are we the reason it fails?
++	 *
++	 * The sleep sequence asks the WLAN GDSC to collapse and gives it 100 ms. In every run we have ever
++	 * made, the host has been reading WCSS through the window while that happens — the loop below calls
++	 * wcss_cc_dump every 40 ms, and it has done so unconditionally since the day it was written, in k50
++	 * and k55 and k61 alike. Each of those reads selects a window at BAR+0x310C and reads inside the
++	 * subsystem the firmware is trying to power down. A domain cannot collapse while the bus into it is
++	 * being driven, so the timeout at 100 ms and the assert at line 502 are exactly what a blocked
++	 * collapse would look like — and the one 'quiet window' we did run, k59, kept polling WLAON every
++	 * millisecond and left this loop untouched, so it never tested this.
++	 *
++	 * sweetsilence=<ms> stays off the bus completely for that long after INIT: no WCSS, no MHI, no copy
++	 * engine, nothing. WMI READY keeps in the ring; we read it when we come back. sweetwcss=1 brings the
++	 * old 40 ms dump back for when we do want to watch.
++	 */
++	uint32_t sil = 0;
++	(void)PE_parse_boot_argn("sweetsilence", &sil, sizeof(sil));
++	if (sil) {
++		printf("SWEET QUIET: not one MMIO access for %u ms, so the chip can actually collapse\n", sil);
++		for (uint32_t ms = 0; ms < sil; ms += 10) {
++			pc_msleep(10);
++		}
++		printf("SWEET QUIET: %u ms of silence over, looking again\n", sil);
++	}
++	uint32_t wcsswatch = 0;
++	(void)PE_parse_boot_argn("sweetwcss", &wcsswatch, sizeof(wcsswatch));
+ 	for (int ms = 0; ms < 400; ms += 10) {
+ 		/*
+ 		 * And, if asked, take the one register that does have bit 31 standing and ask it to collapse,
+@@ -2607,7 +2634,7 @@ wmi_init(void)
+ 			printf("SWEET WMI: poked 0x00c30108 %#010x -> %#010x at +%d ms\n", v,
+ 			    win_rd(0x00c30108), ms);
+ 		}
+-		if (ms % 40 == 0) {
++		if (wcsswatch && ms % 40 == 0) {
+ 			char lbl[24];
+ 			snprintf(lbl, sizeof(lbl), "INIT +%d ms", ms);
+ 			wcss_cc_dump(lbl);

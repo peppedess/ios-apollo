@@ -2210,3 +2210,28 @@ poi li campiona ogni 2 ms stampando solo i cambiamenti.
 Se `0x00b700c4` diventa 15 mentre guardiamo, la regola del nibble vale anche per il Q6, stiamo leggendo
 il registro che lui interroga, e la contraddizione è reale. Se non diventa mai 15, abbiamo guardato la
 metà sbagliata del chip per tutto il tempo e l'analisi della riga 502 ricomincia da capo.
+
+## 1229 — silenzio durante il collasso
+
+La domanda che non ci siamo mai fatti: il colpevole siamo noi?
+
+La sequenza di sleep chiede al GDSC della WLAN di collassare e gli dà 100 ms. In *ogni* run che abbiamo
+mai fatto, mentre questo succedeva l'host stava leggendo WCSS attraverso la finestra: il ciclo dopo
+l'INIT chiama `wcss_cc_dump` ogni 40 ms, e lo fa senza condizioni dal giorno in cui è stato scritto —
+in k50, in k55, in k61. Ognuna di quelle letture seleziona una finestra a BAR+0x310C e legge *dentro* il
+sottosistema che il firmware sta cercando di spegnere. Un dominio non collassa mentre il bus che ci entra
+viene pilotato: il timeout a 100 ms e l'assert alla riga 502 sono esattamente l'aspetto che avrebbe un
+collasso impedito.
+
+Le celle vicine, riguardate:
+
+- **k59** (`sweetquiet=1500`) sembrava la prova del silenzio, ma `sweetpwr` vale 1 di default: ha
+  interrogato WLAON ogni millisecondo per i primi 120 ms e ogni 5 ms dopo, e ha lasciato intatto il ciclo
+  dei 40 ms. Nessun traffico è un'altra cosa da poco traffico: con una lettura ogni millisecondo il link
+  non entra mai in L1 e il dispositivo non entra mai in M2, che sono la precondizione del collasso.
+- **k60** (`sweetwake=1`) ha tolto il voto di wake dell'MHI ma ha continuato a leggere WCSS ogni 40 ms.
+
+La casella mai provata è quindi «niente wake **e** zero MMIO». `sweetsilence=<ms>` sta fuori dal bus
+completamente per quel tempo dopo l'INIT: niente WCSS, niente MHI, niente copy engine, niente. Il
+WMI READY resta nel ring e lo leggiamo quando torniamo. `sweetwcss=1` rimette il dump dei 40 ms per
+quando vogliamo davvero guardare.
