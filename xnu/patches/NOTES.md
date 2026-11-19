@@ -2320,3 +2320,31 @@ Quindi basta indovinare indirizzi: che risponda il chip. 1232 fotografa un'inter
 dell'INIT, lascia correre il firmware, la rilegge dopo il crash e stampa cosa si è mosso. Prima due
 passate di fila, per riconoscere le parole che ticchettano da sole: quelle sono contatori liberi, e
 sapere se ne esiste anche uno solo risponde al secondo filo.
+
+## k71 e 1233 — forse è la regola del nibble più uno scostamento di 64 KiB
+
+Il diff della finestra 0x16 è tornato con un avvertimento attaccato. Su 131072 parole, **65595 cambiano
+fra due letture prese una dopo l'altra** e 20205 danno deadc0de: metà di quella finestra, sotto le nostre
+letture, non è stabile per niente. Il che da solo spiega i nove valori senza senso di k69 — erano letti
+*dopo* il collasso, con il dominio spento. Erano spazzatura, non una prova contro la regola del nibble.
+
+Fra le parole stabili, mentre il firmware girava se ne sono mosse esattamente cinque:
+
+	0x00b500cc  0 -> 0x00010000
+	0x00b50218  0 -> 0x00000080
+	0x00b520cc  0 -> 0x00010000
+	0x00b52218  0 -> 0x00000080
+	0x00b60000  0 -> 0x0000fffc
+
+Due coppie a 0x2000 di distanza — la stessa forma a due istanze dei GDSCR WLAN1 e WLAN2 — e l'ultima
+scrittura che la sequenza fa è un read-modify-write di **0xE0B600CC**. Il nostro 0x00b500cc è
+0xE0B600CC meno 0x10000. Con lo stesso scostamento 0xE0B70000 diventa 0x00b60000, che è l'altra parola
+che si è mossa.
+
+Quindi la mappa potrebbe essere la regola del nibble **più uno scostamento di 64 KiB**. Se è così, il
+registro che chiamiamo GDSCR WLAN1, 0x00c300c4, è in realtà lo 0xE0C400C4 del firmware, e il GDSCR che
+lui interroga è il nostro 0x00c200c4 — che non abbiamo mai letto.
+
+È una domanda da due registri. Il campionatore ora guarda tutt'e due le grafie del 15 e tutt'e due
+quelle del GDSCR, ogni 2 ms, cominciando *prima* del collasso invece che dopo. 0x00c200c4 è l'indirizzo
+mai provato, quindi sta per ultimo: se blocca il telefono, il log su UFS conserva comunque le briciole.

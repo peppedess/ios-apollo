@@ -1,0 +1,48 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 8a8667e..33c28c0 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2007,6 +2007,28 @@ gdsc_peek(const char *when)
+  * A whole 512 KiB window, snapshotted before INIT and read again after the crash, so the chip itself
+  * says where the firmware's power sequence writes.
+  *
++ * k71 ran it and the answer came with a warning attached. Of 131072 words, 65595 changed between two
++ * reads taken back to back and 20205 read deadc0de: half that window is not stable under our reads at
++ * all, which on its own explains k69's nine nonsense values — they were taken *after* the collapse,
++ * with the domain powered down, so they were junk, not evidence against the nibble rule.
++ *
++ * Among the words that are stable, exactly five moved while the firmware ran:
++ *
++ *	0x00b500cc  0 -> 0x00010000
++ *	0x00b50218  0 -> 0x00000080
++ *	0x00b520cc  0 -> 0x00010000
++ *	0x00b52218  0 -> 0x00000080
++ *	0x00b60000  0 -> 0x0000fffc
++ *
++ * Two pairs 0x2000 apart — the same two-instance shape as the WLAN1 and WLAN2 GDSCRs — and the last
++ * write the sequence makes is a read-modify-write of 0xE0B600CC. Host 0x00b500cc is 0xE0B600CC minus
++ * 0x10000. On the same shift 0xE0B70000 is host 0x00b60000, which is the other word that moved. So the
++ * mapping may be the nibble rule *and* a 64 KiB shift, and the register we have been calling the WLAN1
++ * GDSCR, 0x00c300c4, would really be the firmware's 0xE0C400C4.
++ *
++ * That is a two-register question and the sampler answers it: watch both spellings of the 15 and both
++ * spellings of the GDSCR, every 2 ms, starting before the collapse rather than after it.
++ *
+  * k69 made that necessary. With six hundred milliseconds of total silence — not one MMIO access while
+  * the firmware ran its sequence — it asserted at line 502 anyway, so the host is not in its way. But
+  * the nine registers read on the way out say something worse:
+@@ -2084,8 +2106,12 @@ diff_show(const char *when)
+  * else in the sequence is recognisable from outside without ambiguity.
+  */
+ static const uint32_t pmm_regs[] = {
+-	0x00b700c4, 0x00c300c4, 0x00b60088, 0x00b600f8,
+-	0x00b5ff88, 0x00b6203c, 0x00b600a4, 0x00b600cc, 0x00b70000,
++	0x00b700c4, 0x00b600c4,         /* the 15, under the nibble rule and under the -0x10000 shift */
++	0x00b600cc, 0x00b500cc,         /* the last write of the sequence, both ways */
++	0x00b60088, 0x00b50088,
++	0x00b600f8, 0x00b500f8,
++	0x00b60000, 0x00b6203c,
++	0x00c300c4, 0x00c200c4,         /* the GDSCR it polls, both ways — 0x00c2 is untried, so keep it last */
+ };
+ #define PMM_N   ((uint32_t)(sizeof(pmm_regs) / sizeof(pmm_regs[0])))
+ 
