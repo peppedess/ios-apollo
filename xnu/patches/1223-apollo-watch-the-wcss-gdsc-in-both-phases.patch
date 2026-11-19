@@ -1,0 +1,68 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 189096e..00c5753 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -1947,6 +1947,23 @@ gdsc_peek(const char *when)
+ }
+ 
+ #define RC(field, value)        cfg[field] = (value)
++/*
++ * The registers the firmware is waiting on, sampled while it waits. The line-502 assert polls 0xe0c30004
++ * for bit 31 — host 0x00c30004 under the nibble rule that holds for WFSS_PMM — and every dump we have
++ * taken before the firmware runs shows the first four words of that block reading zero while the GDSCRs
++ * at +0xc4 and beyond read sanely. The new thing k55 gives us is a calibration that *works*: the firmware
++ * powers the radio for 3600 ms and never complains. So watch the same registers through both phases. If
++ * they come alive during the calibration and stay dead at mission INIT, whatever the firmware does to
++ * them is the thing we are missing; if they are dead in both, the address is not the one we think.
++ */
++static void
++wcss_cc_dump(const char *when)
++{
++	printf("SWEET WMI: WCSS_CC %s: +00 %#010x +04 %#010x +08 %#010x +0c %#010x | c4 %#010x c8 %#010x cc %#010x\n",
++	    when, win_rd(0x00c30000), win_rd(0x00c30004), win_rd(0x00c30008), win_rd(0x00c3000c),
++	    win_rd(0x00c300c4), win_rd(0x00c300c8), win_rd(0x00c300cc));
++}
++
+ static void
+ wmi_init(void)
+ {
+@@ -2423,6 +2440,11 @@ wmi_init(void)
+ 		delay(5000);
+ 	}
+ 	for (int ms = 0; ms < 400; ms += 10) {
++		if (ms % 40 == 0) {
++			char lbl[24];
++			snprintf(lbl, sizeof(lbl), "INIT +%d ms", ms);
++			wcss_cc_dump(lbl);
++		}
+ 		(void)er1_poll();
+ 		ce_poll();
+ 		pc_msleep(10);
+@@ -2619,6 +2641,7 @@ wifi_start(void)
+ 	}
+ 	if (fwmode == 7) {
+ 		printf("SWEET WLFW: cold boot calibration started\n");
++		wcss_cc_dump("calibration start");
+ 		/*
+ 		 * How much of the first pass is enough to poison the second. k39 settled that a first instance
+ 		 * which stops at `firmware init done` leaves a second instance that reaches HTC READY, WMI
+@@ -2632,6 +2655,11 @@ wifi_start(void)
+ 		uint32_t maxms = 30000;
+ 		(void)PE_parse_boot_argn("sweetcalwait", &maxms, sizeof(maxms));
+ 		for (uint32_t ms = 0; ms < maxms; ms += 100) {
++			if (ms && ms % 500 == 0) {
++				char lbl[24];
++				snprintf(lbl, sizeof(lbl), "cal +%u ms", ms);
++				wcss_cc_dump(lbl);
++			}
+ 			uint32_t st = rd(g_bar, 0x48);
+ 			if (st & 4u) {
+ 				printf("SWEET MHI: SYSERR in mhistatus %#x at +%u ms into calibration\n", st, ms);
+@@ -2639,6 +2667,7 @@ wifi_start(void)
+ 			}
+ 			if (g_q.caldone) {
+ 				printf("SWEET WLFW: *** cold boot calibration done after %u ms ***\n", ms);
++		wcss_cc_dump("calibration done");
+ 				break;
+ 			}
+ 			(void)er0_poll();

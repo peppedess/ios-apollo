@@ -1990,3 +1990,25 @@ that k50 got with a first pass that never calibrated at all. So the WMI_INIT fai
 calling "the uncalibrated radio" for six weeks is nothing of the kind: it survives a real calibration
 untouched, which means it is in what we send at INIT, or in what we leave out before it. That is the
 next thing, and it is a different problem from everything above.
+
+## 1223 — guardare il GDSC del WCSS nelle due fasi
+
+k55 changed what the WMI_INIT death means. The assert is the same one as ever — `cmnos_thread.c`,
+`Asserted in0x1503340s:502`, the single site in the image that loads 502, the poll of 0xe0c30004 with
+mask 0x80000000 inside `_whal_pmm_wlan_pwr_seq_hwdtim_sleep___RAM` — but it now arrives on a radio that
+has just been calibrated for 3600 ms and power-cycled, reached through a clean second firmware. k50 got
+the identical assert with a first pass that never calibrated. So the calibration was never what this was
+waiting for.
+
+What k55 does give us is a phase that works. The same firmware, told to calibrate, powers the radio and
+runs its sequences for 3600 ms without complaint; told to run mission, it dies 440 ms after INIT polling
+a GDSC. And k46's block dump says that before any firmware runs, the first four words of WCSS_CC —
+0x00c30000 to 0x00c3000c, which is where 0xe0c30004 lands under the nibble rule — all read zero, while
+the GDSCRs at +0xc4 (0x00222001), +0xc8 and +0xcc (both 0x80000000) read sanely.
+
+So sample those seven registers through both phases: at the start of the calibration, every 500 ms
+while it runs, when it finishes, and every 40 ms through the window after INIT. If they come alive
+during the calibration and stay dead at INIT, whatever the firmware does to them in calibration mode is
+the thing mission mode is missing. If they are dead in both, then 0x00c30004 is not where the firmware
+is looking and the nibble rule does not hold for this block — which is a different hunt, but a shorter
+one than the four weeks we have spent assuming it does.
