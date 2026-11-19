@@ -2075,3 +2075,24 @@ What is left to settle is the poll's polarity, and that is in ROM: the helper at
 outside the image. The way to read it without the ROM is to find another caller of the same helper whose
 register we can watch succeed — there are many in the power sequences — and infer the convention from a
 case that works. That is the next piece of work.
+
+## 1225 — la convenzione del poll, e il buco nei campioni
+
+Two call sites, the same register, and between them the helper's convention in full:
+
+```
+0156c420 (power-up, line 24)   r0 = 0xE0C300C4  r1 = 0x80000000  r2 = 0x80000000
+0156bf88 (sleep,  line 495)    r0 = 0xE0C300C4  r1 = 0x80000000  r2 = 0
+```
+
+So it waits for `(value & mask) == expected`: the power-up poll for PWR_ON set, the sleep poll for
+PWR_ON clear. No ROM needed after all.
+
+Which makes the sleep poll's timeout a contradiction, because our samples show PWR_ON clearing at
+INIT +80 ms and staying clear — exactly what it is waiting for. Except that those samples stop at
++360 ms and the assert lands at +440. Nobody has ever looked at the eighty milliseconds where it
+actually happens. `sweetgwatch=<ms>` samples the WLAN1 GDSCR, its neighbour at 0x00c30108, the WLAN2
+GDSCR and WFSS_PMM 0x00b60178 every 10 ms, printing only on change, for as long as asked.
+
+k60, for the record, held the MHI device wake asserted across INIT (`sweetwake=1`, the opposite of what
+1179 settled on) and changed nothing: same +80 ms collapse, same assert.

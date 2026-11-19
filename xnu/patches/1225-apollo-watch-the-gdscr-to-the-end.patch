@@ -1,0 +1,37 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 7613a12..5ca314d 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2450,6 +2450,32 @@ wmi_init(void)
+ 	}
+ 	uint32_t poke = 0;
+ 	(void)PE_parse_boot_argn("sweetpoke108", &poke, sizeof(poke));
++	/*
++	 * And watch the GDSCR itself to the very end, not to +360. The two call sites settle the convention:
++	 * the power-up poll at 0x156c420 passes r0=0xE0C300C4, r1=0x80000000, r2=0x80000000, and the sleep
++	 * poll at 0x156bf88 passes the same address and mask with r2=0. So the helper waits for
++	 * (value & mask) == expected, and the sleep is waiting for PWR_ON to clear — which is what our
++	 * samples show it doing at +80 ms. The gap in that reasoning is everything after +360 ms, where we
++	 * have never looked and where the assert actually lands. sweetgwatch=<ms> samples every 10 ms for that
++	 * long, printing only when something changes.
++	 */
++	uint32_t gw = 0;
++	(void)PE_parse_boot_argn("sweetgwatch", &gw, sizeof(gw));
++	if (gw) {
++		uint32_t last = 0, last8 = 0;
++		for (uint32_t ms = 0; ms < gw; ms += 10) {
++			uint32_t v = win_rd(0x00c300c4), v8 = win_rd(0x00c30108);
++			if (v != last || v8 != last8) {
++				printf("SWEET GDSC: +%u ms: WLAN1 %#010x, 0x108 %#010x, WLAN2 %#010x, pmm178 %#010x\n",
++				    ms, v, v8, win_rd(0x00c30138), win_rd(0x00b60178));
++				last = v; last8 = v8;
++			}
++			(void)er1_poll();
++			ce_poll();
++			pc_msleep(10);
++		}
++		printf("SWEET GDSC: window over, firmware %s\n", g_sysfail ? "DEAD" : "alive");
++	}
+ 	for (int ms = 0; ms < 400; ms += 10) {
+ 		/*
+ 		 * And, if asked, take the one register that does have bit 31 standing and ask it to collapse,
