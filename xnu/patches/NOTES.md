@@ -2235,3 +2235,17 @@ La casella mai provata è quindi «niente wake **e** zero MMIO». `sweetsilence=
 completamente per quel tempo dopo l'INIT: niente WCSS, niente MHI, niente copy engine, niente. Il
 WMI READY resta nel ring e lo leggiamo quando torniamo. `sweetwcss=1` rimette il dump dei 40 ms per
 quando vogliamo davvero guardare.
+
+## 1230 — il testimone letto dopo il silenzio
+
+Le prove sul telefono sono la risorsa scarsa: ognuna vuole dieci minuti e un tap sul telefono. 1228 e
+1229 chiedevano due run perché la lettura del testimone, se fatta *durante* la finestra, è esattamente
+la cosa che 1229 sospetta sia la causa del guasto.
+
+Ma dopo il silenzio quel conflitto non c'è più: la finestra del collasso è passata, e leggere i nove
+registri lì non può aver bloccato niente. Quindi `sweetsilence` ora, quando ha finito, li legge una volta
+sola. Un solo run dice tutt'e due le cose: se il silenzio fa passare l'INIT, e se `0x00b700c4` tiene il
+15 che il firmware ci mette due pacchetti prima di cominciare a interrogare il GDSCR — cioè se la regola
+del nibble vale anche per il Q6 o se abbiamo guardato la metà sbagliata del chip.
+
+La lista dei nove registri diventa `pmm_regs`, condivisa fra le due strade.

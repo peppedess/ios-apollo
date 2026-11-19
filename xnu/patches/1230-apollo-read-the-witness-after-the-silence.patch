@@ -1,0 +1,66 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 28678f3..9251faf 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2003,6 +2003,17 @@ gdsc_peek(const char *when)
+  * they come alive during the calibration and stay dead at mission INIT, whatever the firmware does to
+  * them is the thing we are missing; if they are dead in both, the address is not the one we think.
+  */
++/*
++ * The nine registers the sleep sequence at 0x156bdc4 writes or polls, in host spelling. 0x00b700c4 is
++ * the witness: the firmware puts a 15 there two packets before it starts polling the GDSCR, and nothing
++ * else in the sequence is recognisable from outside without ambiguity.
++ */
++static const uint32_t pmm_regs[] = {
++	0x00b700c4, 0x00c300c4, 0x00b60088, 0x00b600f8,
++	0x00b5ff88, 0x00b6203c, 0x00b600a4, 0x00b600cc, 0x00b70000,
++};
++#define PMM_N   ((uint32_t)(sizeof(pmm_regs) / sizeof(pmm_regs[0])))
++
+ static void
+ wcss_cc_dump(const char *when)
+ {
+@@ -2557,12 +2568,9 @@ wmi_init(void)
+ 	uint32_t pmmw = 0;
+ 	(void)PE_parse_boot_argn("sweetpmm", &pmmw, sizeof(pmmw));
+ 	if (pmmw) {
+-		static const uint32_t pr[] = {
+-			0x00b700c4, 0x00c300c4, 0x00b60088, 0x00b600f8,
+-			0x00b5ff88, 0x00b6203c, 0x00b600a4, 0x00b600cc, 0x00b70000,
+-		};
+-		const uint32_t n = (uint32_t)(sizeof(pr) / sizeof(pr[0]));
+-		uint32_t last[sizeof(pr) / sizeof(pr[0])];
++		const uint32_t *pr = pmm_regs;
++		const uint32_t n = PMM_N;
++		uint32_t last[PMM_N];
+ 		for (uint32_t i = 0; i < n; i++) {
+ 			printf("SWEET PMM: probing %#010x\n", pr[i]);
+ 			last[i] = win_rd(pr[i]);
+@@ -2570,7 +2578,7 @@ wmi_init(void)
+ 		}
+ 		printf("SWEET PMM: all %u readable, sampling every 2 ms for %u ms\n", n, pmmw);
+ 		for (uint32_t ms = 0; ms < pmmw; ms += 2) {
+-			uint32_t v[sizeof(pr) / sizeof(pr[0])];
++			uint32_t v[PMM_N];
+ 			int ch = 0;
+ 			for (uint32_t i = 0; i < n; i++) {
+ 				v[i] = win_rd(pr[i]);
+@@ -2618,6 +2626,18 @@ wmi_init(void)
+ 			pc_msleep(10);
+ 		}
+ 		printf("SWEET QUIET: %u ms of silence over, looking again\n", sil);
++		/*
++		 * And now, once, read the registers the sleep sequence writes. Reading them here cannot have
++		 * blocked anything — the collapse window is already past — so this says what the chip settled
++		 * into, including whether 0x00b700c4 is holding the 15 the firmware puts there just before it
++		 * starts polling. That is the witness for the address map, and it costs nothing to collect.
++		 */
++		for (uint32_t i = 0; i < PMM_N; i++) {
++			printf("SWEET PMM: after the silence: %#010x = %#010x%s\n", pmm_regs[i],
++			    win_rd(pmm_regs[i]),
++			    (pmm_regs[i] == 0x00b700c4 && win_rd(pmm_regs[i]) == 15u) ?
++			    "   <<< the witness, 15" : "");
++		}
+ 	}
+ 	uint32_t wcsswatch = 0;
+ 	(void)PE_parse_boot_argn("sweetwcss", &wcsswatch, sizeof(wcsswatch));
