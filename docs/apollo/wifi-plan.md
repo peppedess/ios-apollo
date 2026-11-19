@@ -189,3 +189,75 @@ The firmware dies inside `_whal_pmm_wlan_pwr_seq_hwdtim_sleep`, polling
 firmware wants to sleep; something keeps the domain up. MHI's device wake is a host vote to keep the chip
 in M0, and we have been holding it asserted across `WMI_INIT` since 1172, on the opposite theory. 1179
 deasserts it.
+
+## Dove siamo, 19 novembre 2026 — e cosa resta per davvero
+
+### Fatto, e verificato sul telefono
+
+1. **PCIe**: rail, clock, PHY, link training, BAR0, iATU, SMMU. Il chip enumera come 17cb:1101.
+2. **MHI**: download del firmware via BHI e BHIe, anelli di comando e di evento, canali IPCR 20/21.
+3. **QRTR e QMI WLFW**: host_cap, richiesta e consegna della memoria, BDF (`bd_j3sgl.elf`) più regdb,
+   immagine m3, capability.
+4. **Doppio passaggio** (oggi): calibrazione a freddo completa in 3600 ms, power cycle vero del chip
+   (rail e clock ritirati, marcatore in WLAON che sparisce), secondo firmware pulito.
+5. **Copy engine e HTC**: `HTC READY`, servizi 0x100 e 0x300 sui loro endpoint.
+6. **WMI**: `service ready` con 2 catene RF, `WMI_INIT` inviato e accettato.
+
+### Il blocco
+
+440 ms dopo `WMI_INIT` il firmware asserisce dentro `_whal_pmm_wlan_pwr_seq_hwdtim_sleep___RAM`. Dalla
+mappa estratta oggi dal binario, quella funzione:
+
+```
+0156bf20  scrive 0xf in 0xE0C300C4 (GDSCR di WLAN1)
+0156bf50  tocca 0xE0B60148 e 0xE0B60178 (WFSS_PMM)
+0156bf88  poll su 0xE0C300C4, maschera 0x80000000, con "WCSS_CC_WCSS_WLAN1_GDSCR/PWR_ON" e riga 495
+0156bfb0  se il poll torna -1 → assert riga 502
+```
+
+Dal lato host quel collasso **avviene**: 0x00c300c4 passa da 0xa0223800 a 0x00222001 a +80 ms, e lo
+stesso fa WLAN2. Il firmware però non se ne accorge. Le ipotesi ancora in piedi sono due: la polarità del
+poll non è quella che leggiamo (l'helper fa tail-call in ROM a 0x880f24, fuori dall'immagine, quindi non
+è leggibile staticamente), oppure il Q6 legge quei registri attraverso un bus che in quel momento non
+risponde — nel qual caso l'host vede la verità e lui no.
+
+La via per risolverlo senza la ROM: la mappa di oggi elenca una trentina di altri poll nelle stesse
+sequenze (`UMCMN_R1_UMAC_IDLE_GEN_INTF_STATUS`, `WFSS_PMM_R0_WLAN1_APS_STATUS_REG1`,
+`WFSS_PMM_R0_WLAN1_STATUS_REG2/WLAN1_SM`, `HWSCH_R0_FLUSH_STATUS`…), molti dei quali il firmware
+**supera** durante la calibrazione. Campionando quei registri mentre li supera si ricava la convenzione
+dell'helper da un caso che funziona, e da lì si sa cosa aspetta davvero quello che fallisce.
+
+### Cosa resta dopo il blocco
+
+Questa è la parte che vale la pena guardare per intero, perché il blocco è il primo di cinque pezzi e non
+il più grande:
+
+1. **WMI READY e configurazione del pdev** — `PDEV_SET_HW_MODE`, i parametri del pdev, la tabella
+   regolatoria (paese, canali permessi). Centinaia di righe, meccaniche.
+2. **vdev e scansione** — `VDEV_CREATE`, `VDEV_START`, `VDEV_UP` e la scansione: il codice della
+   scansione è già scritto (`wifi_scan`, patch 1144) e non è mai stato eseguito. Qui si vedrebbero le
+   prime reti.
+3. **Autenticazione e associazione** — in Linux questo è mac80211 più wpa_supplicant. Qui non c'è né
+   l'uno né l'altro: vanno scritti a mano l'invio dei frame di management via WMI, la macchina a stati di
+   auth/assoc, e per WPA2 il four-way handshake completo, cioè derivazione PMK e PTK (PBKDF2-SHA1,
+   SHA1-PRF), AES key wrap, e l'installazione delle chiavi con `VDEV_INSTALL_KEY`. È il pezzo più
+   delicato.
+4. **Il percorso dati (HTT)** — gli anelli REO e WBM, Rx e Tx, i messaggi HTT host↔target. In ath11k sono
+   `dp.c`, `dp_rx.c`, `dp_tx.c`: migliaia di righe, ed è il pezzo più grosso di tutti. Senza questo il
+   telefono può associarsi ma non passa un pacchetto.
+5. **L'integrazione iOS** — un'interfaccia di rete `en0` che XNU riconosca, e poi Apple80211 e `wifid` se
+   si vuole la UI di sistema. In alternativa si salta `wifid` e si fissa una rete nel driver: molto meno
+   lavoro, e sufficiente per un "ping che passa".
+
+### Il traguardo onesto
+
+"Il wifi funziona" nel senso della UI di iOS è lontano. Il traguardo giusto da puntare, nell'ordine, è:
+
+- **A**: superare l'assert e vedere `WMI READY` — è il lavoro in corso;
+- **B**: una scansione che stampa gli SSID di casa — il codice c'è già, servono i passi 1 e 2;
+- **C**: associazione a una rete aperta e poi WPA2 — il passo 3;
+- **D**: un ping — il passo 4;
+- **E**: `en0` in iOS — il passo 5.
+
+Da A a B è una giornata di lavoro una volta sbloccato A. Da B a D sono settimane, non ore, e il grosso
+è il percorso dati.
