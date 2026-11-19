@@ -1,0 +1,46 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 5a97f04..36faa6f 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -4081,6 +4081,20 @@ pcie_bringup(uint32_t step)
+ static void
+ wlan_power_down(void)
+ {
++	/*
++	 * A marker in WLAON, to settle whether that domain actually loses its supply. WLAON survives the
++	 * chip's own power collapse by design, so if it keeps a value we wrote before the rails came down,
++	 * the rails did not really come down — somebody else is voting for vdd-wlan-aon — and every
++	 * conclusion that rests on "the chip power-cycled" has to be re-read. 0x1f80024 is a GDSC delay
++	 * setting, read back as 0x25112222 on a fresh chip; the second pass prints it in its dump and puts
++	 * it back if it finds the marker.
++	 */
++	uint32_t mark = 1;
++	(void)PE_parse_boot_argn("sweetmark", &mark, sizeof(mark));
++	if (mark) {
++		win_wr(0x1f80024, 0x5a5a5a5au);
++		printf("SWEET PCIE: WLAON marker written, 0x1f80024 reads %#010x\n", win_rd(0x1f80024));
++	}
+ 	uint32_t pc = win_rd(0x1f8031c);
+ 	win_wr(0x1f8031c, pc | 1u);                                     /* cnss writes 0x3 over the 0x2 it finds */
+ 	printf("SWEET MHI: power down: mhistatus %#x, WLAON_QFPROM_PWR_CTRL %#x -> %#x\n", rd(g_bar, 0x48), pc,
+@@ -4118,20 +4132,6 @@ wlan_power_down(void)
+ 		unvote("lnbclka2");
+ 		unvote("lnbclka3");
+ 	}
+-	/*
+-	 * A marker in WLAON, to settle whether that domain actually loses its supply. WLAON survives the
+-	 * chip's own power collapse by design, so if it keeps a value we wrote before the rails came down,
+-	 * the rails did not really come down — somebody else is voting for vdd-wlan-aon — and every
+-	 * conclusion that rests on "the chip power-cycled" has to be re-read. 0x1f80024 is a GDSC delay
+-	 * setting, read back as 0x25112222 on a fresh chip; the second pass prints it in its dump and puts
+-	 * it back if it finds the marker.
+-	 */
+-	uint32_t mark = 1;
+-	(void)PE_parse_boot_argn("sweetmark", &mark, sizeof(mark));
+-	if (mark) {
+-		win_wr(0x1f80024, 0x5a5a5a5au);
+-		printf("SWEET PCIE: WLAON marker written, 0x1f80024 reads %#010x\n", win_rd(0x1f80024));
+-	}
+ 	uint32_t down = 1000;
+ 	(void)PE_parse_boot_argn("sweetdowntime", &down, sizeof(down));
+ 	pc_msleep(down);

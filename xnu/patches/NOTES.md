@@ -1881,3 +1881,20 @@ is also what happens when you take its clock away, so it proves less than it loo
 0x5a5a5a5a into WLAON's GDSC delay register before the rails come down. WLAON is the domain that survives
 the chip's own collapse by design: if it still holds the marker on the second pass, vdd-wlan-aon never
 went away, somebody else is voting for it, and the fuse array is simply never being re-sensed.
+
+## 1219 — il marcatore, stavolta mentre il chip è ancora vivo
+
+k51 wrote the WLAON marker after the rails, the clocks and the GPIOs had already gone down, so the write
+went into a dead bus and read back 0xffffffff; the second pass then found the register at its ordinary
+0x25112222 and the test said nothing. Moved to the top of `wlan_power_down`, before MHICTRL RESET and
+before PERST#, where the chip is still answering.
+
+k51 did confirm the symptom once more, in the two capability dumps of the same boot:
+
+```
+pass 1   cap +090: 04 00 b4 03 00 00 17 04 00 00 f8 24 01 18 04 00 1d 00 48 00
+pass 2   cap +090: 04 00 b4 03 00 00 17 04 00 00 f8 24 01
+```
+
+Same chip, same boot, twenty seconds apart: the first firmware reports otp_version 0x48001d, the second
+stops at time_freq_hz and has no 0x18 at all.
