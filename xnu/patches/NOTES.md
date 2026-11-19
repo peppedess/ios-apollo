@@ -2044,3 +2044,34 @@ what a "wait for PWR_ON to clear" would want. Its neighbour 0x00c30108 is the on
 0x80000220, bit 31 and all. So sample the registers the firmware actually names, every 40 ms through the
 INIT window, and offer `sweetpoke108=<ms>` to set SW_COLLAPSE on 0x00c30108 while it waits: if the
 firmware then walks past the poll, the mapping is off by one register and we have the answer.
+
+## k57-k59 — cosa fa davvero la sequenza di sleep
+
+With the registers the firmware names, sampled through both phases, the timeline after WMI INIT is no
+longer inference:
+
+```
+            0xc30104   0xc30108    WLAN1 c4    WLAN2 138   pmm 178
+cal + INIT+40   0      0x00000f11  0xa0223800  0xa0223800  0x40000001
+INIT +80 ms     0      0x80000220  0x00222001  0x00222001  0x7c000000
+... unchanged until the assert at +440 ms
+```
+
+Both WLAN GDSCs are powered through the whole calibration and collapse 80 ms after INIT, exactly as a
+sleep sequence wants. The register that moves the other way is 0x00c30108: bit 31 comes **up** at the
+same moment and never goes down again. 0x00c30104 — the address the poll names, under the nibble rule —
+reads zero from here throughout.
+
+k58 set SW_COLLAPSE on 0x00c30108 from the host while the firmware waited: it took the write
+(0x80000220 -> 0x80000221) and PWR_ON stayed up regardless. That domain will not collapse even when
+asked directly.
+
+k59 gave the firmware a silent 1500 ms after INIT — no MMIO at all, only MHISTATUS — in case our 10 ms
+polling was keeping the chip out of the state its sleep sequence needs. Same assert, same place. (The
+WLAON debug word does run freely through that window, so the chip is alive and clocked while it waits.)
+
+What is left to settle is the poll's polarity, and that is in ROM: the helper at 0x156c17c passes
+(addr, mask, expected, 100 µs, 1000 tries, name) to a thunk at 0x14fc904 that tail-jumps to 0x880f24,
+outside the image. The way to read it without the ROM is to find another caller of the same helper whose
+register we can watch succeed — there are many in the power sequences — and infer the convention from a
+case that works. That is the next piece of work.
