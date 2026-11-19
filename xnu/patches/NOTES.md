@@ -2120,3 +2120,32 @@ Both addresses in the crash record are stripped file and function pointers, so t
 the identification there is. Before spending more boots on inference: dump the 384 bytes around the
 record as hex and ASCII. The assert structure carries more than the text we have been printing, and
 whatever it was polling may be sitting in the words next to it.
+
+## k62-k63 — il record intero, e l'ASPM
+
+k62 dumped the crash record as hex instead of one text run, and the structure is:
+
+```
++2ffe80  "Asserted in0x1503340s:502"
++2ffe9c  01499608  008a8594  01503340  01530258
++2ffeac  0152fb14  000001f6 (=502)  0000001c  0000001c
+```
+
+0x1503340 and 0x1530258 are the stripped file and function pointers (0x1503340 lands in an assert
+dispatch table whose slots are lines 242, 265, 434, 401, 462, 538, 553 — not 502, so it is a pointer and
+not the site). The new one is **0x0152fb14**, which disassembles inside a callback dispatcher — a loop of
+`callr` over a list — so the assert comes from a function invoked through a table, which is how the power
+sequences are run.
+
+k63 turned the ASPM L1 substates off, on the theory that a link dropping into L1.2 could be why the Q6's
+reads of WCSS_CC come back stale while ours do not. It did not get far enough to tell: the first pass
+calibrates (3800 ms), the second bring-up starts, and the thread stops at `BHI next` — iOS carries on
+logging, so it is our wifi thread hanging in the second BHI download, not a crash. So the L1 substate
+configuration matters to the second bring-up as well; `sweetaspm=0` is not usable as it stands.
+
+Where that leaves the blocker: the poll's convention is known, the register's value is known and correct
+for 900 ms, the firmware's own writes land where we read, and its reads do not agree. Patching the
+firmware to skip the assert is not available — amss20.bin is signed and the PBL verifies it. The next
+angles are (a) what the stock host does differently to the WCSS access path around INIT, from the Android
+log, and (b) sampling the registers of a poll that *succeeds* in the same sequence, to see whether the
+Q6's view of WCSS_CC is ever in agreement with ours.
