@@ -2390,3 +2390,30 @@ Errore mio: una scansione cieca senza briciole. 1235 la cammina una pagina da 25
 stampa la pagina *prima* di leggerla — il log va su UFS ogni due secondi, quindi la briciola sopravvive
 al blocco. Il campo di default scende a 4 KiB, cioè la zona da cui leggiamo già registri singoli senza
 problemi; `sweettickn` lo allarga a pagine, una volta saputo dov'è il muro.
+
+## k74 — il clock c'è: leggevamo l'indirizzo sbagliato
+
+Prime 4 KiB di WLAON, lette due volte a 200 ms di distanza, una pagina alla volta. Si sono mosse
+esattamente due parole:
+
+	0x01f80108  0x07c36f57 -> 0x08023d99   delta 4116034   ~20.58 MHz
+	0x01f80908  0x07c561b4 -> 0x0804304e   delta 4116122   ~20.58 MHz
+
+Il contatore always-on sta a **0x1f80108**, non a 0x1f80118, e il suo specchio a +0x800. Gira, e gira a
+19.2 MHz entro l'errore del nostro `pc_msleep(200)`. Quindi il `0 Hz` che ci portavamo dietro da giorni
+era solo il nostro indirizzo sbagliato di 0x10: **il clock del dominio always-on non è mai stato fermo**,
+e anche la teoria dell'orologio morto cade.
+
+Il quadro che resta, tutto misurato:
+
+- il GDSC collassa a +56 ms, sul registro che il firmware interroga, nello stato che aspetta;
+- il firmware asserisce a +93 ms, cioè alla scadenza dei suoi 100 ms di poll;
+- la grafia spostata di 64 KiB è morta (0x00c200c4 non si muove mai);
+- il clock always-on gira.
+
+Non resta che la lettura del Q6 che vede altro. Quindi stessa strategia che ha funzionato per il PMM:
+che risponda il chip. 1236 rende paginato anche il diff della finestra, con le briciole e con
+`sweetdiffskip`/`sweetdiffpages`, così si può spazzare la finestra 0x18 — quella di WCSS_CC, dove sta
+lo 0xc30004 che bloccò k13n — senza perdere il run quando si incontra il muro. Quello che cerchiamo è
+una seconda parola con la forma di un GDSCR che, mentre 0x00c300c4 collassa, resta con PWR_ON a uno:
+quella sarebbe la vista del Q6.

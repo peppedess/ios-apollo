@@ -1,0 +1,95 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 1822219..c643234 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2053,7 +2053,7 @@ gdsc_peek(const char *when)
+ #define DIFF_WORDS      (0x80000u / 4u)
+ static uint32_t g_diffbuf[DIFF_WORDS];
+ static uint8_t g_difftick[DIFF_WORDS / 8];
+-static uint32_t g_diffbase;
++static uint32_t g_diffbase, g_difflo, g_diffhi;
+ 
+ static void
+ diff_snap(void)
+@@ -2061,12 +2061,29 @@ diff_snap(void)
+ 	uint32_t win = 0x16;    /* 0x00b00000: every WFSS_PMM address the sequence names lives here */
+ 	(void)PE_parse_boot_argn("sweetdiffwin", &win, sizeof(win));
+ 	g_diffbase = win * 0x80000u;
++	/*
++	 * Paged, like the WLAON sweep, and for the same reason: window 0x18 holds 0xc30004, which hung the
++	 * phone in k13n, and that window is now exactly where we need to look. Each page is named before it
++	 * is read, the log reaches UFS every two seconds, so a hang tells us which page is the wall and
++	 * sweetdiffskip starts the next run past it.
++	 */
++	uint32_t skip = 0, pages = DIFF_WORDS / 256u;
++	(void)PE_parse_boot_argn("sweetdiffskip", &skip, sizeof(skip));
++	(void)PE_parse_boot_argn("sweetdiffpages", &pages, sizeof(pages));
++	g_difflo = skip * 256u;
++	g_diffhi = g_difflo + pages * 256u;
++	if (g_diffhi > DIFF_WORDS) {
++		g_diffhi = DIFF_WORDS;
++	}
+ 	memset(g_difftick, 0, sizeof(g_difftick));
+-	for (uint32_t i = 0; i < DIFF_WORDS; i++) {
++	for (uint32_t i = g_difflo; i < g_diffhi; i++) {
++		if (i % 1024u == 0u) {
++			printf("SWEET DIFF: reading page %#010x\n", g_diffbase + 4u * i);
++		}
+ 		g_diffbuf[i] = win_rd(g_diffbase + 4u * i);
+ 	}
+ 	uint32_t ticking = 0, dead = 0;
+-	for (uint32_t i = 0; i < DIFF_WORDS; i++) {
++	for (uint32_t i = g_difflo; i < g_diffhi; i++) {
+ 		uint32_t v = win_rd(g_diffbase + 4u * i);
+ 		if (v != g_diffbuf[i]) {
+ 			g_difftick[i / 8u] |= (uint8_t)(1u << (i % 8u));
+@@ -2078,14 +2095,14 @@ diff_snap(void)
+ 		}
+ 	}
+ 	printf("SWEET DIFF: window %#x (%#x..%#x) taken twice: %u words tick on their own, %u read deadc0de\n",
+-	    win, g_diffbase, g_diffbase + 0x80000u - 4u, ticking, dead);
++	    win, g_diffbase + 4u * g_difflo, g_diffbase + 4u * g_diffhi - 4u, ticking, dead);
+ }
+ 
+ static void
+ diff_show(const char *when)
+ {
+ 	uint32_t changed = 0, shown = 0;
+-	for (uint32_t i = 0; i < DIFF_WORDS; i++) {
++	for (uint32_t i = g_difflo; i < g_diffhi; i++) {
+ 		uint32_t v = win_rd(g_diffbase + 4u * i);
+ 		if (v == g_diffbuf[i] || (g_difftick[i / 8u] & (1u << (i % 8u)))) {
+ 			continue;
+@@ -2517,7 +2534,10 @@ wmi_init(void)
+ 		if (pwr) {
+ 		/*
+ 		 * Measure WLAON's own counter against ours. GLOBAL_COUNTER_CTRL5 (0x1f80120) is the enable
+-		 * — 0 clears, 0x80000000 runs — and CTRL3/CTRL4 (0x1f80118/0x1f8011c) are the low and high
++		 * — 0 clears, 0x80000000 runs — and the counter itself is at 0x1f80108, not 0x1f80118: k74 swept
++		 * the first 4 KiB of WLAON twice 200 ms apart and exactly two words moved, 0x1f80108 and its
++		 * mirror at 0x1f80908, both by 4116034 ticks, which is 19.2 MHz within the error of our sleep.
++		 * The always-on clock was running all along; the "0 Hz" was this address being wrong. Low and high
+ 		 * halves, exactly as cnss_pci_get_device_timestamp reads them. The firmware told us in the
+ 		 * capability response what rate it expects; sample the counter across 100 ms of our own time
+ 		 * and compare. The GDSC power-down handshake is timed in WLAON, by this clock, and the
+@@ -2527,9 +2547,9 @@ wmi_init(void)
+ 		 */
+ 		win_wr(0x1f80120, 0);
+ 		win_wr(0x1f80120, 0x80000000u);
+-		uint32_t c0lo = win_rd(0x1f80118), c0hi = win_rd(0x1f8011c);
++		uint32_t c0lo = win_rd(0x1f80108), c0hi = win_rd(0x1f8010c);
+ 		pc_msleep(100);
+-		uint32_t c1lo = win_rd(0x1f80118), c1hi = win_rd(0x1f8011c);
++		uint32_t c1lo = win_rd(0x1f80108), c1hi = win_rd(0x1f8010c);
+ 		uint64_t t0 = ((uint64_t)c0hi << 32) | c0lo, t1 = ((uint64_t)c1hi << 32) | c1lo;
+ 		printf("SWEET PWR: WLAON counter %llu -> %llu in 100 ms = %llu Hz, firmware expects %u Hz\n",
+ 		    t0, t1, (t1 - t0) * 10ull, g_timefreq);
+@@ -2657,7 +2677,7 @@ wmi_init(void)
+ 			    (st >> 8) & 0xffu);
+ 		}
+ 		if (pwr) {
+-			uint32_t elo = win_rd(0x1f80118), ehi = win_rd(0x1f8011c);
++			uint32_t elo = win_rd(0x1f80108), ehi = win_rd(0x1f8010c);
+ 			printf("SWEET PWR: WLAON counter after the window %llu, soc_power_ctrl %#x\n",
+ 			    ((uint64_t)ehi << 32) | elo, win_rd(0x1f80000));
+ 		}
