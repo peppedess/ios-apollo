@@ -2514,3 +2514,31 @@ calibration start e done nel passaggio 1, `firmware init done` in tutt'e due i p
 dopo l'INIT di missione. Se al `firmware init done` del secondo passaggio i quattro rami sono già
 fermi, la perdita è nel ciclo di alimentazione; se girano ancora lì e sono fermi prima dell'INIT, è in
 mezzo.
+
+## k80 — la sequenza completa, e i quattro rami sono un sintomo
+
+	48.721  firmware init done (passaggio 1)   e0 0x80000001  e4 0x80000001   fermi
+	48.865  calibration start                  e0 0x00000001  e4 0x00000001   GIRANO
+	52.500  calibration done                   e0 0x00000001  e4 0x00000001   girano
+	57.750  before the power-down              e0 0x00000001  e4 0x00000001   girano
+	58.802  *** secondo bring-up ***
+	70.579  firmware init done (passaggio 2)   e0 0x80000001  e4 0x80000001   fermi
+	70.885  before INIT                        e0 0x80000001  e4 0x80000001   fermi
+	71.417  after INIT                         e0 0x80000000  e4 0x80000000   spenti
+
+Sono fermi al `firmware init done` di **tutt'e due** i passaggi, e partono quando parte la calibrazione.
+Cioè: i branch clock della radio girano quando il firmware sta calibrando e non quando sta fermo prima
+della missione — che è esattamente l'aspetto che deve avere una radio inattiva. Sono un sintomo, non la
+causa. Terza ipotesi caduta in due run.
+
+Il che rimette al centro l'unico fatto che continua a non entrarci: il GDSCR a 0x00c300c4 va a
+0x00222001 a +56 ms, PWR_ON a zero, e ci resta per i 900 ms successivi, mentre il firmware interroga
+quello stesso indirizzo per quello stesso bit e va in timeout.
+
+Allora azzeriamolo noi, prima dell'INIT, e che il firmware trovi la condizione già soddisfatta.
+Scrivere SW_COLLAPSE è esattamente quello che fa la sua sequenza cinquanta millisecondi dopo, quindi
+non si chiede all'hardware niente che non stesse per essergli chiesto comunque.
+
+- Se l'assert sparisce, il registro era quello giusto e il problema era tutto nei tempi.
+- Se il 502 torna identico con PWR_ON già a zero alla prima lettura, allora l'indirizzo che il Q6
+  interroga **non è** quello che guardiamo da settimane, e continuare a leggerlo non lo dirà mai.

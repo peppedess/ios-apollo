@@ -1,0 +1,48 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 97bd2ed..7267c3d 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2472,6 +2472,43 @@ wmi_init(void)
+ 		}
+ 		printf("SWEET WMI: WLAON_QFPROM_PWR_CTRL before INIT %#x -> %#x\n", pc, win_rd(0x1f8031c));
+ 		cbcr_dump("before INIT");
++		/*
++		 * The test that settles it.
++		 *
++		 * k80 has the whole sequence now: 0xc300e0 and 0xc300e4 are stopped at `firmware init done` in
++		 * both passes, start when calibration starts, run through calibration and all the way to the
++		 * power-down, and are stopped again at the second `firmware init done` and never start. So the
++		 * radio's branch clocks run when the firmware is calibrating and not when it is idling before
++		 * mission, which is what an idle radio ought to look like. They are a symptom, not the cause.
++		 *
++		 * Which puts us back on the one fact that has refused to fit: the GDSCR at 0x00c300c4 goes to
++		 * 0x00222001 at +56 ms, PWR_ON clear, and stays there for the next 900 ms, while the firmware
++		 * polls that same address for that same bit and times out. Either it is not reading what we are
++		 * reading, or it is, and something else is wrong.
++		 *
++		 * So clear it ourselves, before INIT, and let the firmware find its condition already met.
++		 * Writing SW_COLLAPSE is precisely what the firmware's own sequence does fifty milliseconds
++		 * later, so this asks the hardware for nothing it was not about to be asked for anyway. If the
++		 * assert goes away, the register was the right one and the timing was the whole story. If 502
++		 * comes back unchanged with PWR_ON already at zero on the first read, then the address the Q6
++		 * polls is not the address we have been watching, and no amount of reading it will ever say so.
++		 */
++		uint32_t coll = 0;
++		(void)PE_parse_boot_argn("sweetcollapse", &coll, sizeof(coll));
++		if (coll) {
++			uint32_t g1 = win_rd(0x00c300c4), g2 = win_rd(0x00c30138);
++			win_wr(0x00c300c4, g1 | 1u);
++			win_wr(0x00c30138, g2 | 1u);
++			uint32_t ms = 0;
++			for (; ms < 200u; ms++) {
++				if (!(win_rd(0x00c300c4) & 0x80000000u)) {
++					break;
++				}
++				pc_msleep(1);
++			}
++			printf("SWEET COLLAPSE: WLAN1 %#010x -> %#010x, WLAN2 %#010x -> %#010x, PWR_ON clear after "
++			    "%u ms\n", g1, win_rd(0x00c300c4), g2, win_rd(0x00c30138), ms);
++		}
+ 	}
+ 	/*
+ 	 * Read the register the firmware dies on, from the other side.
