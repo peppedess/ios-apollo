@@ -2501,3 +2501,16 @@ La loro sorgente muore fra i due passaggi, cioè attraverso il nostro ciclo di a
 roba nostra, non del firmware. 1241 stampa gli stessi registri in altri quattro punti (prima e dopo il
 power-down, appena WLAN_EN torna su, e a `firmware init done`) per inchiodare il momento esatto in cui
 si fermano.
+
+## k79 — due letture messe dove il bus non c'è
+
+k79 si è fermato a 36.8 secondi, molto prima della bring-up. Colpa di 1241: aveva una `cbcr_dump`
+subito dopo il ciclo di WLAN_EN e una dopo `wlan_power_down`, e in tutt'e due i punti il link PCIe è
+giù — non c'è BAR attraverso cui leggere una finestra. Stesso errore della marcatura WLAON di 1218,
+rifatto un mese dopo.
+
+Tolte. Restano i punti dove la finestra funziona davvero, e bastano a inquadrare la domanda:
+calibration start e done nel passaggio 1, `firmware init done` in tutt'e due i passaggi, poi prima e
+dopo l'INIT di missione. Se al `firmware init done` del secondo passaggio i quattro rami sono già
+fermi, la perdita è nel ciclo di alimentazione; se girano ancora lì e sono fermi prima dell'INIT, è in
+mezzo.

@@ -1,0 +1,34 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index f2663c2..97bd2ed 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2204,6 +2204,13 @@ static const uint32_t pmm_regs[] = {
+ static void
+ cbcr_dump(const char *when)
+ {
++	/*
++	 * Only where the window actually works. k79 put one of these right after the WLAN_EN cycle and one
++	 * after wlan_power_down, and the boot stopped at 36.8 s, long before the bring-up: at both of those
++	 * points the PCIe link is down and there is no BAR to read a window through. What is left brackets
++	 * the question anyway — calibration start and done in pass 1, `firmware init done` in both passes,
++	 * then before and after the mission INIT.
++	 */
+ 	printf("SWEET CBCR: %s: WLAN1 gdsc %#010x | c8 %#010x cc %#010x | d0 %#010x d4 %#010x d8 %#010x "
+ 	    "dc %#010x | e0 %#010x e4 %#010x e8 %#010x\n", when, win_rd(0x00c300c4), win_rd(0x00c300c8),
+ 	    win_rd(0x00c300cc), win_rd(0x00c300d0), win_rd(0x00c300d4), win_rd(0x00c300d8),
+@@ -4540,7 +4547,6 @@ pcie_bringup(uint32_t step)
+ 	gpio_out(GPIO_WLAN_EN, 1);
+ 	pc_msleep(100);
+ 	printf("SWEET PCIE: WLAN_EN%s cycled, PERST# low, WAKE# reads %d\n", bten ? " and BT_EN" : "", gpio_in(GPIO_WAKE));
+-	cbcr_dump("WLAN_EN back up");
+ 	if (step < 2) {
+ 		return;
+ 	}
+@@ -4760,7 +4766,6 @@ pcie_main(void *arg __unused, wait_result_t w __unused)
+ 		g_restart = 0;
+ 		cbcr_dump("before the power-down");
+ 		wlan_power_down();
+-		cbcr_dump("after the power-down");
+ 		printf("SWEET PCIE: *** second bring-up, from the rails up (pass %u) ***\n", g_pass);
+ 		pcie_bringup(step);
+ 	}
