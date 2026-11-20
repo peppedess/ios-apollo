@@ -2438,3 +2438,18 @@ Resta il fatto nudo: il bit si azzera a +56 ms all'indirizzo che il firmware ha 
 a guardare fino a +93. 1238 sposta la scansione sopra il muro, da 0xc30100 alla fine della finestra:
 se là dentro c'è un secondo registro a forma di GDSCR che resta con PWR_ON a uno mentre 0xc300c4
 collassa, quella è la vista del Q6.
+
+## k76 e 1239 — resta una pagina sola, e la leggiamo intera
+
+k76 ha spazzato 0xc30400 fino in fondo alla finestra: due parole ticchettano, nessuna dà deadc0de, e
+**nessuna cambia** mentre il firmware gira. Fra questo e k75 l'intera finestra 0x18 è coperta tranne una
+pagina da 1 KiB — 0xc30000..0xc303fc — e dentro ci sta tutto quello che abbiamo mai guardato in
+WCSS_CC: 0xc300c4 (il GDSCR che interroga), 0xc30100..0xc3010c, e il GDSCR WLAN2 a 0xc30138.
+
+(Nota sulle unità: una «pagina» qui è 256 parole, cioè 1 KiB, non 256 byte. Con `skip=193` k76 partiva
+da 0xc30400 e non da 0xc30100: la pagina che conta era proprio quella saltata.)
+
+Il muro di k13n non c'è più: `gdsc_peek` legge 0xc30004 in ogni run da settimane e torna 0. Quindi
+`sweetdiff=25` prende quella pagina e basta, con una briciola ogni 32 parole, e siccome 256 parole sono
+poche le stampa **tutte**, prima e dopo, invece dei soli cambiamenti. Il blocco intero, davanti e dietro
+il collasso.

@@ -1,0 +1,61 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 7af7568..0354a33 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2054,6 +2054,7 @@ gdsc_peek(const char *when)
+ static uint32_t g_diffbuf[DIFF_WORDS];
+ static uint8_t g_difftick[DIFF_WORDS / 8];
+ static uint32_t g_diffbase, g_difflo, g_diffhi;
++static int g_difffull;
+ 
+ static void
+ diff_snap(void)
+@@ -2086,6 +2087,24 @@ diff_snap(void)
+ 		 */
+ 		skip = 193u;
+ 	}
++	if (win == 0x19u) {
++		/*
++		 * k76 swept 0xc30400 to the end of the window: two words tick, nothing reads deadc0de, and
++		 * not one word changed while the firmware ran. Between that and k75 the whole window is
++		 * accounted for except a single 1 KiB page — 0xc30000..0xc303fc — and everything we have ever
++		 * watched in WCSS_CC lives in it: 0xc300c4, the GDSCR it polls, 0xc30100..0xc3010c, and the
++		 * WLAN2 GDSCR at 0xc30138. k13n hung on 0xc30004, but gdsc_peek has read that word in every
++		 * run since and got 0, so the wall is gone with whatever chip state made it.
++		 *
++		 * sweetdiff=25 is window 0x18, that page alone. 256 words is small enough to print whole
++		 * rather than only the changes, which is what we want: the complete block, before and after.
++		 */
++		win = 0x18u;
++		g_diffbase = win * 0x80000u;
++		skip = 192u;
++		pages = 1u;
++		g_difffull = 1;
++	}
+ 	(void)PE_parse_boot_argn("sweetdiffskip", &skip, sizeof(skip));
+ 	(void)PE_parse_boot_argn("sweetdiffpages", &pages, sizeof(pages));
+ 	g_difflo = skip * 256u;
+@@ -2095,7 +2114,7 @@ diff_snap(void)
+ 	}
+ 	memset(g_difftick, 0, sizeof(g_difftick));
+ 	for (uint32_t i = g_difflo; i < g_diffhi; i++) {
+-		if (i % 1024u == 0u) {
++		if (i % (g_difffull ? 32u : 1024u) == 0u) {
+ 			printf("SWEET DIFF: reading page %#010x\n", g_diffbase + 4u * i);
+ 		}
+ 		g_diffbuf[i] = win_rd(g_diffbase + 4u * i);
+@@ -2122,6 +2141,14 @@ diff_show(const char *when)
+ 	uint32_t changed = 0, shown = 0;
+ 	for (uint32_t i = g_difflo; i < g_diffhi; i++) {
+ 		uint32_t v = win_rd(g_diffbase + 4u * i);
++		if (g_difffull) {
++			printf("SWEET DIFF: %s: %#010x %#010x -> %#010x%s\n", when, g_diffbase + 4u * i,
++			    g_diffbuf[i], v, (v == g_diffbuf[i]) ? "" : "   <<< moved");
++			if (v != g_diffbuf[i]) {
++				changed++;
++			}
++			continue;
++		}
+ 		if (v == g_diffbuf[i] || (g_difftick[i / 8u] & (1u << (i % 8u)))) {
+ 			continue;
+ 		}
