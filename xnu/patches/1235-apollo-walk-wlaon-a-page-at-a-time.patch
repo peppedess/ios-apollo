@@ -1,0 +1,34 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 641ae5e..1822219 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2410,11 +2410,28 @@ wmi_init(void)
+ 		uint32_t tk = 0;
+ 		(void)PE_parse_boot_argn("sweettick", &tk, sizeof(tk));
+ 		if (tk) {
++			/*
++			 * k73 read 64 KiB of it in one go and the phone stopped dead, with the log ending on the
++			 * line before the sweep: somewhere in there is an address that aborts on read, the way
++			 * 0xc30004 did in k13n. So walk it a page at a time and name the page first — the log is
++			 * flushed to UFS every two seconds, so the breadcrumb outlives the hang. The default range
++			 * is the 4 KiB we already read single registers out of safely; sweettickn widens it by
++			 * pages of 256 words once we know where the wall is.
++			 */
+ 			static uint32_t snap[0x4000];
+-			const uint32_t n = (uint32_t)(sizeof(snap) / sizeof(snap[0]));
++			uint32_t pages = 4;
++			(void)PE_parse_boot_argn("sweettickn", &pages, sizeof(pages));
++			if (pages > 64u) {
++				pages = 64u;
++			}
++			const uint32_t n = pages * 256u;
+ 			for (uint32_t i = 0; i < n; i++) {
++				if (i % 256u == 0u) {
++					printf("SWEET TICK: reading page %#010x\n", 0x1f80000u + 4u * i);
++				}
+ 				snap[i] = win_rd(0x1f80000u + 4u * i);
+ 			}
++			printf("SWEET TICK: %u words read, waiting %u ms\n", n, tk);
+ 			pc_msleep(tk);
+ 			uint32_t moved = 0, shown = 0;
+ 			for (uint32_t i = 0; i < n; i++) {

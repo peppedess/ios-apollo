@@ -2378,3 +2378,15 @@ Prima di costruirci sopra, 1234 stabilisce se è il clock o solo il nostro indir
 WLAON due volte a `sweettick` millisecondi di distanza e stampa ogni parola che si è mossa con la
 frequenza che implica. Se una conta, il contatore vero è quello e il clock vive. Se nel dominio
 always-on non si muove niente, il bug è il clock.
+
+## k73 e 1235 — la scansione va fatta a pagine
+
+k73 ha letto 64 KiB di WLAON in un colpo solo e il telefono si è fermato di netto: il log finisce sulla
+riga *precedente* alla scansione, `WLAON_QFPROM_PWR_CTRL before INIT`, e non c'è una sola riga
+`SWEET TICK`. Da qualche parte in quei 64 KiB c'è un indirizzo che in lettura va in abort, come
+0xc30004 in k13n.
+
+Errore mio: una scansione cieca senza briciole. 1235 la cammina una pagina da 256 parole alla volta e
+stampa la pagina *prima* di leggerla — il log va su UFS ogni due secondi, quindi la briciola sopravvive
+al blocco. Il campo di default scende a 4 KiB, cioè la zona da cui leggiamo già registri singoli senza
+problemi; `sweettickn` lo allarga a pagine, una volta saputo dov'è il muro.
