@@ -2348,3 +2348,33 @@ lui interroga è il nostro 0x00c200c4 — che non abbiamo mai letto.
 È una domanda da due registri. Il campionatore ora guarda tutt'e due le grafie del 15 e tutt'e due
 quelle del GDSCR, ogni 2 ms, cominciando *prima* del collasso invece che dopo. 0x00c200c4 è l'indirizzo
 mai provato, quindi sta per ultimo: se blocca il telefono, il log su UFS conserva comunque le briciole.
+
+## k72 — il crash è datato, e lo scostamento di 64 KiB è morto
+
+	70.999  INIT
+	+56 ms  0x00b600f8  0x13 -> 0x03        (perde il bit 4)
+	+56 ms  0x00c300c4  0xa0223800 -> 0x00222001   PWR_ON a zero
+	+93 ms  SYS_ERR
+	        Asserted in0x1503340s:502
+
+Due soli registri su dodici si muovono, e uno è **esattamente** quello che il firmware interroga, che
+va **esattamente** nello stato che aspetta. Il poll è 1000 tentativi da 100 µs, cioè 100 ms, e il
+firmware ha asserito a 93: stava ancora guardando **37 millisecondi dopo** che il bit che voleva si era
+azzerato sotto il suo naso.
+
+E la teoria dello scostamento è morta: `0x00c200c4` leggeva 0 prima dell'INIT e non si è mai mosso,
+mentre `0x00c300c4` ha fatto esattamente quello che la sequenza chiede. La regola del nibble regge per
+il GDSCR, il registro che leggiamo è quello giusto, e **le letture del Q6 sono vecchie**.
+
+Resta in piedi una sola spiegazione, ed è il filo che scavalchiamo da giorni:
+
+	WLAON counter 129769002 -> 129769002 in 100 ms = 0 Hz, firmware expects 19200000 Hz
+
+Un bit di stato sincronizzato in un dominio il cui clock non gira non arriva mai a chi lo legge, per
+quante volte guardi. Il dominio collassa, il GDSCR visto da fuori lo dice, e la vista che ne ha il Q6
+resta congelata finché il poll non finisce.
+
+Prima di costruirci sopra, 1234 stabilisce se è il clock o solo il nostro indirizzo: legge 64 KiB di
+WLAON due volte a `sweettick` millisecondi di distanza e stampa ogni parola che si è mossa con la
+frequenza che implica. Se una conta, il contatore vero è quello e il clock vive. Se nel dominio
+always-on non si muove niente, il bug è il clock.

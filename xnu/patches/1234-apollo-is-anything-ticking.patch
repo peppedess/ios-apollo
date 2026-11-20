@@ -1,0 +1,63 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 33c28c0..641ae5e 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2382,6 +2382,58 @@ wmi_init(void)
+ 	 * the safer of the two, and each read is announced before it is taken: if the log stops after one of
+ 	 * these lines, that read is what hung the bus, and that is itself the answer.
+ 	 */
++	/*
++	 * Is anything in the always-on domain ticking at all?
++	 *
++	 * k72 finally dated the crash, and the timeline is unambiguous. INIT at 70.999; at +56 ms exactly two
++	 * of the twelve watched registers move — 0x00b600f8 loses bit 4, and 0x00c300c4 goes 0xa0223800 ->
++	 * 0x00222001, PWR_ON clear, which is precisely what the firmware is polling for; at +93 ms SYS_ERR.
++	 * The poll is 1000 tries of 100 us, so 100 ms, and the firmware asserted at 93. It was still polling
++	 * 37 milliseconds after the bit it wanted had already cleared under its nose.
++	 *
++	 * And the shift theory is dead: 0x00c200c4 read 0 before INIT and never moved, while 0x00c300c4 did
++	 * exactly what the sequence asks for. The nibble rule holds for the GDSCR, we are reading the right
++	 * register, and the firmware's own reads of it are stale.
++	 *
++	 * Which leaves one explanation standing, and it is the thread we have been stepping over all along:
++	 * `WLAON counter 129769002 -> 129769002 in 100 ms = 0 Hz, firmware expects 19200000 Hz`. A status bit
++	 * synchronised into a clock domain whose clock is not running never reaches the reader, however many
++	 * times it looks. The domain collapses, the GDSCR we read from outside says so, and the Q6's own view
++	 * of it stays frozen until the poll runs out.
++	 *
++	 * Before building anything on that, settle whether it is the clock or just our address: read 64 KiB
++	 * of WLAON twice, `sweettick` milliseconds apart, and print every word that moved with the frequency
++	 * it implies. If one of them counts, we have the real counter and the clock lives. If nothing in the
++	 * always-on domain moves at all, the clock is the bug.
++	 */
++	{
++		uint32_t tk = 0;
++		(void)PE_parse_boot_argn("sweettick", &tk, sizeof(tk));
++		if (tk) {
++			static uint32_t snap[0x4000];
++			const uint32_t n = (uint32_t)(sizeof(snap) / sizeof(snap[0]));
++			for (uint32_t i = 0; i < n; i++) {
++				snap[i] = win_rd(0x1f80000u + 4u * i);
++			}
++			pc_msleep(tk);
++			uint32_t moved = 0, shown = 0;
++			for (uint32_t i = 0; i < n; i++) {
++				uint32_t v = win_rd(0x1f80000u + 4u * i);
++				if (v == snap[i]) {
++					continue;
++				}
++				moved++;
++				if (shown < 80u) {
++					shown++;
++					printf("SWEET TICK: %#010x %#010x -> %#010x, delta %d, %llu Hz\n",
++					    0x1f80000u + 4u * i, snap[i], v, (int)(v - snap[i]),
++					    (uint64_t)(v - snap[i]) * 1000ull / (uint64_t)tk);
++				}
++			}
++			printf("SWEET TICK: %u of %u words in WLAON moved in %u ms, %u printed\n", moved, n, tk,
++			    shown);
++		}
++	}
+ 	{
+ 		uint32_t g = 1;
+ 		(void)PE_parse_boot_argn("sweetgdsc", &g, sizeof(g));
