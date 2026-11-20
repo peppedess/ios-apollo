@@ -1,0 +1,33 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index c643234..8ee185b 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2058,8 +2058,16 @@ static uint32_t g_diffbase, g_difflo, g_diffhi;
+ static void
+ diff_snap(void)
+ {
+-	uint32_t win = 0x16;    /* 0x00b00000: every WFSS_PMM address the sequence names lives here */
+-	(void)PE_parse_boot_argn("sweetdiffwin", &win, sizeof(win));
++	/*
++	 * sweetdiff carries the window itself, because boot-args are capped at 592 bytes and a second
++	 * knob does not fit: 1 means window 0x16, anything larger is the window number. 0x16 is
++	 * 0x00b00000, where every WFSS_PMM address the sequence names lives; 0x18 is 0x00c00000, WCSS_CC.
++	 */
++	uint32_t win = 0;
++	(void)PE_parse_boot_argn("sweetdiff", &win, sizeof(win));
++	if (win <= 1u) {
++		win = 0x16;
++	}
+ 	g_diffbase = win * 0x80000u;
+ 	/*
+ 	 * Paged, like the WLAON sweep, and for the same reason: window 0x18 holds 0xc30004, which hung the
+@@ -2068,6 +2076,9 @@ diff_snap(void)
+ 	 * sweetdiffskip starts the next run past it.
+ 	 */
+ 	uint32_t skip = 0, pages = DIFF_WORDS / 256u;
++	if (win == 0x18u) {
++		pages = 192u;   /* stop one page short of 0xc30004, which hung the phone in k13n */
++	}
+ 	(void)PE_parse_boot_argn("sweetdiffskip", &skip, sizeof(skip));
+ 	(void)PE_parse_boot_argn("sweetdiffpages", &pages, sizeof(pages));
+ 	g_difflo = skip * 256u;
