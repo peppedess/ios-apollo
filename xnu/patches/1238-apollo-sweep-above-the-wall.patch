@@ -1,0 +1,20 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 8ee185b..7af7568 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2077,7 +2077,14 @@ diff_snap(void)
+ 	 */
+ 	uint32_t skip = 0, pages = DIFF_WORDS / 256u;
+ 	if (win == 0x18u) {
+-		pages = 192u;   /* stop one page short of 0xc30004, which hung the phone in k13n */
++		/*
++		 * k75 swept 0xc00000..0xc2fffc — the 192 pages below WCSS_CC's live registers — and found
++		 * nothing at all: no word ticking, none reading deadc0de, none changing while the firmware
++		 * ran. That whole region is dead, and with it the last version of the shifted-mapping idea.
++		 * So start above it, one page past 0xc30004 (the word that hung the phone in k13n), and run
++		 * to the end of the window.
++		 */
++		skip = 193u;
+ 	}
+ 	(void)PE_parse_boot_argn("sweetdiffskip", &skip, sizeof(skip));
+ 	(void)PE_parse_boot_argn("sweetdiffpages", &pages, sizeof(pages));

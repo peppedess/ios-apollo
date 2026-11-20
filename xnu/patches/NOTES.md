@@ -2417,3 +2417,24 @@ che risponda il chip. 1236 rende paginato anche il diff della finestra, con le b
 lo 0xc30004 che bloccò k13n — senza perdere il run quando si incontra il muro. Quello che cerchiamo è
 una seconda parola con la forma di un GDSCR che, mentre 0x00c300c4 collassa, resta con PWR_ON a uno:
 quella sarebbe la vista del Q6.
+
+## k75 — sotto 0xc30000 non c'è niente, e la convenzione del poll è confermata
+
+Finestra 0x18, pagine 0..191, cioè 0xc00000..0xc2fffc: **0 parole che ticchettano, 0 deadc0de, 0 parole
+cambiate** mentre il firmware girava. Quella regione è morta del tutto, e con essa l'ultima versione
+dell'idea della mappa spostata.
+
+Nel frattempo ho verificato la convenzione del poll sul disassemblato invece che per inferenza. I due
+siti di chiamata usano *helper diversi* (0x156c17c per lo sleep, 0x156cad0 per l'accensione) ma tutt'e
+due saltano allo stesso thunk 0x14FC904 e da lì alla stessa routine ROM a 0x880F24:
+
+	sleep        r0 = 0xE0C300C4  r1 = 0x80000000  r2 = 0           (aspetta PWR_ON a zero)
+	accensione   r0 = 0xE0C300C4  r1 = 0x80000000  r2 = 0x80000000  (aspetta PWR_ON a uno)
+
+Quindi `aspetta finché (v & mask) == atteso` è giusto, ed è lo sleep a fallire — il 502 si carica solo a
+0x156bfb4, quattro pacchetti dopo quel poll.
+
+Resta il fatto nudo: il bit si azzera a +56 ms all'indirizzo che il firmware ha passato, e lui continua
+a guardare fino a +93. 1238 sposta la scansione sopra il muro, da 0xc30100 alla fine della finestra:
+se là dentro c'è un secondo registro a forma di GDSCR che resta con PWR_ON a uno mentre 0xc300c4
+collassa, quella è la vista del Q6.
