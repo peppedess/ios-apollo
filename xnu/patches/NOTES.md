@@ -2478,3 +2478,26 @@ da impostazione di sistema) e non ha il debugfs di cnss. Però una radio funzion
 calibrazione gira 3600 ms e il firmware non si lamenta. 1240 stampa quei registri alla partenza e alla
 fine della calibrazione, e di nuovo prima e dopo l'INIT di missione. Se per la calibrazione girano e per
 la missione no, la differenza fra i due passaggi è il bug.
+
+## k78 — quattro rami girano in calibrazione e sono fermi alla missione
+
+Gli otto rami «fermi» di k77 sono fermi anche durante una calibrazione che funziona, in tutti e quattro
+i momenti. Non sono loro: saranno rami senza sorgente, e tanti saluti.
+
+Ma i loro vicini sì:
+
+	                     WLAN1 e0        e4         WLAN2 154       158
+	calibration start    0x00000001  0x00000001     0x00000001  0x00000001     girano
+	calibration done     0x00000001  0x00000001     0x00000001  0x00000001     girano
+	before INIT          0x80000001  0x80000001     0x80000001  0x80000001     ABILITATI E FERMI
+	after INIT           0x80000000  0x80000000     0x80000000  0x80000000     disabilitati
+
+**Quattro branch clock girano per tutta la calibrazione e sono fermi quando arriva l'INIT di missione.**
+La calibrazione è l'unica radio funzionante che abbiamo, e questa è la prima differenza misurata fra il
+passaggio che riesce e quello che fallisce. Un GDSC con rami abilitati e fermi non finisce la stretta di
+mano, e il poll da 100 ms scade: è esattamente il guasto.
+
+La loro sorgente muore fra i due passaggi, cioè attraverso il nostro ciclo di alimentazione — che è
+roba nostra, non del firmware. 1241 stampa gli stessi registri in altri quattro punti (prima e dopo il
+power-down, appena WLAN_EN torna su, e a `firmware init done`) per inchiodare il momento esatto in cui
+si fermano.

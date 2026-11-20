@@ -1,0 +1,30 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index a47ba88..f2663c2 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -3576,6 +3576,7 @@ wlfw_board(void)
+ 		return;
+ 	}
+ 	printf("SWEET WLFW: firmware init done\n");
++	cbcr_dump("firmware init done");
+ 	/*
+ 	 * sweetdryrun=1: the first instance stops right here — no ini, no cfg, no mode, no calibration — and
+ 	 * asks for the power cycle anyway. k38 showed a single pass reaching HTC READY, WMI service ready and
+@@ -4539,6 +4540,7 @@ pcie_bringup(uint32_t step)
+ 	gpio_out(GPIO_WLAN_EN, 1);
+ 	pc_msleep(100);
+ 	printf("SWEET PCIE: WLAN_EN%s cycled, PERST# low, WAKE# reads %d\n", bten ? " and BT_EN" : "", gpio_in(GPIO_WAKE));
++	cbcr_dump("WLAN_EN back up");
+ 	if (step < 2) {
+ 		return;
+ 	}
+@@ -4756,7 +4758,9 @@ pcie_main(void *arg __unused, wait_result_t w __unused)
+ 	 */
+ 	while (g_restart) {
+ 		g_restart = 0;
++		cbcr_dump("before the power-down");
+ 		wlan_power_down();
++		cbcr_dump("after the power-down");
+ 		printf("SWEET PCIE: *** second bring-up, from the rails up (pass %u) ***\n", g_pass);
+ 		pcie_bringup(step);
+ 	}
