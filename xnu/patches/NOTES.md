@@ -2453,3 +2453,28 @@ Il muro di k13n non c'è più: `gdsc_peek` legge 0xc30004 in ogni run da settima
 `sweetdiff=25` prende quella pagina e basta, con una briciola ogni 32 parole, e siccome 256 parole sono
 poche le stampa **tutte**, prima e dopo, invece dei soli cambiamenti. Il blocco intero, davanti e dietro
 il collasso.
+
+## k77 — otto rami di clock che non partono mai, e la riga 502 si rilegge al contrario
+
+Tutte e 256 le parole di 0xc30000..0xc303fc, prima dell'INIT e dopo il crash. La pagina si legge come un
+clock controller: decine di parole passano fra `0x80000001` e `0x00000001`, cioè un branch register
+Qualcomm fra «abilitato ma fermo» (bit 31 CLK_OFF) e «gira». Ne partono venti durante il run. **Otto non
+partono mai**, né prima né dopo:
+
+	0xc300d0 0xc300d4 0xc300d8 0xc300dc   accanto al GDSCR WLAN1 a 0xc300c4
+	0xc30144 0xc30148 0xc3014c 0xc30150   accanto al GDSCR WLAN2 a 0xc30138
+
+Due gruppi di quattro, a 0xc8 di distanza, nella stessa forma WLAN1/WLAN2 dei GDSCR: sono i branch clock
+dei domini radio, abilitati e fermi. E un GDSC **non può finire di spegnersi mentre i suoi rami sono
+abilitati e fermi** — la stretta di mano li aspetta.
+
+Il che rilegge la cronologia di k72 al contrario. Non è che il firmware non si accorge del collasso: il
+collasso a +56 ms è ciò che **finalmente** accade quando il firmware si arrende e i suoi enable cadono,
+e il SYS_ERR ci arriva 37 ms dopo. Il poll non fallisce perché legge vecchio: fallisce perché per tutta
+la sua durata il dominio davvero non è sceso.
+
+Android risolverebbe la cosa in una lettura sola, ma questa build non ha root (`adb root` disabilitato
+da impostazione di sistema) e non ha il debugfs di cnss. Però una radio funzionante ce l'abbiamo noi: la
+calibrazione gira 3600 ms e il firmware non si lamenta. 1240 stampa quei registri alla partenza e alla
+fine della calibrazione, e di nuovo prima e dopo l'INIT di missione. Se per la calibrazione girano e per
+la missione no, la differenza fra i due passaggi è il bug.

@@ -1,0 +1,80 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 0354a33..a47ba88 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2177,6 +2177,43 @@ static const uint32_t pmm_regs[] = {
+ };
+ #define PMM_N   ((uint32_t)(sizeof(pmm_regs) / sizeof(pmm_regs[0])))
+ 
++/*
++ * The two groups of four, and their neighbours.
++ *
++ * k77 printed all 256 words of 0xc30000..0xc303fc before INIT and again after the crash, and the page
++ * reads like a clock controller: dozens of words move between 0x80000001 and 0x00000001, which is a
++ * Qualcomm branch-clock register going between "enabled but stopped" (bit 31 CLK_OFF) and "running".
++ * Twenty of them start during the firmware's run. Exactly eight never do:
++ *
++ *	0xc300d0 0xc300d4 0xc300d8 0xc300dc   next to the WLAN1 GDSCR at 0xc300c4
++ *	0xc30144 0xc30148 0xc3014c 0xc30150   next to the WLAN2 GDSCR at 0xc30138
++ *
++ * Two groups of four, 0xc8 apart, in the same WLAN1/WLAN2 shape as the GDSCRs themselves: the radio
++ * domains' own branch clocks, enabled and never running, before the firmware starts and after it dies.
++ * A GDSC cannot finish powering down while its branches are enabled and stopped — the handshake waits
++ * on them — and a stalled handshake is exactly a poll that runs out. Which also re-reads the k72
++ * timeline the other way round: the collapse we see at +56 ms is not something the firmware missed, it
++ * is what finally happens once the firmware gives up and its enables drop, with SYS_ERR reaching us
++ * 37 ms later.
++ *
++ * Android would settle it in one read, but this build has no root and no cnss debugfs. What we do have
++ * is a working radio of our own: calibration runs for 3600 ms and the firmware never complains. So
++ * print these at calibration and again at mission INIT. If they run for calibration and not for
++ * mission, the difference between the two passes is the bug.
++ */
++static void
++cbcr_dump(const char *when)
++{
++	printf("SWEET CBCR: %s: WLAN1 gdsc %#010x | c8 %#010x cc %#010x | d0 %#010x d4 %#010x d8 %#010x "
++	    "dc %#010x | e0 %#010x e4 %#010x e8 %#010x\n", when, win_rd(0x00c300c4), win_rd(0x00c300c8),
++	    win_rd(0x00c300cc), win_rd(0x00c300d0), win_rd(0x00c300d4), win_rd(0x00c300d8),
++	    win_rd(0x00c300dc), win_rd(0x00c300e0), win_rd(0x00c300e4), win_rd(0x00c300e8));
++	printf("SWEET CBCR: %s: WLAN2 gdsc %#010x | 13c %#010x 140 %#010x | 144 %#010x 148 %#010x "
++	    "14c %#010x 150 %#010x | 154 %#010x 158 %#010x\n", when, win_rd(0x00c30138), win_rd(0x00c3013c),
++	    win_rd(0x00c30140), win_rd(0x00c30144), win_rd(0x00c30148), win_rd(0x00c3014c),
++	    win_rd(0x00c30150), win_rd(0x00c30154), win_rd(0x00c30158));
++}
++
+ static void
+ wcss_cc_dump(const char *when)
+ {
+@@ -2427,6 +2464,7 @@ wmi_init(void)
+ 			win_wr(0x1f8031c, pc & ~5u);
+ 		}
+ 		printf("SWEET WMI: WLAON_QFPROM_PWR_CTRL before INIT %#x -> %#x\n", pc, win_rd(0x1f8031c));
++		cbcr_dump("before INIT");
+ 	}
+ 	/*
+ 	 * Read the register the firmware dies on, from the other side.
+@@ -2923,6 +2961,7 @@ wmi_init(void)
+ 	if (wdiff) {
+ 		diff_show("after INIT");
+ 	}
++	cbcr_dump("after INIT");
+ 	printf("SWEET WMI: WMI ready flag %d after the INIT window\n", g_htc.wmi_ready);
+ 	gdsc_peek("after INIT");
+ 	printf("SWEET WMI: after INIT: CE3 head %u tail %u (hardware %u), firmware %s\n",
+@@ -3116,6 +3155,7 @@ wifi_start(void)
+ 	if (fwmode == 7) {
+ 		printf("SWEET WLFW: cold boot calibration started\n");
+ 		wcss_cc_dump("calibration start");
++		cbcr_dump("calibration start");
+ 		/*
+ 		 * How much of the first pass is enough to poison the second. k39 settled that a first instance
+ 		 * which stops at `firmware init done` leaves a second instance that reaches HTC READY, WMI
+@@ -3142,6 +3182,7 @@ wifi_start(void)
+ 			if (g_q.caldone) {
+ 				printf("SWEET WLFW: *** cold boot calibration done after %u ms ***\n", ms);
+ 		wcss_cc_dump("calibration done");
++		cbcr_dump("calibration done");
+ 				break;
+ 			}
+ 			(void)er0_poll();
