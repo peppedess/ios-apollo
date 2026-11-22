@@ -2542,3 +2542,39 @@ non si chiede all'hardware niente che non stesse per essergli chiesto comunque.
 - Se l'assert sparisce, il registro era quello giusto e il problema era tutto nei tempi.
 - Se il 502 torna identico con PWR_ON già a zero alla prima lettura, allora l'indirizzo che il Q6
   interroga **non è** quello che guardiamo da settimane, e continuare a leggerlo non lo dirà mai.
+
+## k81 — il 502 non è il PMM: è cmnos_thread.c
+
+Ho azzerato io il GDSCR prima dell'INIT:
+
+	SWEET COLLAPSE: WLAN1 0xa0223800 -> 0x00223801, WLAN2 0xa0223800 -> 0x00223801, PWR_ON clear after 0 ms
+	SYS_ERR 210 ms dopo
+	Asserted in0x1503340s:502
+
+Il firmware trovava la condizione già vera alla prima lettura e ha asserito identico. Quel registro non
+c'entra.
+
+Allora sono risalito al record di crash invece che all'indirizzo ipotizzato. Il token stampato come
+«file», 0x1503340, è il ritorno della chiamata a 0x1503338, cioè la coda di assert condivisa in cui
+saltano sette siti (242, 265, 434, 401, 462, 538, 553). E nella tabella di stringhe, attaccate al
+formato dell'assert:
+
+	139184  'Asserted in %s:%s:%d'
+	1391ac  'cmnos_thread.c'
+	1391bc  'Asserted in:0x%x:0x%x, line#%d'
+	1391db  'Asserted in0x%xs:%d'                          <- il nostro
+	139204  'RAM allocation (%d bytes) failed! arena :: %d'
+
+**La riga 502 è cmnos_thread.c.** Il `r0 = #502` che avevo trovato a 0x156bfb4, nella sequenza di sleep
+del PMM, è l'assert di un'altra funzione che usa lo stesso numero; l'ho preso per buono perché era
+l'unico caricamento della costante 502 nell'immagine, e ci ho costruito sopra quattro giorni di indagine
+su GDSC, clock e mappa degli indirizzi.
+
+Il firmware non aspetta un collasso: **sta esaurendo thread o memoria** mentre costruisce quello che il
+nostro WMI INIT gli chiede. E torna tutto — succede subito dopo l'INIT, ed è identico con e senza
+calibrazione (k50), con e senza data path (k65), nel silenzio totale (k69), con i clock in qualunque
+stato (k78, k80) e col GDSCR già azzerato (k81). Nessuna di quelle cose poteva cambiarlo.
+
+C'era anche un appunto di k13b che leggeva il 502 proprio così, scritto prima che il bring-up a due
+passaggi funzionasse e mai riprovato da quando arriviamo davvero in missione. `sweetwmimin=1` chiede la
+configurazione minima — 1 vdev, 4 peer, 8 TID invece di 3 vdev e 16 peer — ed è k82.
