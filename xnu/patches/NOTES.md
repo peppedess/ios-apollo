@@ -2641,3 +2641,30 @@ sopravvive; WMI_INIT invece ci arriva, e fallisce.
 
 1245 costruisce il messaggio come lo chiede il firmware: 368 byte, tag 0x4a e 0x4b, resource config da
 304 byte di payload, e i tre TLV di coda. `sweetoldtlv=1` rimanda la forma vecchia per il confronto.
+
+## k88 — IL FIRMWARE RISPONDE
+
+	49.111  INIT (368 byte, tag 0x4a/0x4b)
+	49.122  evento 0x16005 tag 0x18d
+	49.262  evento 0x3a001 tag 0x261  (due volte)
+	49.262  evento 0x2 tag 0x23   ->  WMI READY
+	49.545  FIRMWARE UP (WMI ready)
+
+**Il muro che stava in piedi da k50 è caduto.** Erano i tag TLV. Gli mandavamo 0x4e e 0x4f dove lui
+aspetta 0x4a e 0x4b, con la resource config corta di quattro parole e due TLV mancanti.
+
+Subito dopo asserisce di nuovo, su `vdev 0 create` — che è costruito con i tag vecchi esattamente come
+lo era l'INIT. Stesso errore, comando successivo.
+
+Ma adesso non si indovina più. La tabella a 0x15a9490 contiene **462 comandi**, ognuno con il suo
+layout TLV completo. Per quelli che mandiamo:
+
+	id 0x0001 WMI_INIT         0x04a/32   0x04b/308  0x012/20  0x203/16  0x012/16
+	id 0x5001 VDEV_CREATE      0x056/40   0x012/16   0x012/12
+	id 0x3001 START_SCAN       0x04d/160  0x010/4  0x013/36  0x013/8  0x011/1  0x012/8  0x011/1  0x013/8  0x013/12
+
+Noi usavamo 0x5a per VDEV_CREATE (giusto 0x56) e 0x51 per START_SCAN (giusto 0x4d), con quattro TLV di
+coda invece di otto. Le dimensioni delle struct erano già giuste: era solo la numerazione dei tag, presa
+da una versione di ath11k che non è quella di questo firmware. 1246 corregge tutt'e due.
+
+Da tenere d'occhio: il READY riporta MAC 00:00:00:00:00:00.
