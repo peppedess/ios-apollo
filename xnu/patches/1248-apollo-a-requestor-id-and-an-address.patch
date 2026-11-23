@@ -1,0 +1,39 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 2b78e71..64525ec 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -1741,6 +1741,18 @@ wifi_vdev_create(void)
+ 	w[2] = 0;                                                       /* vdev_id */
+ 	w[3] = 2;                                                       /* WMI_VDEV_TYPE_STA */
+ 	w[4] = 0;                                                       /* subtype none */
++	/*
++	 * The READY event hands us six zero bytes: this firmware has no address of its own, because the MAC
++	 * lives in the board data and nothing has given it one. A vdev at 00:00:00:00:00:00 is not going to
++	 * associate with anything, so when that is what we get, use a locally administered address instead —
++	 * the 0x02 in the first byte is what marks it as made up rather than assigned, and nothing on the
++	 * air objects to it. The real address can come from the phone's persist partition later.
++	 */
++	static const uint8_t madeup[6] = { 0x02, 0x00, 0x5e, 0xa9, 0x01, 0x0e };
++	if (!(g_htc.mac[0] | g_htc.mac[1] | g_htc.mac[2] | g_htc.mac[3] | g_htc.mac[4] | g_htc.mac[5])) {
++		memcpy(g_htc.mac, madeup, 6);
++		printf("SWEET WMI: the firmware gave no MAC, using a locally administered one\n");
++	}
+ 	memcpy(&w[5], g_htc.mac, 4);
+ 	memcpy(&w[6], g_htc.mac + 4, 2);
+ 	w[7] = 2;                                                       /* num_cfg_txrx_streams */
+@@ -1773,8 +1785,14 @@ wifi_scan(void)
+ 	 * leaving out are not optional padding, they are part of the shape the parser walks.
+ 	 */
+ 	c[0] = (0x4du << 16) | 156u;                                    /* WMI_TAG_START_SCAN_CMD */
++	/*
++	 * k90's scan came back as event 0x40, WMI_SCAN_EVENT_START_FAILED, eleven milliseconds after we sent
++	 * it. The requestor id is the likely reason: ath11k uses 0xa000 for *both* fields — the scan id is
++	 * 0xa000 ored with a counter, and the requestor id is 0xa000 flat — and we had put a 1 in the
++	 * second one. A firmware that checks the requestor against the ids it knows rejects that outright.
++	 */
+ 	c[1] = 0xa000;                                                  /* scan_id */
+-	c[2] = 1;                                                       /* scan_req_id */
++	c[2] = 0xa000;                                                  /* scan_req_id */
+ 	c[3] = 0;                                                       /* vdev_id */
+ 	c[4] = 4;                                                       /* scan_priority: low */
+ 	c[5] = 0x1 | 0x2 | 0x4 | 0x8 | 0x10;                            /* started, completed, bss/foreign chan, dequeued */

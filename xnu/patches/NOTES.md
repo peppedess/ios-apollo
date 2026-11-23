@@ -2695,3 +2695,32 @@ Due cose da raccogliere, e sono tutt'e due nostre:
 fa il dump dell'evento READY: il MAC lì dentro legge sei byte a zero, e un vdev senza indirizzo non si
 associa a niente. O l'offset viene dall'ath11k sbagliato, come i tag, o il firmware non ha davvero un
 indirizzo da dare — il dump lo dice a occhio.
+
+## k90 — lo scan parte e viene rifiutato, e il firmware non ha un indirizzo
+
+	49.287  READY: MAC 00:00:00:00:00:00
+	49.910  scan event 0x40
+	58..77  decine di eventi 0x1d011, log del firmware (binario, non testo)
+
+**L'evento di scansione adesso lo prendiamo** — ed è `0x40`, cioè `WMI_SCAN_EVENT_START_FAILED`. La
+scansione è stata rifiutata undici millisecondi dopo l'invio, non persa: tutt'altra cosa dal silenzio
+di prima.
+
+Il dump dell'evento READY, con l'offset di ath11k che torna (num_total_peers a +44 legge 16, che è
+esattamente quello che abbiamo chiesto nella resource config):
+
+	+00: 00000001 f5030000 5143415f 4d4c0000     <- "QCA_ML", la firma della abi version
+	+16: 00000000 00000000 00000000 00000000     <- il MAC, a +24: sei zeri
+	+32: 00000000 00000000 01000000 10000000     <- status 0, num_total_peers 16
+	+48: 11000000 8f000000 00000000 00000000
+
+Quindi **il MAC a zero non è un offset sbagliato: il firmware non ne ha uno**. Sta nei board data, e
+nessuno gliel'ha dato. 1248 usa un indirizzo localmente amministrato (il 0x02 nel primo byte dice che
+ce lo siamo inventati) finché non andiamo a prendere quello vero dalla partizione persist.
+
+E il rifiuto della scansione: ath11k mette **0xa000 in tutt'e due** i campi — lo scan id è 0xa000 più
+un contatore, il requestor id è 0xa000 secco — e noi nel secondo avevamo messo 1. Un firmware che
+controlla il requestor contro gli id che conosce la rifiuta e basta.
+
+Nota sul log del firmware: gli eventi 0x1d011 sono binari, non testo. Si decodificano, ma serve il
+database dei messaggi; per ora restano una traccia di vita.
