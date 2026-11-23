@@ -1,0 +1,39 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 4b65737..315fd8b 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -711,7 +711,7 @@ bhie_load(uint32_t bhie, unsigned nseg)
+ #define QRTR_CTRL       0xfffffffeu
+ static uint32_t g_chdb, g_cmd_wp = CMD_RING, g_er1_rp = ER1_RING, g_ch20_wp = CH20_RING, g_ch21_wp = CH21_RING;
+ static uint32_t g_ch4_wp = CH4_RING, g_ch5_wp = CH5_RING, g_diag_shown;
+-static uint32_t g_fwlog_shown;
++static uint32_t g_fwlog_shown, g_evdump_shown;
+ 
+ static uint32_t
+ ring_next(uint32_t off, uint32_t base, uint32_t n)
+@@ -1551,6 +1551,25 @@ htc_rx(uint32_t pipe, const uint8_t *p, uint32_t n)
+ 		 */
+ 		uint32_t tag = m1 >> 16, tlen = m1 & 0xffffu;
+ 		printf("SWEET WMI: ep %u event %#x tag %#x len %u (%u bytes)\n", eid, m0, tag, tlen, n);
++		/*
++		 * And show what is in the ones we have no name for. With explicit channels the scan starts and
++		 * completes — the regulatory domain really was the reason it was refused — but it completes in
++		 * the same millisecond with nothing heard, which is a radio that never dwelt anywhere. The
++		 * firmware sent us 0x16005 and two 0x3a001 right after INIT and we printed only their headers;
++		 * one of them is very likely the channel list it built, and that is the thing to read before
++		 * guessing which pdev command to send next.
++		 */
++		if (m0 != 0x1d011u && m0 != 0x7001u && m0 != 1u && m0 != 2u && m0 != 0x3001u &&
++		    g_evdump_shown < 12u) {
++			g_evdump_shown++;
++			for (uint32_t i = 16; i + 16 <= n && i < 16 + 64; i += 16) {
++				printf("SWEET WMI: event %#x +%02u: %08x %08x %08x %08x\n", m0, i - 16,
++				    *(const uint32_t *)(const void *)(p + i),
++				    *(const uint32_t *)(const void *)(p + i + 4),
++				    *(const uint32_t *)(const void *)(p + i + 8),
++				    *(const uint32_t *)(const void *)(p + i + 12));
++			}
++		}
+ 		if (eid == g_htc.wmi_eid) {
+ 			/*
+ 			 * WMI_SERVICE_READY_EXT (0x4009) and _EXT2 (0x4022), both in the PDEV group. The firmware

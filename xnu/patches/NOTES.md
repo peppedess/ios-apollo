@@ -2724,3 +2724,23 @@ controlla il requestor contro gli id che conosce la rifiuta e basta.
 
 Nota sul log del firmware: gli eventi 0x1d011 sono binari, non testo. Si decodificano, ma serve il
 database dei messaggi; per ora restano una traccia di vita.
+
+## k92 — la scansione parte: era il dominio regolatorio
+
+	49.904  scan start (tre canali nominati)
+	49.915  scan event 0x1 STARTED   reason 7 requestor 0xa000 id 0xa000 vdev 0
+	49.915  scan event 0x2 COMPLETED reason 7
+	49.915  SCAN COMPLETE, 0 frames from access points
+
+Con i canali nominati esplicitamente la scansione **parte**, invece di essere rifiutata. Quindi il
+`num_chan = 0` era la causa del START_FAILED: il firmware costruisce la propria lista dal dominio
+regolatorio, e nessuno gliene ha mai dato uno.
+
+Ma parte e finisce nello stesso millisecondo, senza sentire niente: una radio che non si è fermata su
+nessun canale. Il che punta di nuovo allo stesso buco — senza dominio regolatorio il firmware non
+trasmette su quei canali, li accetta soltanto nella richiesta.
+
+Prima di tirare a indovinare quale comando pdev mandare, 1250 stampa il contenuto degli eventi che
+finora buttavamo via con la sola intestazione: `0x16005` e i due `0x3a001` arrivati subito dopo l'INIT.
+Uno dei due è molto probabilmente la lista dei canali che il firmware si è costruito, e leggerla vale
+più di qualunque supposizione sull'ordinamento dei gruppi WMI.
