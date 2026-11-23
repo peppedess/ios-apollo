@@ -1,0 +1,64 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 22a8119..2b78e71 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -711,6 +711,7 @@ bhie_load(uint32_t bhie, unsigned nseg)
+ #define QRTR_CTRL       0xfffffffeu
+ static uint32_t g_chdb, g_cmd_wp = CMD_RING, g_er1_rp = ER1_RING, g_ch20_wp = CH20_RING, g_ch21_wp = CH21_RING;
+ static uint32_t g_ch4_wp = CH4_RING, g_ch5_wp = CH5_RING, g_diag_shown;
++static uint32_t g_fwlog_shown;
+ 
+ static uint32_t
+ ring_next(uint32_t off, uint32_t base, uint32_t n)
+@@ -1577,10 +1578,27 @@ htc_rx(uint32_t pipe, const uint8_t *p, uint32_t n)
+ 			}
+ 			printf("SWEET WMI: READY: MAC %02x:%02x:%02x:%02x:%02x:%02x\n", mac[0], mac[1], mac[2], mac[3],
+ 			    mac[4], mac[5]);
++			/*
++			 * And the whole event, because that MAC reads as six zero bytes and a vdev with no address
++			 * is not going to associate with anything. Either the offset is from the wrong ath11k, as
++			 * the tags were, or the firmware really has no address to give. The dump settles it: a MAC
++			 * is recognisable on sight.
++			 */
++			for (uint32_t i = 16; i + 16 <= n && i < 16 + 80; i += 16) {
++				printf("SWEET WMI: READY +%02u: %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x "
++				    "%02x%02x%02x%02x\n", i - 16, p[i], p[i + 1], p[i + 2], p[i + 3], p[i + 4],
++				    p[i + 5], p[i + 6], p[i + 7], p[i + 8], p[i + 9], p[i + 10], p[i + 11],
++				    p[i + 12], p[i + 13], p[i + 14], p[i + 15]);
++			}
+ 			memcpy(g_htc.mac, mac, 6);
+ 			g_htc.wmi_ready = 1;
+ 		}
+-		if (m0 == 4u && n >= 16 + 8) {                          /* WMI_SCAN_EVENTID */
++		/*
++		 * The event ids are this firmware's, not the ath11k build we copied them from — the same lesson
++		 * the TLV tags taught. k89's scan was answered eleven milliseconds later by event 0x3001 and we
++		 * threw it away waiting for event 4, then sat out the full 25-second timeout. Take both.
++		 */
++		if ((m0 == 4u || m0 == 0x3001u) && n >= 16 + 8) {       /* WMI_SCAN_EVENTID */
+ 			uint32_t ev, freq = 0;
+ 			memcpy(&ev, p + 16, 4);
+ 			if (n >= 16 + 12) {
+@@ -1592,6 +1610,22 @@ htc_rx(uint32_t pipe, const uint8_t *p, uint32_t n)
+ 				g_htc.scan_done = 1;
+ 			}
+ 		}
++		/*
++		 * 0x1d011 arrives in 1.5 KiB lumps tagged 0x11, ARRAY_BYTE: it is the firmware talking. We spent
++		 * a run opening DIAG channels to get this and it was coming over WMI all along.
++		 */
++		if (m0 == 0x1d011u && n > 20 && g_fwlog_shown < 40u) {
++			uint32_t k = n - 20 > 240u ? 240u : n - 20;
++			char line[244];
++			uint32_t o = 0;
++			for (uint32_t i = 0; i < k; i++) {
++				uint8_t c = p[20 + i];
++				line[o++] = (c >= 0x20 && c < 0x7f) ? (char)c : '.';
++			}
++			line[o] = 0;
++			printf("SWEET FWLOG: %u bytes: %s\n", n - 20, line);
++			g_fwlog_shown++;
++		}
+ 		if (m0 == 0x7001u && n >= 16 + 60) {                    /* WMI_MGMT_RX_EVENTID */
+ 			/* mgmt_rx_hdr: channel, snr, rate, phy_mode, buf_len, status, rssi_ctl[4], flags, rssi, ... */
+ 			uint32_t chan = 0, buflen = 0;

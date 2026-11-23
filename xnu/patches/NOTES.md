@@ -2668,3 +2668,30 @@ coda invece di otto. Le dimensioni delle struct erano già giuste: era solo la n
 da una versione di ath11k che non è quella di questo firmware. 1246 corregge tutt'e due.
 
 Da tenere d'occhio: il READY riporta MAC 00:00:00:00:00:00.
+
+## k89 — nessun crash: INIT, vdev e scan passano tutti
+
+	49.090  INIT 368 byte
+	49.244  WMI READY
+	49.527  FIRMWARE UP
+	49.527  vdev 0 create        (nessun assert)
+	49.854  scan start
+	49.865  evento 0x3001 tag 0x24   <- il firmware risponde alla scansione
+	51.5 .. 77  decine di eventi 0x1d011, tag 0x11, 1500 byte l'uno
+	77.149  "scan: nothing in 25000 ms"
+
+Il firmware **non crasha più**. Con i tag giusti accetta INIT, creazione del vdev e avvio della
+scansione, e da lì in poi parla da solo per quasi trenta secondi.
+
+Due cose da raccogliere, e sono tutt'e due nostre:
+
+- l'evento di scansione di questo firmware è **0x3001**, non 4. Lo abbiamo buttato e siamo rimasti ad
+  aspettare i 25 secondi di timeout per niente. Stessa lezione dei tag: gli id vanno presi da questo
+  firmware, non dalla build di ath11k da cui erano stati copiati.
+- gli eventi **0x1d011**, tag 0x11 (ARRAY_BYTE) da 1,5 KiB, sono il **log del firmware**. Avevamo speso
+  un run (k84) ad aprire i canali DIAG per avere le sue parole, e intanto arrivavano su WMI.
+
+1247 prende l'evento di scansione in tutt'e due le numerazioni, stampa il log del firmware come testo, e
+fa il dump dell'evento READY: il MAC lì dentro legge sei byte a zero, e un vdev senza indirizzo non si
+associa a niente. O l'offset viene dall'ath11k sbagliato, come i tag, o il firmware non ha davvero un
+indirizzo da dare — il dump lo dice a occhio.
