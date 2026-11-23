@@ -1,0 +1,82 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 64525ec..4b65737 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -1599,13 +1599,18 @@ htc_rx(uint32_t pipe, const uint8_t *p, uint32_t n)
+ 		 * threw it away waiting for event 4, then sat out the full 25-second timeout. Take both.
+ 		 */
+ 		if ((m0 == 4u || m0 == 0x3001u) && n >= 16 + 8) {       /* WMI_SCAN_EVENTID */
+-			uint32_t ev, freq = 0;
+-			memcpy(&ev, p + 16, 4);
+-			if (n >= 16 + 12) {
+-				memcpy(&freq, p + 16 + 8, 4);
+-			}
+-			printf("SWEET WMI: scan event %#x%s%s freq %u\n", ev, (ev & 1u) ? " STARTED" : "",
+-			    (ev & 2u) ? " COMPLETED" : "", freq);
++			uint32_t f[7] = { 0 };
++			uint32_t k = (n - 16) / 4u;
++			memcpy(f, p + 16, (k > 7u ? 7u : k) * 4u);
++			uint32_t ev = f[0], freq = f[2];
++			/*
++			 * The reason code is the whole point of printing this. event 0x40 is START_FAILED and we
++			 * have had it twice now, once with a requestor id of 1 and once with ath11k's 0xa000, so
++			 * the id was not it. The firmware says why in the second word and we were dropping it.
++			 */
++			printf("SWEET WMI: scan event %#x%s%s%s reason %u freq %u requestor %#x id %#x vdev %u\n",
++			    ev, (ev & 1u) ? " STARTED" : "", (ev & 2u) ? " COMPLETED" : "",
++			    (ev & 0x40u) ? " START_FAILED" : "", f[1], freq, f[3], f[4], f[5]);
+ 			if (ev & 2u) {
+ 				g_htc.scan_done = 1;
+ 			}
+@@ -1774,7 +1779,7 @@ wifi_scan(void)
+ 	wifi_vdev_create();
+ 	volatile int settle = 0;
+ 	(void)wifi_wait(&settle, 300, "after vdev create");
+-	static uint32_t m[1 + 40 + 10];
++	static uint32_t m[1 + 40 + 14];
+ 	uint32_t *w = m;
+ 	memset(m, 0, sizeof(m));
+ 	w[0] = 0x3001;                                                  /* WMI_START_SCAN_CMDID */
+@@ -1803,23 +1808,31 @@ wifi_scan(void)
+ 	c[13] = 20000;                                                  /* max_scan_time */
+ 	c[14] = 5;                                                      /* probe_delay */
+ 	c[15] = 0x2 | 0x10;                                             /* bcast probe request, channel stats */
+-	c[17] = 0;                                                      /* num_chan: all of them */
++	/*
++	 * And name the channels instead of asking for all of them. num_chan 0 leaves the firmware to use its
++	 * own list, which it builds from the regulatory domain — and nobody has given it one: ath11k sends
++	 * WMI_PDEV_SET_REGDOMAIN after READY and we never have. A scan with no channels to scan is exactly
++	 * the kind of thing a firmware refuses before it starts. Three 2.4 GHz channels are enough to tell
++	 * the two cases apart, and if this is it the regulatory domain is the next piece to build.
++	 */
++	c[17] = 3;                                                      /* num_chan */
+ 	c[18] = 1;                                                      /* num_bssid */
+ 	c[19] = 0;                                                      /* num_ssids */
+ 	c[36] = 0;                                                      /* dwell_time_active_2g */
+ 	c[37] = 40; c[38] = 30;                                         /* 6 GHz dwell times */
+ 	uint32_t *t = c + 40;
+-	t[0] = (0x10u << 16);                                           /* ARRAY_UINT32: no channel list */
+-	t[1] = (0x13u << 16);                                           /* ARRAY_FIXED_STRUCT: no SSIDs */
+-	t[2] = (0x13u << 16) | 8u;                                      /* ARRAY_FIXED_STRUCT: one BSSID */
+-	t[3] = 0xffffffffu; t[4] = 0x0000ffffu;                         /* broadcast */
+-	t[5] = (0x11u << 16);                                           /* ARRAY_BYTE: no extra IEs */
+-	t[6] = (0x12u << 16);
+-	t[7] = (0x11u << 16);
+-	t[8] = (0x13u << 16);
+-	t[9] = (0x13u << 16);
++	t[0] = (0x10u << 16) | 12u;                                     /* ARRAY_UINT32: three channels */
++	t[1] = 2412; t[2] = 2437; t[3] = 2462;
++	t[4] = (0x13u << 16);                                           /* ARRAY_FIXED_STRUCT: no SSIDs */
++	t[5] = (0x13u << 16) | 8u;                                      /* ARRAY_FIXED_STRUCT: one BSSID */
++	t[6] = 0xffffffffu; t[7] = 0x0000ffffu;                         /* broadcast */
++	t[8] = (0x11u << 16);                                           /* ARRAY_BYTE: no extra IEs */
++	t[9] = (0x12u << 16);
++	t[10] = (0x11u << 16);
++	t[11] = (0x13u << 16);
++	t[12] = (0x13u << 16);
+ 	printf("SWEET WMI: scan start (all channels, broadcast probe)\n");
+-	htc_send(&g_ce3, g_htc.wmi_eid, (const uint8_t *)m, 4 * 51);
++	htc_send(&g_ce3, g_htc.wmi_eid, (const uint8_t *)m, 4 * 54);
+ 	if (wifi_wait(&g_htc.scan_done, 25000, "scan") == 0) {
+ 		printf("SWEET WIFI: SCAN COMPLETE, %u frames from access points\n", g_htc.aps);
+ 	}
