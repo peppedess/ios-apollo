@@ -1,0 +1,35 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 315fd8b..09f3171 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -1779,17 +1779,22 @@ wifi_vdev_create(void)
+ 	}
+ 	memcpy(&w[5], g_htc.mac, 4);
+ 	memcpy(&w[6], g_htc.mac + 4, 2);
+-	w[7] = 2;                                                       /* num_cfg_txrx_streams */
++	/*
++	 * No stream configs. k94 ran the full two-pass flow with a real 3600 ms calibration and the scan
++	 * still started and completed inside one millisecond with nothing heard, so the uncalibrated radio
++	 * was not it either. What is left upstream of the scan is the vdev, and the one part of it we are
++	 * still inventing is the inner tag of the stream-config array: the firmware's table gives the array
++	 * element size, 16 bytes, but not the tag of the struct inside, and we guessed 0x19f — the same
++	 * kind of guess that 0x4e and 0x5a turned out to be. A vdev the firmware quietly refused would
++	 * explain a scan that returns instantly. Ask for no streams at all and both arrays stay empty.
++	 */
++	w[7] = 0;                                                       /* num_cfg_txrx_streams */
+ 	w[8] = 0;                                                       /* pdev_id */
+-	w[11] = (0x12u << 16) | 32u;                                    /* ARRAY_STRUCT, two stream configs */
+-	/* and the second array the table asks for, with nothing in it */
+-	uint32_t chains = g_htc.rf_chains ? g_htc.rf_chains : 2u;
+-	w[12] = (0x19fu << 16) | 12u; w[13] = 0; w[14] = chains; w[15] = chains;        /* 2.4 GHz */
+-	w[16] = (0x19fu << 16) | 12u; w[17] = 1; w[18] = chains; w[19] = chains;        /* 5 GHz */
++	w[11] = (0x12u << 16);                                          /* ARRAY_STRUCT, no stream configs */
++	w[12] = (0x12u << 16);                                          /* and the second array, empty */
+ 	printf("SWEET WMI: vdev 0 create (station, MAC %02x:%02x:%02x:%02x:%02x:%02x)\n", g_htc.mac[0], g_htc.mac[1],
+ 	    g_htc.mac[2], g_htc.mac[3], g_htc.mac[4], g_htc.mac[5]);
+-	w[20] = (0x12u << 16);
+-	htc_send(&g_ce3, g_htc.wmi_eid, (const uint8_t *)m, 4 * 21);
++	htc_send(&g_ce3, g_htc.wmi_eid, (const uint8_t *)m, 4 * 13);
+ }
+ 
+ static void
