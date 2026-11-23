@@ -2605,3 +2605,39 @@ ricerca che fallisce **non è quella del comando che mandiamo noi**.
 Ma i due pacchetti prima della chiamata salvano la chiave in un indirizzo fisso. 1244 rilegge
 `0x015ce4c8..0x015ce4e4` dalla finestra dopo il crash, con le briciole: è il firmware che ci dice il
 nome della cosa che non trova.
+
+## k87 e 1245 — la forma del messaggio, letta dentro il firmware
+
+k87 ha riletto dalla finestra i due indirizzi fissi che la funzione scrive prima di morire:
+
+	0x015ce4dc = 0x0149960c      il puntatore al corpo del messaggio
+	0x015ce4e0 = 0x00000148      328, cioè i nostri 332 byte meno l'id del comando
+
+Quindi la chiamata a `0x100007c` riceve (corpo, lunghezza) e torna qualcosa che non è né 0 né 1.
+
+Nel frattempo ho scoperto che `dis.py` sbagliava gli indirizzi in due modi: univa i pacchetti su una
+riga sola e non contava gli 8 byte degli immediate extender (`##`). Metà dell'aritmetica dei salti fatta
+in questi giorni era quindi falsa. `dis2.py` li conta bene e stampa gli indirizzi dei salti come
+`inizio_disassemblato + immediato`.
+
+Con gli indirizzi giusti, `0x100007c` chiama `0x1000000`, che percorre la tabella a `0x15a9490`: 1207
+parole, record a lunghezza variabile, byte alto la lunghezza, 24 bit bassi un **id di comando WMI**. Il
+record 0 è il comando 1, WMI_INIT, e le sue cinque parole di corpo si spacchettano (tag nei bit 11:0,
+dimensione nei bit 20:12) così:
+
+	tag 0x04a    32 byte     la struct del comando init
+	tag 0x04b   308 byte     la resource config
+	tag 0x012    20          un array di elementi da 20
+	tag 0x203    16
+	tag 0x012    16          un array di elementi da 16: i memory chunk dell'host
+
+Noi mandavamo **0x4e e 0x4f**, con una resource config da 292 byte e un array solo. Tag sbagliati tutti
+e due, config corta di quattro parole, due TLV mancanti. L'unica cosa giusta era 0x012 per
+ARRAY_STRUCT — e i tag degli eventi che già interpretiamo, 0x20 per SERVICE_READY e 0x23 per READY,
+collocano questo firmware nello stesso spazio di tag, quindi i numeri sono confrontabili davvero.
+
+Spiega anche k86: un id sconosciuto non arriva mai a questo parser, viene scartato prima e il firmware
+sopravvive; WMI_INIT invece ci arriva, e fallisce.
+
+1245 costruisce il messaggio come lo chiede il firmware: 368 byte, tag 0x4a e 0x4b, resource config da
+304 byte di payload, e i tre TLV di coda. `sweetoldtlv=1` rimanda la forma vecchia per il confronto.

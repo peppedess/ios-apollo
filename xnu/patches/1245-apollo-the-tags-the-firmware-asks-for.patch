@@ -1,0 +1,95 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 6466714..e978457 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2270,14 +2270,42 @@ wcss_cc_dump(const char *when)
+ static void
+ wmi_init(void)
+ {
+-	static uint8_t msg[4 + 32 + 292 + 4];
++	/*
++	 * The shape of this message is no longer guessed: the firmware carries the specification and we read
++	 * it out of the image.
++	 *
++	 * Line 502 is the assert at 0x1503230, taken when the call at 0x1503228 returns neither 0 nor 1.
++	 * That call is 0x100007c, which gets the message body and its length (the two words it stores at
++	 * 0x15ce4dc and 0x15ce4e0, and which k87 read back as 0x0149960c and 328 — 332 bytes of frame minus
++	 * the command id, exactly ours). It walks a table at 0x15a9490: 1207 words of variable-length
++	 * records, the top byte a length, the low 24 bits a WMI command id. Record 0 is command 1, WMI_INIT,
++	 * and its five body words unpack (tag in bits 11:0, size in bits 20:12) as:
++	 *
++	 *	tag 0x04a   32 bytes      the init command struct
++	 *	tag 0x04b  308 bytes      the resource config
++	 *	tag 0x012   20            an array of 20-byte elements
++	 *	tag 0x203   16
++	 *	tag 0x012   16            an array of 16-byte elements: the host memory chunks
++	 *
++	 * We have been sending tags 0x4e and 0x4f with a 292-byte resource config and one empty array. Both
++	 * tags are wrong, the config is four words short, and two TLVs are missing. 0x012 for ARRAY_STRUCT
++	 * is the one thing we had right, and the event tags we already parse — 0x20 for SERVICE_READY, 0x23
++	 * for READY — place this firmware in the same tag space, so these numbers are directly comparable.
++	 *
++	 * It also explains k86: an unknown command id never reaches this parser, so it is dropped harmlessly,
++	 * while WMI_INIT reaches it and fails. sweetoldtlv=1 sends the old shape for comparison.
++	 */
++	static uint8_t msg[4 + 32 + 308 + 4 + 16 + 4];
+ 	uint32_t *w = (uint32_t *)msg;
+ 	memset(msg, 0, sizeof(msg));
++	uint32_t oldtlv = 0;
++	(void)PE_parse_boot_argn("sweetoldtlv", &oldtlv, sizeof(oldtlv));
++	uint32_t framelen = oldtlv ? 332u : (uint32_t)sizeof(msg);
+ 	w[0] = 1;                                                       /* WMI_INIT_CMDID */
+-	w[1] = (0x4eu << 16) | 28u;                                     /* WMI_TAG_INIT_CMD */
++	w[1] = oldtlv ? ((0x4eu << 16) | 28u) : ((0x4au << 16) | 28u);
+ 	w[8] = 0;                                                       /* num_host_mem_chunks */
+ 	uint32_t *cfg = w + 9;                                          /* cfg[0] = its TLV header */
+-	RC(0, (0x4fu << 16) | 288u);
++	RC(0, oldtlv ? ((0x4fu << 16) | 288u) : ((0x4bu << 16) | 304u));
+ 	uint32_t chains = g_htc.rf_chains ? g_htc.rf_chains : 2u;
+ 	/*
+ 	 * Every elimination so far has been host-side plumbing: wakes, votes, clocks, board files, QMI shapes.
+@@ -2335,8 +2363,8 @@ wmi_init(void)
+ 	(void)PE_parse_boot_argn("sweetwmiprobe", &probe, sizeof(probe));
+ 	if (probe) {
+ 		w[0] = 0x3ffeu;
+-		printf("SWEET WMI: probe: command id %#x, %u bytes\n", w[0], (unsigned)sizeof(msg));
+-		htc_send(&g_ce3, g_htc.wmi_eid, (const uint8_t *)msg, sizeof(msg));
++		printf("SWEET WMI: probe: command id %#x, %u bytes\n", w[0], framelen);
++		htc_send(&g_ce3, g_htc.wmi_eid, (const uint8_t *)msg, framelen);
+ 		volatile int never = 0;
+ 		(void)wifi_wait(&never, 5000, "probe");
+ 		printf("SWEET WMI: probe: firmware %s; CE3 head %u tail %u (hardware %u)\n",
+@@ -2351,7 +2379,7 @@ wmi_init(void)
+ 		RC(14, 1); RC(15, 4); RC(22, 1024); RC(29, 64); RC(30, 6);
+ 		RC(33, 1); RC(44, 1u << 5); RC(54, 1); RC(68, 1u << 9);
+ 		printf("SWEET WMI: INIT minimal (1 vdev, 4 peers, 8 tids)\n");
+-		htc_send(&g_ce3, g_htc.wmi_eid, (const uint8_t *)msg, sizeof(msg));
++		htc_send(&g_ce3, g_htc.wmi_eid, (const uint8_t *)msg, framelen);
+ 		if (wifi_wait(&g_htc.wmi_ready, 10000, "WMI ready") != 0) {
+ 			return;
+ 		}
+@@ -2388,15 +2416,21 @@ wmi_init(void)
+ 	RC(44, 1u << 5);                                                /* flag1: BSS_CHANNEL_INFO_64 */
+ 	RC(54, 1);                                                      /* use_pdev_id */
+ 	RC(68, 1u << 9);                                                /* flags2: CALC_NEXT_DTIM_COUNT_SET */
+-	cfg[73] = (0x12u << 16);                                        /* ARRAY_STRUCT, no memory chunks */
++	if (oldtlv) {
++		cfg[73] = (0x12u << 16);                                /* ARRAY_STRUCT, no memory chunks */
++	} else {
++		cfg[77] = (0x12u << 16);                                /* the 20-byte array, empty */
++		cfg[78] = (0x203u << 16) | 12u;                         /* and whatever 0x203 is, zeroed */
++		cfg[82] = (0x12u << 16);                                /* the host memory chunks, none */
++	}
+ 	static uint8_t padded[336];
+-	uint32_t len = sizeof(msg);
++	uint32_t len = framelen;
+ 	const uint8_t *frame = msg;
+ 	if (var == 1) {
+ 		len = 4 + 32;
+ 	} else if (var == 2) {
+ 		memset(padded, 0, sizeof(padded));
+-		memcpy(padded, msg, sizeof(msg));
++		memcpy(padded, msg, framelen);
+ 		frame = padded;
+ 		len = sizeof(padded);
+ 	} else if (var == 3) {
