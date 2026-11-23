@@ -2578,3 +2578,30 @@ stato (k78, k80) e col GDSCR già azzerato (k81). Nessuna di quelle cose poteva 
 C'era anche un appunto di k13b che leggeva il 502 proprio così, scritto prima che il bring-up a due
 passaggi funzionasse e mai riprovato da quando arriviamo davvero in missione. `sweetwmimin=1` chiede la
 configurazione minima — 1 vdev, 4 peer, 8 TID invece di 3 vdev e 16 peer — ed è k82.
+
+## k85, k86 e 1244 — la riga 502 è una ricerca in tabella che fallisce
+
+**k85**: INIT con il solo TLV del comando, 36 byte, nessuna resource config. Stesso 502, stessi 100 ms.
+I valori non c'entrano: il firmware muore perché *riceve* un WMI_INIT.
+
+Allora ho cercato davvero la riga 502, disassemblando tutto il file invece di scandire la costante — lo
+scanner l'aveva mancata perché sta in un'istruzione composta, `if (!p0.new) r16 = #502`:
+
+	01503208  r0 = memw(r29+#36);  memw(##0x15ce4dc) = r0;  memw(##0x15ce4e0) = r24
+	01503224  call 0x100007c
+	01503228  if (r0 == 0) jump  ok
+	0150322c  if (r0 != 1) { r16 = #502; jump assert }
+
+`0x100007c` chiama `0x1000000`, che percorre una tabella di 1207 parole a `0x15a9490`: record a
+lunghezza variabile, byte alto la lunghezza, 24 bit bassi la chiave. Le chiavi sono `0x000001`,
+`0x006001`, `0x009001`, `0x00b001`, `0x01c001`, `0x005010`… cioè la forma `(gruppo << 12) | 1` dei
+comandi WMI, e il record 0 è proprio WMI_INIT. Ricerca fallita → torna 1 → `0x100007c` torna −1 → −1
+non è né 0 né 1 → **assert**.
+
+**k86**: un id che in quella tabella davvero non c'è (0x3ffe) viene ignorato e il firmware resta vivo
+cinque secondi buoni, con er0 interrogato (quindi stavolta lo sapremmo, se fosse morto). Quindi la
+ricerca che fallisce **non è quella del comando che mandiamo noi**.
+
+Ma i due pacchetti prima della chiamata salvano la chiave in un indirizzo fisso. 1244 rilegge
+`0x015ce4c8..0x015ce4e4` dalla finestra dopo il crash, con le briciole: è il firmware che ci dice il
+nome della cosa che non trova.

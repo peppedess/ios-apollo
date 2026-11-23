@@ -1,0 +1,37 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 7267c3d..6466714 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -1035,6 +1035,32 @@ wlan_rddm(void)
+ static void
+ wlan_crash_dump(void)
+ {
++	/*
++	 * The two words the asserting function writes just before it dies.
++	 *
++	 * Line 502 is finally pinned, by disassembling the whole file instead of scanning for the constant
++	 * (the scan missed it: it is a compound instruction, `if (!p0.new) r16 = #502`). At 0x150322c:
++	 *
++	 *	01503208  r0 = memw(r29+#36);  memw(##0x15ce4dc) = r0;  memw(##0x15ce4e0) = r24
++	 *	01503224  call 0x100007c
++	 *	01503228  if (r0 == 0) jump ok
++	 *	0150322c  if (r0 != 1) { r16 = #502; jump assert }
++	 *
++	 * 0x100007c calls 0x1000000, which walks a 1207-word table at 0x15a9490: variable-length records,
++	 * top byte the length, low 24 bits the key. The keys are 0x000001, 0x006001, 0x009001, 0x00b001,
++	 * 0x01c001, 0x005010 — exactly WMI's (group << 12) | 1, with record 0 being WMI_INIT itself. Miss,
++	 * and the search returns 1, 0x100007c returns -1, and -1 is neither 0 nor 1: assert.
++	 *
++	 * k86 says an id that is genuinely absent from that table is ignored and the firmware lives, so the
++	 * lookup that fails is not the one for the command we sent. But whatever id it is, the two packets
++	 * before the call store it, and the store is to a fixed address. Read it back after the crash and
++	 * the firmware names the thing it could not find.
++	 */
++	for (uint32_t i = 0; i < 8; i++) {
++		uint32_t a = 0x015ce4c8u + 4u * i;
++		printf("SWEET MHI: reading %#010x\n", a);
++		printf("SWEET MHI: %#010x = %#010x%s\n", a, win_rd(a), a == 0x015ce4dcu ? "   <<< the id it looked up" : "");
++	}
+ 	printf("SWEET MHI: crash state: ee %u mhistatus %#x bhi status %#x err %#x\n", rd(g_bar, 0x100 + 0x28),
+ 	    rd(g_bar, 0x48), rd(g_bar, 0x100 + 0x2c), rd(g_bar, 0x100 + 0x30));
+ 	/*
