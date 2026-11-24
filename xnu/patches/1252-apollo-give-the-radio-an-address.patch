@@ -1,0 +1,52 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 09f3171..0a323b1 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -1749,6 +1749,37 @@ static void wifi_scan(void);
+  * events on the control endpoint, so no data path is needed yet: SCAN (4) for progress and MGMT_RX (0x7001) for
+  * every beacon and probe response, whose SSID and BSSID we print.
+  */
++/*
++ * Give the radio an address of its own before anything else.
++ *
++ * k95 created the vdev with no stream configs and the scan behaved exactly as before — started and
++ * completed inside a millisecond, nothing heard — so the invented inner tag was not it either. Three
++ * explanations have now been tried and dropped: the regulatory domain (the firmware sends its own, with
++ * country CN), the uncalibrated radio (k94 did the full two-pass calibration), and the vdev's stream
++ * configs.
++ *
++ * What is left is the thing the READY event told us at the start and we worked around instead of
++ * fixing: the firmware has no MAC address. We gave one to the *vdev*, which is not the same as giving
++ * one to the *radio*. The firmware's own command table has the command for that — id 0x400d, a single
++ * 16-byte TLV tagged 0x0ac, which is a tlv header, a wmi_mac_addr and a pdev_id, exactly
++ * WMI_PDEV_SET_BASE_MACADDR. A pdev whose base address is six zero bytes has nothing to put in a probe
++ * request, and a scan that cannot send one has nothing to do on a channel.
++ */
++static void
++wifi_set_base_mac(const uint8_t *mac)
++{
++	static uint32_t m[4];
++	memset(m, 0, sizeof(m));
++	m[0] = 0x400d;                                                  /* WMI_PDEV_SET_BASE_MACADDR_CMDID */
++	m[1] = (0x0acu << 16) | 12u;
++	memcpy(&m[2], mac, 4);
++	memcpy(&m[3], mac + 4, 2);
++	m[3] = (m[3] & 0xffffu);                                        /* mac47to32, high half reserved */
++	printf("SWEET WMI: pdev base MAC %02x:%02x:%02x:%02x:%02x:%02x\n", mac[0], mac[1], mac[2], mac[3],
++	    mac[4], mac[5]);
++	htc_send(&g_ce3, g_htc.wmi_eid, (const uint8_t *)m, sizeof(m));
++}
++
+ static void
+ wifi_vdev_create(void)
+ {
+@@ -1777,6 +1808,9 @@ wifi_vdev_create(void)
+ 		memcpy(g_htc.mac, madeup, 6);
+ 		printf("SWEET WMI: the firmware gave no MAC, using a locally administered one\n");
+ 	}
++	wifi_set_base_mac(g_htc.mac);
++	volatile int settled = 0;
++	(void)wifi_wait(&settled, 100, "after the base MAC");
+ 	memcpy(&w[5], g_htc.mac, 4);
+ 	memcpy(&w[6], g_htc.mac + 4, 2);
+ 	/*
