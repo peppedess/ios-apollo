@@ -2887,3 +2887,11 @@ dopo mentre il firmware sta ancora mettendo via la scansione.
 
 E se il vdev non parte, adesso ci si ferma lì. k103 ha speso un run intero per scoprire, con un crash,
 quello che il codice di stato aveva già detto.
+
+## 1261 — zittire il log del firmware
+
+k104 è finito senza dire niente: il log si è riempito a 72,7 secondi, prima ancora che la scansione
+arrivasse in fondo, e l'ultima riga è il canale 2437. L'evento 0x1d011 — il log interno del firmware —
+arriva sette o otto volte per canale, e la riga di intestazione che stampavamo per ognuno ha consumato i
+quattro megabyte che abbiamo a disposizione. Il decoder era già dietro `sweetfwlog`; adesso ci va anche
+l'annuncio.

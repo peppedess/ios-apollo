@@ -1,0 +1,27 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index abbdbb5..6ab504b 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -1571,7 +1571,21 @@ htc_rx(uint32_t pipe, const uint8_t *p, uint32_t n)
+ 		 * tag 0x23), which answers our INIT.
+ 		 */
+ 		uint32_t tag = m1 >> 16, tlen = m1 & 0xffffu;
+-		printf("SWEET WMI: ep %u event %#x tag %#x len %u (%u bytes)\n", eid, m0, tag, tlen, n);
++		/*
++		 * Not a line for every firmware log event. k104 ran out of log before the scan even finished:
++		 * event 0x1d011 arrives seven or eight times per channel, and the header line for each of them
++		 * filled the four megabytes we have to write into. The events themselves are still counted and
++		 * still decoded under sweetfwlog; what goes is the announcement.
++		 */
++		static int evlog_on = -1;
++		if (evlog_on < 0) {
++			uint32_t v = 0;
++			(void)PE_parse_boot_argn("sweetfwlog", &v, sizeof(v));
++			evlog_on = v ? 1 : 0;
++		}
++		if (m0 != 0x1d011u || evlog_on) {
++			printf("SWEET WMI: ep %u event %#x tag %#x len %u (%u bytes)\n", eid, m0, tag, tlen, n);
++		}
+ 		/*
+ 		 * And show what is in the ones we have no name for. With explicit channels the scan starts and
+ 		 * completes — the regulatory domain really was the reason it was refused — but it completes in
