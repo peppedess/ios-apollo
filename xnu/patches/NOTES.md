@@ -2932,3 +2932,23 @@ Due allineamenti nel vdev start, presi dal codice di ath11k invece che inventati
 **MODE_11AX_HE20_2G (21)** senza altri bit in `info` — la tabella dei phymode di ath11k per questo chip
 non ha una voce a 20 MHz che non sia una modalità HE, e per una stazione i bit allow_ht/vht/he non si
 toccano, perché appartengono alla lista dei canali. Avevamo MODE_11NG_HT20 con ALLOW_HT.
+
+## 1263 — la stretta di mano HTT, e un giro di varianti
+
+k106: il vdev create con le due configurazioni di flusso per banda è stato accettato — quindi il tag
+0x19b era giusto — ma il vdev start è tornato ancora `status 4294967295`. Tre rifiuti identici a tre
+comandi diversi (tre flussi, due flussi, flussi per banda più phymode e flag di ath11k) dicono che il
+rifiuto non riguarda il contenuto del comando.
+
+**Quello che non abbiamo mai fatto è parlare su HTT.** L'endpoint è connesso dal primo run e non ci
+abbiamo mai mandato un byte. ath11k manda la richiesta di versione HTT appena WMI dice di essere pronto e
+prima di registrare una sola radio con mac80211 — `ath11k_dp_tx_htt_h2t_ver_req_msg`, chiamata da
+`ath11k_core_start` fra `ath11k_wmi_wait_for_unified_ready` e `ath11k_mac_register`. Sono quattro byte,
+tipo messaggio 0, e il firmware risponde con la sua versione. Un vdev non è solo una radio: è anche un
+percorso dati, e un firmware che non ha concordato una versione HTT con l'host non ha un percorso dati a
+cui attaccarlo.
+
+E per non spendere un altro run su un "probabilmente", il vdev start adesso prova otto varianti di
+seguito — phymode HE20_2G, 11NG_HT20 con ALLOW_HT, 11G, VHT20_2G, con e senza il flag LDPC, uno o due
+flussi, beacon interval 0, requestor 1 — e stampa lo stato di ognuna. Costa un decimo di secondo. La
+prima che il firmware accetta vince.

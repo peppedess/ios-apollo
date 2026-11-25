@@ -1,0 +1,151 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 898698b..074befe 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2208,8 +2208,44 @@ wifi_mgmt_buf(void)
+ 	return 0;
+ }
+ 
++/*
++ * The HTT version request, which ath11k sends the moment WMI says it is ready and before it registers a
++ * single radio with mac80211 (ath11k_dp_tx_htt_h2t_ver_req_msg, called from ath11k_core_start between
++ * ath11k_wmi_wait_for_unified_ready and ath11k_mac_register). It is four bytes — message type 0 — on the
++ * HTT endpoint, and the firmware answers with a version confirmation. We have had that endpoint connected
++ * since the very first run and have never said a word on it.
++ *
++ * This matters here because a vdev is not only a radio: it is also a data path, and a firmware that has
++ * not agreed an HTT version with the host has no data path to attach one to. It is the best remaining
++ * explanation for a vdev start that comes back −1 whatever we put in the command.
++ */
++static void
++wifi_htt_version(void)
++{
++	uint32_t m[1] = { 0 };                                          /* HTT_H2T_MSG_TYPE_VERSION_REQ */
++	printf("SWEET HTT: version request on endpoint %u\n", g_htc.htt_eid);
++	htc_send(&g_ce4, g_htc.htt_eid, (const uint8_t *)m, sizeof(m));
++	volatile int settled = 0;
++	(void)wifi_wait(&settled, 300, "after the HTT version request");
++}
++
++/*
++ * The vdev start, and a sweep over what we are unsure of.
++ *
++ * k103, k105 and k106 all came back with status 0xffffffff from three different commands: the first with
++ * three preferred streams, the second with two, the third with the per-band stream configuration the vdev
++ * had been missing and ath11k's own phymode and LDPC flag. Three refusals that look identical mean the
++ * refusal probably has nothing to do with the contents, but "probably" has cost us four runs already, and
++ * a whole sweep costs about a tenth of a second. Each variant goes out, waits for its answer, and prints
++ * it; the first one the firmware accepts wins and the rest are skipped.
++ */
++struct vdev_start_variant {
++	const char *what;
++	uint32_t mode, flags, bcn, streams, requestor;
++};
++
+ static void
+-wifi_vdev_start(uint32_t freq)
++wifi_vdev_start(uint32_t freq, const struct vdev_start_variant *v)
+ {
+ 	static uint32_t m[40];
+ 	uint32_t *w = m;
+@@ -2217,10 +2253,10 @@ wifi_vdev_start(uint32_t freq)
+ 	w[0] = 0x5003;                                                  /* WMI_VDEV_START_REQUEST_CMDID */
+ 	w[1] = (0x058u << 16) | 112u;                                   /* WMI_TAG_VDEV_START_REQUEST_CMD */
+ 	w[2] = 0;                                                       /* vdev_id */
+-	w[3] = 0;                                                       /* requestor_id */
+-	w[4] = 100;                                                     /* beacon_interval, in TU */
++	w[3] = v->requestor;                                            /* requestor_id */
++	w[4] = v->bcn;                                                  /* beacon_interval, in TU */
+ 	w[5] = 0;                                                       /* dtim_period: the access point's business */
+-	w[6] = (1u << 3);                                               /* WMI_VDEV_START_LDPC_RX_ENABLED */
++	w[6] = v->flags;                                                /* WMI_VDEV_START_LDPC_RX_ENABLED and friends */
+ 	/* w[7] is ssid_len and w[8..15] the SSID: a station's own vdev does not carry one */
+ 	w[19] = 0;                                                      /* disable_hw_ack */
+ 	/*
+@@ -2228,8 +2264,8 @@ wifi_vdev_start(uint32_t freq)
+ 	 * looks like — and got status 0xffffffff back. ath11k puts ar->num_tx_chains here, a count, and the
+ 	 * service ready event says this radio has two.
+ 	 */
+-	w[20] = 2;                                                      /* preferred_tx_streams */
+-	w[21] = 2;                                                      /* preferred_rx_streams */
++	w[20] = v->streams;                                             /* preferred_tx_streams */
++	w[21] = v->streams;                                             /* preferred_rx_streams */
+ 	uint32_t *c = w + 30;
+ 	c[0] = (0x050u << 16) | 24u;                                    /* WMI_TAG_CHANNEL */
+ 	c[1] = freq;                                                    /* mhz */
+@@ -2241,20 +2277,48 @@ wifi_vdev_start(uint32_t freq)
+ 	 * and for a station it sets none of the allow_ht / allow_vht / allow_he bits, which belong to the
+ 	 * channel list rather than here. We had MODE_11NG_HT20 with ALLOW_HT, invented rather than copied.
+ 	 */
+-	c[4] = 21u;
++	c[4] = v->mode;
+ 	c[5] = (20u << 8) | (20u << 16);
+ 	c[6] = (20u << 8);
+ 	w[37] = (0x12u << 16);
+ 	w[38] = (0x12u << 16);
+ 	w[39] = (0x12u << 16);
+ 	g_htc.vdev_started = 0;
+-	printf("SWEET WMI: vdev 0 start on %u MHz\n", freq);
++	g_htc.vdev_start_status = 0xffffffffu;
++	printf("SWEET WMI: vdev 0 start on %u MHz [%s]\n", freq, v->what);
+ 	htc_send(&g_ce3, g_htc.wmi_eid, (const uint8_t *)m, sizeof(m));
+-	if (wifi_wait(&g_htc.vdev_started, 3000, "vdev start") != 0) {
+-		printf("SWEET WMI: no answer to the vdev start\n");
++	if (wifi_wait(&g_htc.vdev_started, 2000, "vdev start") != 0) {
++		printf("SWEET WMI: no answer to the vdev start [%s]\n", v->what);
+ 	}
+ }
+ 
++static int
++wifi_vdev_start_sweep(uint32_t freq)
++{
++	static const struct vdev_start_variant vs[] = {
++		{ "HE20_2G, LDPC, 2 streams",  21, 1u << 3, 100, 2, 0 },
++		{ "11NG_HT20 + ALLOW_HT",       5u | (1u << 11), 0, 100, 2, 0 },
++		{ "11G",                         1, 0, 100, 2, 0 },
++		{ "HE20_2G, no flags",          21, 0, 100, 2, 0 },
++		{ "HE20_2G, one stream",        21, 1u << 3, 100, 1, 0 },
++		{ "HE20_2G, no beacon interval", 21, 1u << 3, 0, 2, 0 },
++		{ "HE20_2G, requestor 1",       21, 1u << 3, 100, 2, 1 },
++		{ "11AC_VHT20_2G",              11, 1u << 3, 100, 2, 0 },
++	};
++	for (uint32_t i = 0; i < sizeof(vs) / sizeof(vs[0]); i++) {
++		wifi_vdev_start(freq, &vs[i]);
++		printf("SWEET WMI:   [%s] -> status %u\n", vs[i].what, g_htc.vdev_start_status);
++		if (g_htc.vdev_start_status == 0) {
++			printf("SWEET WMI: VDEV STARTED with [%s]\n", vs[i].what);
++			return 0;
++		}
++		if (g_sysfail) {
++			return -1;
++		}
++	}
++	return -1;
++}
++
+ static void
+ wifi_peer_create(const uint8_t *bssid)
+ {
+@@ -2356,13 +2420,12 @@ wifi_join(void)
+ 	 */
+ 	volatile int quiet = 0;
+ 	(void)wifi_wait(&quiet, 300, "before the vdev start");
+-	wifi_vdev_start(freq);
+ 	/*
+ 	 * And stop here if it was refused. k103 went on to send a management frame on a vdev that had never
+ 	 * started, and the firmware died 187 ms later — which told us nothing we did not already know from
+ 	 * the status code, at the cost of a whole run.
+ 	 */
+-	if (g_htc.vdev_start_status != 0) {
++	if (wifi_vdev_start_sweep(freq) != 0) {
+ 		printf("SWEET WIFI: the vdev would not start, nothing more to try here\n");
+ 		return;
+ 	}
+@@ -3790,6 +3853,7 @@ wmi_init(void)
+ 	}
+ 	printf("SWEET WMI: FIRMWARE UP (WMI ready)\n");
+ 	if (g_step >= 15) {
++		wifi_htt_version();
+ 		wifi_scan();
+ 	} else {
+ 		volatile int never = 0;
