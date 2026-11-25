@@ -1,0 +1,43 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 6c70ede..23fefe9 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -1638,7 +1638,17 @@ htc_rx(uint32_t pipe, const uint8_t *p, uint32_t n)
+ 		 * 0x1d011 arrives in 1.5 KiB lumps tagged 0x11, ARRAY_BYTE: it is the firmware talking. We spent
+ 		 * a run opening DIAG channels to get this and it was coming over WMI all along.
+ 		 */
+-		if (m0 == 0x1d011u && n > 20 && g_fwlog_shown < 40u) {
++		/*
++		 * And off by default from here on: once the scan works, forty lumps of firmware log are forty
++		 * lumps of noise between us and the beacons. sweetfwlog=1 brings it back.
++		 */
++		static int fwlog_on = -1;
++		if (fwlog_on < 0) {
++			uint32_t v = 0;
++			(void)PE_parse_boot_argn("sweetfwlog", &v, sizeof(v));
++			fwlog_on = v ? 1 : 0;
++		}
++		if (fwlog_on && m0 == 0x1d011u && n > 20 && g_fwlog_shown < 40u) {
+ 			uint32_t k = n - 20 > 240u ? 240u : n - 20;
+ 			char line[244];
+ 			uint32_t o = 0;
+@@ -1657,8 +1667,17 @@ htc_rx(uint32_t pipe, const uint8_t *p, uint32_t n)
+ 			memcpy(&chan, p + 16, 4);
+ 			memcpy(&buflen, p + 16 + 16, 4);
+ 			memcpy(&rssi, p + 16 + 44, 4);
+-			/* the frame follows the header TLV: 802.11 mgmt, SSID is the first IE after the 36-byte body */
+-			const uint8_t *f = p + 16 + tlen + 4 + 4;
++			/*
++			 * The frame follows the header TLV, and it starts four bytes earlier than we were looking.
++			 * k99 heard six beacons and printed six addresses that were not addresses: the last two
++			 * bytes of the BSSID followed by the sequence control and the first two bytes of the
++			 * timestamp. The layout is 8 bytes of HTC, the event id, the fixed-param TLV header, tlen
++			 * bytes of header and one ARRAY_BYTE header — p + 16 is already past the first two of
++			 * those, so there is exactly one 4-byte header left to skip, not two. The arithmetic
++			 * checks out against the event: 8 + 4 + 4 + 68 + 4 + 266 = 354, padded to the 356 the
++			 * log reports.
++			 */
++			const uint8_t *f = p + 16 + tlen + 4;
+ 			uint32_t avail = n > (uint32_t)(f - p) ? n - (uint32_t)(f - p) : 0;
+ 			char ssid[33] = { 0 };
+ 			uint8_t bss[6] = { 0 };

@@ -2774,3 +2774,23 @@ Terza modifica: la scansione è **passiva** per default (`sweetactive=1` per tor
 scansione attiva mette in aria una probe request, e una probe request vuole un indirizzo sorgente che il
 firmware accetti — l'unica cosa che non siamo riusciti a dargli. Una scansione passiva non chiede niente:
 si ferma sul canale e ascolta, e ogni access point del palazzo si annuncia ogni cento millisecondi.
+
+## 1256 — leggere il beacon dal byte giusto
+
+k99 ha sentito sei beacon. **La scansione funziona**: 13 canali 2.4 GHz, 150 ms ciascuno, 1,7 secondi
+reali di ascolto, eventi 0x8 e 0x4 su ogni canale e `scan event 0x2 COMPLETED` alla fine, RSSI fra −56 e
+−85 dBm. La lista dei canali era davvero tutto quello che mancava, e togliendo il comando del MAC di base
+è sparito anche l'assert a 630.
+
+Restava un errore di lettura. I sei indirizzi stampati non erano indirizzi: `9f:e9:00:21:a0:f1`,
+`8c:a0:70:54:9a:71`, `8c:a0:e0:92:97:71`. Guardandoli in fila si vede cosa sono — gli ultimi due byte del
+BSSID, poi il sequence control, poi i primi due byte del timestamp. Due coppie hanno gli stessi primi due
+byte (`8c:a0` e `ec:18`): sono due beacon dello stesso access point, non quattro reti.
+
+Il frame comincia quattro byte prima di dove lo cercavamo: 8 byte di HTC, l'id dell'evento,
+l'intestazione TLV del parametro fisso, 68 byte di intestazione e una sola intestazione ARRAY_BYTE.
+`p + 16` è già oltre le prime due, quindi resta un'intestazione da saltare, non due. I conti tornano con
+l'evento: 8 + 4 + 4 + 68 + 4 + 266 = 354, allineato ai 356 che il log riporta.
+
+Il log del firmware (evento 0x1d011) passa dietro `sweetfwlog=1`: adesso che la scansione funziona, 40
+blocchi da 1,5 KiB sono solo rumore fra noi e i beacon.
