@@ -2861,3 +2861,29 @@ slot time, listen interval 10, l'SSID, le velocità supportate ed estese, e l'RS
 Dopo questo, se arriva una risposta con stato 0 e un AID, mancano ancora `WMI_PEER_ASSOC` e `VDEV_UP`
 perché il firmware consideri il collegamento vivo, e poi il four-way handshake EAPOL — che è traffico
 dati, e quindi vuole il data path HAL che per ora sta dietro `sweetdp=1`.
+
+## 1260 — flussi, non una maschera di catene
+
+k103 è andato molto avanti. La scansione ha trovato cinque reti con i loro elementi RSN — tutte WPA2-PSK
+con CCMP, e `VODAFONE-4RSNRQ` che offre anche SAE (00-0f-ac-08) e chiede la protezione dei frame di
+gestione. Il peer create è stato accettato senza una parola. Poi:
+
+```
+SWEET WMI: vdev 0 start response: type 0 status 4294967295
+```
+
+Status −1. E siccome il codice andava avanti lo stesso, 187 ms dopo il frame di autenticazione è partito
+su un vdev che non era mai partito, e il firmware è morto con SYS_ERR.
+
+Il campo sbagliato sono `preferred_tx_streams` e `preferred_rx_streams`: avevo messo 3 e 3, che è come si
+scrive la maschera delle catene di una radio a due catene. Ma quello è un **conteggio di flussi**, non una
+maschera: ath11k ci mette `ar->num_tx_chains`, e l'evento service ready dice che questa radio ha due
+catene. Chiedere tre flussi spaziali a una radio che ne ha due è esattamente il genere di cosa che si
+rifiuta con −1.
+
+Due contorni: `dtim_period` torna a 0, perché per una stazione è affare dell'access point; e il vdev
+start aspetta 300 ms dopo l'evento di completamento della scansione, invece di partire un millisecondo
+dopo mentre il firmware sta ancora mettendo via la scansione.
+
+E se il vdev non parte, adesso ci si ferma lì. k103 ha speso un run intero per scoprire, con un crash,
+quello che il codice di stato aveva già detto.

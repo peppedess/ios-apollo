@@ -1,0 +1,48 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 96aebf4..abbdbb5 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2190,12 +2190,17 @@ wifi_vdev_start(uint32_t freq)
+ 	w[2] = 0;                                                       /* vdev_id */
+ 	w[3] = 0;                                                       /* requestor_id */
+ 	w[4] = 100;                                                     /* beacon_interval, in TU */
+-	w[5] = 1;                                                       /* dtim_period */
++	w[5] = 0;                                                       /* dtim_period: the access point's business */
+ 	w[6] = 0;                                                       /* flags: not a restart, not hidden */
+ 	/* w[7] is ssid_len and w[8..15] the SSID: a station's own vdev does not carry one */
+ 	w[19] = 0;                                                      /* disable_hw_ack */
+-	w[20] = 3;                                                      /* preferred_tx_chain_mask: both chains */
+-	w[21] = 3;                                                      /* preferred_rx_chain_mask */
++	/*
++	 * Streams, not a chain mask. k103 asked for 3 and 3 — which is what a two-chain radio's chain mask
++	 * looks like — and got status 0xffffffff back. ath11k puts ar->num_tx_chains here, a count, and the
++	 * service ready event says this radio has two.
++	 */
++	w[20] = 2;                                                      /* preferred_tx_streams */
++	w[21] = 2;                                                      /* preferred_rx_streams */
+ 	uint32_t *c = w + 30;
+ 	c[0] = (0x050u << 16) | 24u;                                    /* WMI_TAG_CHANNEL */
+ 	c[1] = freq;                                                    /* mhz */
+@@ -2310,7 +2315,22 @@ wifi_join(void)
+ 	printf("SWEET WIFI: joining \"%s\" at %02x:%02x:%02x:%02x:%02x:%02x, channel %u (%u MHz), %d dBm\n",
+ 	    g_net_ssid[best], g_nets[best][0], g_nets[best][1], g_nets[best][2], g_nets[best][3],
+ 	    g_nets[best][4], g_nets[best][5], g_net_chan[best], freq, g_net_rssi[best]);
++	/*
++	 * Let the scan finish settling first. k103 sent the vdev start one millisecond after the completion
++	 * event, while the firmware was still putting the scan away.
++	 */
++	volatile int quiet = 0;
++	(void)wifi_wait(&quiet, 300, "before the vdev start");
+ 	wifi_vdev_start(freq);
++	/*
++	 * And stop here if it was refused. k103 went on to send a management frame on a vdev that had never
++	 * started, and the firmware died 187 ms later — which told us nothing we did not already know from
++	 * the status code, at the cost of a whole run.
++	 */
++	if (g_htc.vdev_start_status != 0) {
++		printf("SWEET WIFI: the vdev would not start, nothing more to try here\n");
++		return;
++	}
+ 	wifi_peer_create(g_nets[best]);
+ 	/*
+ 	 * Open-system authentication: algorithm 0, sequence 1, status 0. WPA2 does its real work later, in the
