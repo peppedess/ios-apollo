@@ -1,0 +1,349 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index f4e0da9..5675031 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -723,6 +723,13 @@ static uint8_t g_nets[WIFI_MAX_NETS][6];
+ static char g_net_ssid[WIFI_MAX_NETS][33];
+ static uint8_t g_net_chan[WIFI_MAX_NETS];
+ static int8_t g_net_rssi[WIFI_MAX_NETS];
++/*
++ * And the access point's own RSN element, kept as it came. The association request has to answer it with a
++ * cipher and a key-management suite the access point actually offers, and guessing CCMP and PSK works right
++ * up until it does not. Copying what is in the beacon is both easier and more honest.
++ */
++static uint8_t g_net_rsn[WIFI_MAX_NETS][72];
++static uint8_t g_net_rsn_len[WIFI_MAX_NETS];
+ static uint32_t g_nnets;
+ 
+ static uint32_t
+@@ -1406,6 +1413,8 @@ static struct {
+ 	uint8_t mac[6];
+ 	volatile int scan_done;
+ 	uint32_t aps;
++	volatile int vdev_started, auth_resp, assoc_resp, mgmt_tx_done;
++	uint32_t vdev_start_status, auth_status, assoc_status, assoc_aid, mgmt_tx_status;
+ } g_htc;
+ 
+ static uint32_t
+@@ -1624,6 +1633,20 @@ htc_rx(uint32_t pipe, const uint8_t *p, uint32_t n)
+ 			memcpy(g_htc.mac, mac, 6);
+ 			g_htc.wmi_ready = 1;
+ 		}
++		/*
++		 * The vdev start response. Keyed on the TLV tag rather than the event id, because the tags are the
++		 * one numbering we have checked against the firmware itself: 0x20 came back as the service ready,
++		 * 0x23 as the ready, 0x24 as every scan event and 0x2c as every beacon, exactly as the canonical
++		 * enum says, so 0x28 is wmi_vdev_start_response_event_fixed_param. Fields: vdev_id, requestor_id,
++		 * resp_type, status, chain_mask, smps_mode, mac_id, cfgd_tx_streams, cfgd_rx_streams.
++		 */
++		if (tag == 0x28u && n >= 16 + 16) {
++			uint32_t f[4] = { 0 };
++			memcpy(f, p + 16, 16);
++			g_htc.vdev_start_status = f[3];
++			g_htc.vdev_started = 1;
++			printf("SWEET WMI: vdev %u start response: type %u status %u\n", f[0], f[2], f[3]);
++		}
+ 		/*
+ 		 * The event ids are this firmware's, not the ath11k build we copied them from — the same lesson
+ 		 * the TLV tags taught. k89's scan was answered eleven milliseconds later by event 0x3001 and we
+@@ -1693,12 +1716,55 @@ htc_rx(uint32_t pipe, const uint8_t *p, uint32_t n)
+ 			uint32_t avail = n > (uint32_t)(f - p) ? n - (uint32_t)(f - p) : 0;
+ 			char ssid[33] = { 0 };
+ 			uint8_t bss[6] = { 0 };
++			uint32_t sub = 16u;
++			const uint8_t *rsn = NULL;
++			uint32_t rsnlen = 0;
+ 			if (avail >= 38) {
+-				uint32_t sub = (f[0] >> 4) & 0xfu;
++				sub = (f[0] >> 4) & 0xfu;
+ 				memcpy(bss, f + 16, 6);
+ 				if ((sub == 8u || sub == 5u) && f[36] == 0 && f[37] <= 32 && avail >= 38u + f[37]) {
+ 					memcpy(ssid, f + 38, f[37]);
+ 				}
++				/* walk the information elements from the end of the 12-byte fixed body */
++				if (sub == 8u || sub == 5u) {
++					uint32_t i = 36;
++					while (i + 2 <= avail && i + 2 + f[i + 1] <= avail) {
++						if (f[i] == 48 && f[i + 1] <= 70) {
++							rsn = f + i;
++							rsnlen = 2u + f[i + 1];
++							break;
++						}
++						i += 2u + f[i + 1];
++					}
++				}
++			}
++			/*
++			 * Everything that is not a beacon or a probe response is an answer to something we sent, and
++			 * from here on we are sending. Subtype 11 is the authentication frame, 1 the association
++			 * response, 12 a deauthentication and 10 a disassociation: all four carry a status or reason
++			 * code in the body, and all four are worth a line of their own.
++			 */
++			if (sub != 8u && sub != 5u && avail >= 28) {
++				uint32_t a = (uint32_t)f[24] | ((uint32_t)f[25] << 8);
++				uint32_t b = (uint32_t)f[26] | ((uint32_t)f[27] << 8);
++				printf("SWEET WIFI: mgmt subtype %u from %02x:%02x:%02x:%02x:%02x:%02x: %04x %04x "
++				    "(%u bytes, rssi %d)\n", sub, bss[0], bss[1], bss[2], bss[3], bss[4], bss[5], a, b,
++				    buflen, rssi);
++				if (sub == 11u) {                       /* authentication */
++					g_htc.auth_status = (uint32_t)f[28] | ((uint32_t)f[29] << 8);
++					printf("SWEET WIFI: AUTH response, algorithm %u sequence %u status %u\n", a, b,
++					    g_htc.auth_status);
++					g_htc.auth_resp = 1;
++				} else if (sub == 1u) {                 /* association response */
++					g_htc.assoc_status = b;
++					g_htc.assoc_aid = ((uint32_t)f[28] | ((uint32_t)f[29] << 8)) & 0x3fffu;
++					printf("SWEET WIFI: ASSOC response, capability %04x status %u aid %u\n", a, b,
++					    g_htc.assoc_aid);
++					g_htc.assoc_resp = 1;
++				} else if (sub == 12u || sub == 10u) {
++					printf("SWEET WIFI: the access point sent us away, reason %u\n", a);
++				}
++				return;
+ 			}
+ 			g_htc.aps++;
+ 			uint32_t known = WIFI_MAX_NETS;
+@@ -1718,9 +1784,13 @@ htc_rx(uint32_t pipe, const uint8_t *p, uint32_t n)
+ 				strlcpy(g_net_ssid[g_nnets], ssid, sizeof(g_net_ssid[0]));
+ 				g_net_chan[g_nnets] = (uint8_t)chan;
+ 				g_net_rssi[g_nnets] = (int8_t)rssi;
++				if (rsn && rsnlen <= sizeof(g_net_rsn[0])) {
++					memcpy(g_net_rsn[g_nnets], rsn, rsnlen);
++					g_net_rsn_len[g_nnets] = (uint8_t)rsnlen;
++				}
+ 				g_nnets++;
+-				printf("SWEET WIFI: AP %02x:%02x:%02x:%02x:%02x:%02x \"%s\" channel %u rssi %d (%u bytes)\n", bss[0],
+-				    bss[1], bss[2], bss[3], bss[4], bss[5], ssid, chan, rssi, buflen);
++				printf("SWEET WIFI: AP %02x:%02x:%02x:%02x:%02x:%02x \"%s\" channel %u rssi %d (%u bytes, RSN %u)\n",
++				    bss[0], bss[1], bss[2], bss[3], bss[4], bss[5], ssid, chan, rssi, buflen, rsnlen);
+ 			}
+ 		}
+ 		return;
+@@ -1791,6 +1861,7 @@ ce_poll(void)
+  * empty]. single_pdev_only, so no hw-mode TLV. The answer is WMI_READY (event 2) with the adapter's MAC address.
+  */
+ static int wifi_wait(volatile int *flag, int timeout_ms, const char *what);
++static void wifi_join(void);
+ static void wifi_scan(void);
+ 
+ /*
+@@ -2052,12 +2123,219 @@ wifi_scan(void)
+ 			printf("SWEET WIFI:   %02x:%02x:%02x:%02x:%02x:%02x  ch %-3u  %4d dBm  \"%s\"\n", g_nets[i][0],
+ 			    g_nets[i][1], g_nets[i][2], g_nets[i][3], g_nets[i][4], g_nets[i][5], g_net_chan[i],
+ 			    g_net_rssi[i], g_net_ssid[i]);
++			if (g_net_rsn_len[i]) {
++				printf("SWEET WIFI:     RSN:");
++				for (uint32_t j = 0; j < g_net_rsn_len[i]; j++) {
++					printf(" %02x", g_net_rsn[i][j]);
++				}
++				printf("\n");
++			}
+ 		}
+ 	}
++	uint32_t join = 0;
++	(void)PE_parse_boot_argn("sweetjoin", &join, sizeof(join));
++	if (join && g_nnets) {
++		wifi_join();
++	}
+ 	volatile int never = 0;
+ 	(void)wifi_wait(&never, 2000, "after scan");
+ }
+ 
++/*
++ * Wi-Fi phase 5: getting on the air.
++ *
++ * Everything so far has been listening. To talk we need four things, in this order, and the firmware's own
++ * command table gives the shape of each: the vdev started on the access point's channel (0x5003, a 116-byte
++ * wmi_vdev_start_request_cmd followed by one wmi_channel, tag 0x050, exactly as the scan channel list wanted
++ * them), a peer for the access point (0x6001, tag 0x061 — vdev_id, the address and a peer type), and then the
++ * management frames themselves (0x7008, tag 0x1a6: vdev, a descriptor id we choose, the channel, the physical
++ * address of the frame, its length, and the first bytes of it inline).
++ *
++ * The tag numbering holds up all the way through. 0x050 is wmi_channel because record 0x4002, set channel, is
++ * nothing but one of them, and record 0x4006, set WMM parameters, is a 12-byte command followed by four
++ * 28-byte wmi_wmm_params — which is what the standard enum says sits at 0x053 and 0x054. Counting on from
++ * there lands peer_create at 0x061 and peer_assoc at 0x065, and the table agrees: 0x6005 is a 248-byte
++ * command followed by a 24-byte vht_rate_set, which is peer_assoc_complete down to the byte.
++ */
++static vm_offset_t g_mgmt_va;
++static uint64_t g_mgmt_pa;
++static uint32_t g_mgmt_desc = 0x1000;
++
++static int
++wifi_mgmt_buf(void)
++{
++	if (g_mgmt_va) {
++		return 0;
++	}
++	if (sweet_gpu_pool_alloc(0x1000, &g_mgmt_pa) != 0 || g_mgmt_pa + 0x1000 > 0x100000000ull) {
++		printf("SWEET WIFI: no pool for the management buffer\n");
++		return -1;
++	}
++	if (!(g_mgmt_va = ml_io_map((vm_offset_t)g_mgmt_pa, 0x1000))) {
++		printf("SWEET WIFI: the management buffer would not map\n");
++		return -1;
++	}
++	printf("SWEET WIFI: management buffer at %#llx\n", g_mgmt_pa);
++	return 0;
++}
++
++static void
++wifi_vdev_start(uint32_t freq)
++{
++	static uint32_t m[40];
++	uint32_t *w = m;
++	memset(m, 0, sizeof(m));
++	w[0] = 0x5003;                                                  /* WMI_VDEV_START_REQUEST_CMDID */
++	w[1] = (0x058u << 16) | 112u;                                   /* WMI_TAG_VDEV_START_REQUEST_CMD */
++	w[2] = 0;                                                       /* vdev_id */
++	w[3] = 0;                                                       /* requestor_id */
++	w[4] = 100;                                                     /* beacon_interval, in TU */
++	w[5] = 1;                                                       /* dtim_period */
++	w[6] = 0;                                                       /* flags: not a restart, not hidden */
++	/* w[7] is ssid_len and w[8..15] the SSID: a station's own vdev does not carry one */
++	w[19] = 0;                                                      /* disable_hw_ack */
++	w[20] = 3;                                                      /* preferred_tx_chain_mask: both chains */
++	w[21] = 3;                                                      /* preferred_rx_chain_mask */
++	uint32_t *c = w + 30;
++	c[0] = (0x050u << 16) | 24u;                                    /* WMI_TAG_CHANNEL */
++	c[1] = freq;                                                    /* mhz */
++	c[2] = freq;                                                    /* band_center_freq1, 20 MHz */
++	c[3] = 0;
++	c[4] = 5u | (1u << 11);                                         /* MODE_11NG_HT20, HT allowed */
++	c[5] = (20u << 8) | (20u << 16);
++	c[6] = (20u << 8);
++	w[37] = (0x12u << 16);
++	w[38] = (0x12u << 16);
++	w[39] = (0x12u << 16);
++	g_htc.vdev_started = 0;
++	printf("SWEET WMI: vdev 0 start on %u MHz\n", freq);
++	htc_send(&g_ce3, g_htc.wmi_eid, (const uint8_t *)m, sizeof(m));
++	if (wifi_wait(&g_htc.vdev_started, 3000, "vdev start") != 0) {
++		printf("SWEET WMI: no answer to the vdev start\n");
++	}
++}
++
++static void
++wifi_peer_create(const uint8_t *bssid)
++{
++	static uint32_t m[7];
++	uint32_t *w = m;
++	memset(m, 0, sizeof(m));
++	w[0] = 0x6001;                                                  /* WMI_PEER_CREATE_CMDID */
++	w[1] = (0x061u << 16) | 16u;                                    /* WMI_TAG_PEER_CREATE_CMD */
++	w[2] = 0;                                                       /* vdev_id */
++	memcpy(&w[3], bssid, 4);
++	memcpy(&w[4], bssid + 4, 2);
++	w[4] &= 0xffffu;
++	w[5] = 0;                                                       /* WMI_PEER_TYPE_DEFAULT */
++	w[6] = (0x12u << 16);                                           /* the trailing array, empty */
++	printf("SWEET WMI: peer %02x:%02x:%02x:%02x:%02x:%02x create\n", bssid[0], bssid[1], bssid[2], bssid[3],
++	    bssid[4], bssid[5]);
++	htc_send(&g_ce3, g_htc.wmi_eid, (const uint8_t *)m, sizeof(m));
++	volatile int settled = 0;
++	(void)wifi_wait(&settled, 200, "after peer create");
++}
++
++static void
++wifi_mgmt_tx(const uint8_t *frame, uint32_t len, uint32_t freq)
++{
++	if (wifi_mgmt_buf() != 0 || len > 0x800) {
++		return;
++	}
++	for (uint32_t i = 0; i < len; i++) {
++		*(volatile uint8_t *)(g_mgmt_va + i) = frame[i];
++	}
++	uint32_t inline_len = len > 64u ? 64u : len;
++	uint32_t pad = (inline_len + 3u) & ~3u;
++	static uint32_t m[2 + 10 + 1 + 16 + 1 + 2 + 1];
++	uint32_t *w = m;
++	memset(m, 0, sizeof(m));
++	w[0] = 0x7008;                                                  /* WMI_MGMT_TX_SEND_CMDID */
++	w[1] = (0x1a6u << 16) | 40u;                                    /* WMI_TAG_MGMT_TX_SEND_CMD */
++	w[2] = 0;                                                       /* vdev_id */
++	w[3] = ++g_mgmt_desc;                                           /* desc_id, echoed in the completion */
++	w[4] = freq;                                                    /* chanfreq */
++	w[5] = (uint32_t)g_mgmt_pa;                                     /* paddr_lo */
++	w[6] = (uint32_t)(g_mgmt_pa >> 32);                             /* paddr_hi */
++	w[7] = len;                                                     /* frame_len */
++	w[8] = inline_len;                                              /* buf_len, what follows inline */
++	w[9] = 0;                                                       /* tx_params_valid */
++	w[10] = 0;                                                      /* tx_flags */
++	w[11] = 0;                                                      /* peer_rssi */
++	w[12] = (0x11u << 16) | inline_len;                             /* ARRAY_BYTE: the head of the frame */
++	memcpy(&w[13], frame, inline_len);
++	uint32_t *t = w + 13 + pad / 4u;
++	t[0] = (0x284u << 16) | 8u;                                     /* wmi_tx_send_params, all zero */
++	t[3] = (0x12u << 16);
++	uint32_t total = (uint32_t)((t + 4) - w) * 4u;
++	printf("SWEET WIFI: sending %u bytes of management frame on %u MHz (desc %u)\n", len, freq, w[3]);
++	htc_send(&g_ce3, g_htc.wmi_eid, (const uint8_t *)m, total);
++}
++
++static uint32_t
++wifi_mgmt_hdr(uint8_t *f, uint32_t subtype, const uint8_t *bssid)
++{
++	f[0] = (uint8_t)(subtype << 4);                                 /* type 0, management */
++	f[1] = 0;
++	f[2] = 0; f[3] = 0;                                             /* duration */
++	memcpy(f + 4, bssid, 6);                                        /* addr1: the access point */
++	memcpy(f + 10, g_htc.mac, 6);                                   /* addr2: us */
++	memcpy(f + 16, bssid, 6);                                       /* addr3: the BSS */
++	f[22] = 0; f[23] = 0;                                           /* sequence control, the firmware fills it */
++	return 24;
++}
++
++static void
++wifi_join(void)
++{
++	/*
++	 * Pick the loudest network that is not a Wi-Fi Direct group. DIRECT- names belong to a phone or a PC
++	 * acting as a group owner — scheggia's own is the loudest thing in the room at −37 dBm — and joining
++	 * one needs a P2P negotiation we are nowhere near.
++	 */
++	uint32_t best = WIFI_MAX_NETS;
++	for (uint32_t i = 0; i < g_nnets; i++) {
++		if (!g_net_ssid[i][0] || strncmp(g_net_ssid[i], "DIRECT-", 7) == 0) {
++			continue;
++		}
++		if (best == WIFI_MAX_NETS || g_net_rssi[i] > g_net_rssi[best]) {
++			best = i;
++		}
++	}
++	if (best == WIFI_MAX_NETS) {
++		printf("SWEET WIFI: nothing to join\n");
++		return;
++	}
++	uint32_t freq = 2412u + 5u * (g_net_chan[best] - 1u);
++	printf("SWEET WIFI: joining \"%s\" at %02x:%02x:%02x:%02x:%02x:%02x, channel %u (%u MHz), %d dBm\n",
++	    g_net_ssid[best], g_nets[best][0], g_nets[best][1], g_nets[best][2], g_nets[best][3],
++	    g_nets[best][4], g_nets[best][5], g_net_chan[best], freq, g_net_rssi[best]);
++	wifi_vdev_start(freq);
++	wifi_peer_create(g_nets[best]);
++	/*
++	 * Open-system authentication: algorithm 0, sequence 1, status 0. WPA2 does its real work later, in the
++	 * four-way handshake, and the authentication frame itself is the same six bytes it has been since 1997.
++	 * If the access point answers with sequence 2 and status 0, this radio is transmitting.
++	 */
++	uint8_t frame[64];
++	memset(frame, 0, sizeof(frame));
++	uint32_t o = wifi_mgmt_hdr(frame, 11, g_nets[best]);
++	frame[o + 0] = 0; frame[o + 1] = 0;                             /* open system */
++	frame[o + 2] = 1; frame[o + 3] = 0;                             /* transaction sequence 1 */
++	frame[o + 4] = 0; frame[o + 5] = 0;                             /* status */
++	g_htc.auth_resp = 0;
++	wifi_mgmt_tx(frame, o + 6, freq);
++	if (wifi_wait(&g_htc.auth_resp, 3000, "authentication") != 0) {
++		printf("SWEET WIFI: no authentication response\n");
++		return;
++	}
++	if (g_htc.auth_status != 0) {
++		printf("SWEET WIFI: authentication refused, status %u\n", g_htc.auth_status);
++		return;
++	}
++	printf("SWEET WIFI: AUTHENTICATED\n");
++}
++
+ /*
+  * Wi-Fi phase 4b: the HAL data-path rings, which ath11k builds (ath11k_dp_alloc, ath11k_dp_pdev_reo_setup)
+  * before it ever sends WMI_INIT, and which we had skipped. k13d showed the firmware sitting happily for 15 s

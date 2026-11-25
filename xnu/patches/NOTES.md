@@ -2810,3 +2810,35 @@ sorgente.
 **Un elenco invece di una cronaca.** Un access point manda un beacon dieci volte al secondo, quindi k100
 ha stampato otto righe per cinque reti. Adesso ogni indirizzo si stampa una volta sola, si tiene il
 segnale migliore sentito, e alla fine della scansione esce l'elenco completo.
+
+## 1258 — salire in aria: vdev start, peer, e il frame di autenticazione
+
+Fin qui abbiamo solo ascoltato. Per parlare servono quattro cose, in quest'ordine, e la tabella interna
+del firmware dà la forma di ognuna:
+
+- **vdev start** (0x5003): `wmi_vdev_start_request_cmd` da 116 byte seguito da un `wmi_channel` con tag
+  0x050 — lo stesso tag che la lista dei canali ha già usato con successo.
+- **peer create** (0x6001, tag 0x061): vdev_id, l'indirizzo dell'access point, il tipo di peer.
+- **mgmt tx** (0x7008, tag 0x1a6): vdev, un descrittore che scegliamo noi, il canale, l'indirizzo fisico
+  del frame, la sua lunghezza, e i primi 64 byte ripetuti in linea. Il buffer DMA viene dal pool della
+  GPU, come i segmenti del firmware.
+- il frame di autenticazione: sistema aperto, algoritmo 0, sequenza 1. Sei byte di corpo che non cambiano
+  dal 1997. Se l'access point risponde con sequenza 2 e stato 0, questa radio trasmette.
+
+La numerazione dei tag regge fino in fondo. 0x050 è `wmi_channel` perché il record 0x4002, set channel,
+non è altro che uno di quelli, e il record 0x4006, set WMM parameters, è un comando da 12 byte seguito da
+quattro `wmi_wmm_params` da 28 — cioè quello che l'enum standard mette a 0x053 e 0x054. Contando da lì,
+peer_create cade su 0x061 e peer_assoc su 0x065, e la tabella è d'accordo: 0x6005 è un comando da 248
+byte seguito da un `vht_rate_set` da 24, che è `peer_assoc_complete` byte per byte.
+
+Dal lato ricezione: la risposta al vdev start si riconosce dal tag 0x028, e ogni frame di gestione che
+non sia un beacon o una probe response viene stampato con il suo sottotipo e i codici di stato —
+autenticazione (11), risposta di associazione (1), deautenticazione (12), disassociazione (10).
+
+Si tiene anche l'elemento RSN dell'access point così com'è arrivato nel beacon: la richiesta di
+associazione dovrà rispondere con una cifratura e un metodo di gestione chiavi che l'access point offre
+davvero, e tirare a indovinare CCMP e PSK funziona finché non funziona.
+
+La rete scelta è la più forte che non sia un gruppo Wi-Fi Direct: i nomi `DIRECT-` sono un telefono o un
+PC che fa da group owner — quello di scheggia è la cosa più rumorosa della stanza a −37 dBm — e per
+entrarci servirebbe una negoziazione P2P che è lontanissima. Tutto dietro `sweetjoin=1`.
