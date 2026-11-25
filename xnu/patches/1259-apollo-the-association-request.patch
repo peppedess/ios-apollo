@@ -1,0 +1,94 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 5675031..96aebf4 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2334,6 +2334,89 @@ wifi_join(void)
+ 		return;
+ 	}
+ 	printf("SWEET WIFI: AUTHENTICATED\n");
++
++	uint32_t assoc = 0;
++	(void)PE_parse_boot_argn("sweetassoc", &assoc, sizeof(assoc));
++	if (!assoc) {
++		return;
++	}
++	/*
++	 * The association request. The RSN element is not invented: it is built from the one the access point
++	 * put in its beacon — its group cipher, one pairwise suite and one key-management suite, preferring
++	 * CCMP (00-0f-ac-04) and PSK (00-0f-ac-02) when they are on offer and otherwise taking the first the
++	 * access point lists. Echoing an access point's whole element back at it, with two key-management
++	 * suites in it, is the kind of thing that works on three routers and fails on the fourth.
++	 */
++	uint8_t rsn[24];
++	uint32_t rsnlen = 0;
++	const uint8_t *ap = g_net_rsn[best];
++	uint32_t aplen = g_net_rsn_len[best];
++	if (aplen >= 12) {
++		uint32_t np = (uint32_t)ap[8] | ((uint32_t)ap[9] << 8);
++		uint32_t po = 10, ao = po + 4u * np;
++		uint32_t na = (ao + 2 <= aplen) ? ((uint32_t)ap[ao] | ((uint32_t)ap[ao + 1] << 8)) : 0;
++		uint32_t ko = ao + 2;
++		const uint8_t *pair = (po + 4 <= aplen) ? ap + po : NULL;
++		const uint8_t *akm = (ko + 4 <= aplen) ? ap + ko : NULL;
++		for (uint32_t i = 0; i < np && po + 4u * i + 4u <= aplen; i++) {
++			if (ap[po + 4u * i + 3] == 4) {
++				pair = ap + po + 4u * i;                /* CCMP */
++			}
++		}
++		for (uint32_t i = 0; i < na && ko + 4u * i + 4u <= aplen; i++) {
++			if (ap[ko + 4u * i + 3] == 2) {
++				akm = ap + ko + 4u * i;                 /* PSK */
++			}
++		}
++		uint32_t co = ko + 4u * na;
++		uint32_t caps = (co + 2 <= aplen) ? ((uint32_t)ap[co] | ((uint32_t)ap[co + 1] << 8)) : 0;
++		uint32_t ours = (caps & 0x00c0u) ? 0x0080u : 0u;        /* answer management frame protection */
++		if (pair && akm) {
++			rsn[0] = 48; rsn[1] = 20;
++			rsn[2] = 1; rsn[3] = 0;
++			memcpy(rsn + 4, ap + 4, 4);                     /* group cipher, as advertised */
++			rsn[8] = 1; rsn[9] = 0;
++			memcpy(rsn + 10, pair, 4);
++			rsn[14] = 1; rsn[15] = 0;
++			memcpy(rsn + 16, akm, 4);
++			rsn[20] = (uint8_t)ours; rsn[21] = (uint8_t)(ours >> 8);
++			rsnlen = 22;
++		}
++	}
++	uint8_t a[160];
++	memset(a, 0, sizeof(a));
++	o = wifi_mgmt_hdr(a, 0, g_nets[best]);
++	uint32_t cap = 0x0001u | 0x0020u | 0x0400u | (rsnlen ? 0x0010u : 0u);
++	a[o++] = (uint8_t)cap; a[o++] = (uint8_t)(cap >> 8);
++	a[o++] = 10; a[o++] = 0;                                        /* listen interval */
++	uint32_t sl = (uint32_t)strlen(g_net_ssid[best]);
++	a[o++] = 0; a[o++] = (uint8_t)sl;
++	memcpy(a + o, g_net_ssid[best], sl);
++	o += sl;
++	static const uint8_t rates[8] = { 0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24 };
++	a[o++] = 1; a[o++] = 8;
++	memcpy(a + o, rates, 8);
++	o += 8;
++	static const uint8_t erates[4] = { 0x30, 0x48, 0x60, 0x6c };
++	a[o++] = 50; a[o++] = 4;
++	memcpy(a + o, erates, 4);
++	o += 4;
++	if (rsnlen) {
++		memcpy(a + o, rsn, rsnlen);
++		o += rsnlen;
++	}
++	printf("SWEET WIFI: association request, %u bytes, RSN %u bytes\n", o, rsnlen);
++	g_htc.assoc_resp = 0;
++	wifi_mgmt_tx(a, o, freq);
++	if (wifi_wait(&g_htc.assoc_resp, 3000, "association") != 0) {
++		printf("SWEET WIFI: no association response\n");
++		return;
++	}
++	if (g_htc.assoc_status != 0) {
++		printf("SWEET WIFI: association refused, status %u\n", g_htc.assoc_status);
++		return;
++	}
++	printf("SWEET WIFI: ASSOCIATED, association id %u\n", g_htc.assoc_aid);
+ }
+ 
+ /*

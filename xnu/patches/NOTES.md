@@ -2842,3 +2842,22 @@ davvero, e tirare a indovinare CCMP e PSK funziona finché non funziona.
 La rete scelta è la più forte che non sia un gruppo Wi-Fi Direct: i nomi `DIRECT-` sono un telefono o un
 PC che fa da group owner — quello di scheggia è la cosa più rumorosa della stanza a −37 dBm — e per
 entrarci servirebbe una negoziazione P2P che è lontanissima. Tutto dietro `sweetjoin=1`.
+
+## 1259 — la richiesta di associazione
+
+Dietro `sweetassoc=1`, così che una sola compilazione serva due esperimenti: `sweetjoin=1` da solo si
+ferma all'autenticazione, con `sweetassoc=1` prosegue.
+
+L'elemento RSN non è inventato: è costruito da quello che l'access point ha messo nel beacon — la sua
+cifratura di gruppo, una sola suite pairwise e una sola suite di gestione chiavi, preferendo CCMP
+(00-0f-ac-04) e PSK (00-0f-ac-02) quando ci sono e prendendo altrimenti la prima che l'access point
+elenca. Rimandare indietro l'elemento dell'access point tale e quale, con dentro due metodi di gestione
+chiavi, è il genere di cosa che funziona su tre router e fallisce sul quarto. Se l'access point chiede
+la protezione dei frame di gestione, rispondiamo con MFPC.
+
+Il resto della richiesta è quello che ci si aspetta: capability con ESS, Privacy, short preamble e short
+slot time, listen interval 10, l'SSID, le velocità supportate ed estese, e l'RSN in coda.
+
+Dopo questo, se arriva una risposta con stato 0 e un AID, mancano ancora `WMI_PEER_ASSOC` e `VDEV_UP`
+perché il firmware consideri il collegamento vivo, e poi il four-way handshake EAPOL — che è traffico
+dati, e quindi vuole il data path HAL che per ora sta dietro `sweetdp=1`.
