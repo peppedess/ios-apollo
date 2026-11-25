@@ -1,0 +1,27 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 0a323b1..5866617 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -1768,13 +1768,21 @@ static void wifi_scan(void);
+ static void
+ wifi_set_base_mac(const uint8_t *mac)
+ {
+-	static uint32_t m[4];
++	/*
++	 * Five words, not four. k96 sent this and the firmware asserted at 502 again — the same assert as
++	 * the INIT with the wrong tags, from the same place, and for the same kind of reason: the TLV header
++	 * promised 12 bytes of payload and only 8 followed. The command is a header, a wmi_mac_addr (two
++	 * words) and a pdev_id, so the frame is the command id plus 16 bytes, and m[4] is the pdev_id that
++	 * was missing off the end.
++	 */
++	static uint32_t m[5];
+ 	memset(m, 0, sizeof(m));
+ 	m[0] = 0x400d;                                                  /* WMI_PDEV_SET_BASE_MACADDR_CMDID */
+ 	m[1] = (0x0acu << 16) | 12u;
+ 	memcpy(&m[2], mac, 4);
+ 	memcpy(&m[3], mac + 4, 2);
+ 	m[3] = (m[3] & 0xffffu);                                        /* mac47to32, high half reserved */
++	m[4] = 0;                                                       /* pdev_id */
+ 	printf("SWEET WMI: pdev base MAC %02x:%02x:%02x:%02x:%02x:%02x\n", mac[0], mac[1], mac[2], mac[3],
+ 	    mac[4], mac[5]);
+ 	htc_send(&g_ce3, g_htc.wmi_eid, (const uint8_t *)m, sizeof(m));
