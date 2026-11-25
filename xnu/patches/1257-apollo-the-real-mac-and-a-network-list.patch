@@ -1,0 +1,91 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 23fefe9..f4e0da9 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -713,6 +713,18 @@ static uint32_t g_chdb, g_cmd_wp = CMD_RING, g_er1_rp = ER1_RING, g_ch20_wp = CH
+ static uint32_t g_ch4_wp = CH4_RING, g_ch5_wp = CH5_RING, g_diag_shown;
+ static uint32_t g_fwlog_shown, g_evdump_shown;
+ 
++/*
++ * The networks heard during a scan. An access point beacons about ten times a second, so without this the
++ * log is the same four names over and over: k100 printed eight lines for five networks. Keep the addresses
++ * we have already named and print each one once.
++ */
++#define WIFI_MAX_NETS   24u
++static uint8_t g_nets[WIFI_MAX_NETS][6];
++static char g_net_ssid[WIFI_MAX_NETS][33];
++static uint8_t g_net_chan[WIFI_MAX_NETS];
++static int8_t g_net_rssi[WIFI_MAX_NETS];
++static uint32_t g_nnets;
++
+ static uint32_t
+ ring_next(uint32_t off, uint32_t base, uint32_t n)
+ {
+@@ -1689,8 +1701,27 @@ htc_rx(uint32_t pipe, const uint8_t *p, uint32_t n)
+ 				}
+ 			}
+ 			g_htc.aps++;
+-			printf("SWEET WIFI: AP %02x:%02x:%02x:%02x:%02x:%02x \"%s\" channel %u rssi %d (%u bytes)\n", bss[0],
+-			    bss[1], bss[2], bss[3], bss[4], bss[5], ssid, chan, rssi, buflen);
++			uint32_t known = WIFI_MAX_NETS;
++			for (uint32_t i = 0; i < g_nnets; i++) {
++				if (memcmp(g_nets[i], bss, 6) == 0) {
++					known = i;
++					break;
++				}
++			}
++			if (known < WIFI_MAX_NETS) {
++				/* already named: keep the best signal we have heard from it and say nothing */
++				if ((int8_t)rssi > g_net_rssi[known]) {
++					g_net_rssi[known] = (int8_t)rssi;
++				}
++			} else if (g_nnets < WIFI_MAX_NETS) {
++				memcpy(g_nets[g_nnets], bss, 6);
++				strlcpy(g_net_ssid[g_nnets], ssid, sizeof(g_net_ssid[0]));
++				g_net_chan[g_nnets] = (uint8_t)chan;
++				g_net_rssi[g_nnets] = (int8_t)rssi;
++				g_nnets++;
++				printf("SWEET WIFI: AP %02x:%02x:%02x:%02x:%02x:%02x \"%s\" channel %u rssi %d (%u bytes)\n", bss[0],
++				    bss[1], bss[2], bss[3], bss[4], bss[5], ssid, chan, rssi, buflen);
++			}
+ 		}
+ 		return;
+ 	}
+@@ -1832,15 +1863,16 @@ wifi_vdev_create(void)
+ 	w[4] = 0;                                                       /* subtype none */
+ 	/*
+ 	 * The READY event hands us six zero bytes: this firmware has no address of its own, because the MAC
+-	 * lives in the board data and nothing has given it one. A vdev at 00:00:00:00:00:00 is not going to
+-	 * associate with anything, so when that is what we get, use a locally administered address instead —
+-	 * the 0x02 in the first byte is what marks it as made up rather than assigned, and nothing on the
+-	 * air objects to it. The real address can come from the phone's persist partition later.
++	 * lives in the board data and nothing has given it one. The phone does know its address, though —
++	 * it is in the persist partition, in wlan_mac.bin, eighteen bytes reading "wlan0=341cf0ce0fda", and
++	 * 34:1c:f0 is Xiaomi's OUI. That is the address this radio was born with and the one the router has
++	 * probably seen before, so it beats the locally administered one we were inventing. Reading the
++	 * partition from inside the kernel is a job for later; for now the value is written down here.
+ 	 */
+-	static const uint8_t madeup[6] = { 0x02, 0x00, 0x5e, 0xa9, 0x01, 0x0e };
++	static const uint8_t persist_mac[6] = { 0x34, 0x1c, 0xf0, 0xce, 0x0f, 0xda };
+ 	if (!(g_htc.mac[0] | g_htc.mac[1] | g_htc.mac[2] | g_htc.mac[3] | g_htc.mac[4] | g_htc.mac[5])) {
+-		memcpy(g_htc.mac, madeup, 6);
+-		printf("SWEET WMI: the firmware gave no MAC, using a locally administered one\n");
++		memcpy(g_htc.mac, persist_mac, 6);
++		printf("SWEET WMI: the firmware gave no MAC, using the one from persist/wlan_mac.bin\n");
+ 	}
+ 	/*
+ 	 * The base MAC command is off by default from here on. It is what introduced the assert at
+@@ -2015,7 +2047,12 @@ wifi_scan(void)
+ 	    active ? c[6] : c[7]);
+ 	htc_send(&g_ce3, g_htc.wmi_eid, (const uint8_t *)m, 4 * 64);
+ 	if (wifi_wait(&g_htc.scan_done, 25000, "scan") == 0) {
+-		printf("SWEET WIFI: SCAN COMPLETE, %u frames from access points\n", g_htc.aps);
++		printf("SWEET WIFI: SCAN COMPLETE, %u networks in %u frames\n", g_nnets, g_htc.aps);
++		for (uint32_t i = 0; i < g_nnets; i++) {
++			printf("SWEET WIFI:   %02x:%02x:%02x:%02x:%02x:%02x  ch %-3u  %4d dBm  \"%s\"\n", g_nets[i][0],
++			    g_nets[i][1], g_nets[i][2], g_nets[i][3], g_nets[i][4], g_nets[i][5], g_net_chan[i],
++			    g_net_rssi[i], g_net_ssid[i]);
++		}
+ 	}
+ 	volatile int never = 0;
+ 	(void)wifi_wait(&never, 2000, "after scan");

@@ -2794,3 +2794,19 @@ l'evento: 8 + 4 + 4 + 68 + 4 + 266 = 354, allineato ai 356 che il log riporta.
 
 Il log del firmware (evento 0x1d011) passa dietro `sweetfwlog=1`: adesso che la scansione funziona, 40
 blocchi da 1,5 KiB sono solo rumore fra noi e i beacon.
+
+## 1257 — l'indirizzo vero e un elenco di reti
+
+k100 ha letto i beacon dal byte giusto e ha tirato fuori i nomi: `Cicci & Tweety` (20:b0:01:de:9f:e9,
+canale 1, −58 dBm), `TISCALI-A14FBF`, `DIRECT-2NSCHEGGIAmsEE` a −37 dBm (è il Wi-Fi Direct del PC a mezzo
+metro), `VODAFONE-4RSNRQ`, `Vodafone-C95827163`. La scansione funziona davvero.
+
+**L'indirizzo MAC vero.** Montando in sola lettura la partizione persist dal recovery:
+`/mnt/vendor/persist/wlan_mac.bin`, diciotto byte, `wlan0=341cf0ce0fda`. 34:1c:f0 è l'OUI di Xiaomi: è
+l'indirizzo con cui questa radio è nata, e il router l'ha probabilmente già visto. Sostituisce quello
+inventato. Leggere la partizione dal kernel è un lavoro per dopo; per ora il valore sta scritto nel
+sorgente.
+
+**Un elenco invece di una cronaca.** Un access point manda un beacon dieci volte al secondo, quindi k100
+ha stampato otto righe per cinque reti. Adesso ogni indirizzo si stampa una volta sola, si tiene il
+segnale migliore sentito, e alla fine della scansione esce l'elenco completo.
