@@ -2895,3 +2895,40 @@ arrivasse in fondo, e l'ultima riga è il canale 2437. L'evento 0x1d011 — il l
 arriva sette o otto volte per canale, e la riga di intestazione che stampavamo per ognuno ha consumato i
 quattro megabyte che abbiamo a disposizione. Il decoder era già dietro `sweetfwlog`; adesso ci va anche
 l'annuncio.
+
+## 1262 — la configurazione dei flussi, e il tag trovato per davvero
+
+k105 ha chiesto due flussi preferiti invece di tre e ha ricevuto di nuovo `status 4294967295`. Quindi il
+conteggio nel comando di start non era il problema. Almeno adesso non crasha più: il codice si ferma dove
+deve.
+
+Quello che manca sta a monte, nella creazione del vdev. Da k95 lasciamo vuoto l'array delle
+configurazioni di flusso per banda, perché non sapevamo il tag interno e indovinarlo ci era già costato
+caro. Un vdev creato senza flussi supportati su una banda non ha niente da avviare su un canale di quella
+banda — e ath11k manda sempre entrambe le bande.
+
+**Il tag, trovato senza indovinare.** Mettendo in fila l'enum dei tag di ath11k e la tabella dei comandi
+del firmware viene fuori uno scarto costante. I tag bassi coincidono esattamente — service ready 0x20,
+vdev start response 0x28, mgmt rx 0x2c, array di strutture 0x12 — e dal comando di init in poi il valore
+di ath11k è sempre sei più alto di quello del firmware:
+
+| | ath11k | firmware |
+|---|---|---|
+| init | 0x50 | 0x4a |
+| channel | 0x56 | 0x50 |
+| vdev create | 0x5c | 0x56 |
+| peer create | 0x67 | 0x61 |
+| peer assoc | 0x6b | 0x65 |
+| base macaddr | 0xb2 | 0xac |
+| mgmt tx send | 0x1ac | 0x1a6 |
+| tx send params | 0x28a | 0x284 |
+
+Otto conferme indipendenti, tutte ricavate dalla tabella del firmware prima di guardare ath11k. ath11k
+mette `wmi_vdev_txrx_streams` a 417, quindi qui sta a 411: **0x19b**. Due voci, banda 0 e banda 1, due
+flussi in trasmissione e due in ricezione ciascuna.
+
+Due allineamenti nel vdev start, presi dal codice di ath11k invece che inventati: `flags` porta
+`WMI_VDEV_START_LDPC_RX_ENABLED` (bit 3), che ath11k mette sempre, e il modo del canale diventa
+**MODE_11AX_HE20_2G (21)** senza altri bit in `info` — la tabella dei phymode di ath11k per questo chip
+non ha una voce a 20 MHz che non sia una modalità HE, e per una stazione i bit allow_ht/vht/he non si
+toccano, perché appartengono alla lista dei canali. Avevamo MODE_11NG_HT20 con ALLOW_HT.

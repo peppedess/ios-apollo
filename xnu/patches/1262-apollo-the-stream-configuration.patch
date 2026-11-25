@@ -1,0 +1,84 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 6ab504b..898698b 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -1976,15 +1976,23 @@ wifi_vdev_create(void)
+ 	memcpy(&w[5], g_htc.mac, 4);
+ 	memcpy(&w[6], g_htc.mac + 4, 2);
+ 	/*
+-	 * No stream configs. k94 ran the full two-pass flow with a real 3600 ms calibration and the scan
+-	 * still started and completed inside one millisecond with nothing heard, so the uncalibrated radio
+-	 * was not it either. What is left upstream of the scan is the vdev, and the one part of it we are
+-	 * still inventing is the inner tag of the stream-config array: the firmware's table gives the array
+-	 * element size, 16 bytes, but not the tag of the struct inside, and we guessed 0x19f — the same
+-	 * kind of guess that 0x4e and 0x5a turned out to be. A vdev the firmware quietly refused would
+-	 * explain a scan that returns instantly. Ask for no streams at all and both arrays stay empty.
++	 * The stream configuration, which we have been leaving empty since k95 because we did not know the
++	 * inner tag and guessing it had burned us before. Now we do know it, and not by guessing.
++	 *
++	 * Lining ath11k's own tag enum up against the firmware's command table shows a constant offset: the
++	 * early tags agree exactly (service ready 0x20, vdev start response 0x28, mgmt rx 0x2c, array of
++	 * structures 0x12), and from the init command onwards ath11k's value is always six higher than the
++	 * firmware's — init 0x50 against 0x4a, channel 0x56 against 0x50, vdev create 0x5c against 0x56,
++	 * peer create 0x67 against 0x61, peer assoc 0x6b against 0x65, base MAC 0xb2 against 0xac, mgmt tx
++	 * 0x1ac against 0x1a6, tx send params 0x28a against 0x284. Eight independent agreements. ath11k puts
++	 * wmi_vdev_txrx_streams at 417, so here it is 411: 0x19b.
++	 *
++	 * And this is the best remaining explanation for the vdev that will not start. k105 asked for two
++	 * preferred streams instead of three and still got status 0xffffffff, so the stream count in the
++	 * start command was not the problem — but a vdev created with no per-band stream configuration has
++	 * nothing to start with on 2.4 GHz. ath11k always sends both bands.
+ 	 */
+-	w[7] = 0;                                                       /* num_cfg_txrx_streams */
++	w[7] = 2;                                                       /* num_cfg_txrx_streams: both bands */
+ 	/*
+ 	 * pdev_id 1, not 0.
+ 	 *
+@@ -1996,11 +2004,18 @@ wifi_vdev_create(void)
+ 	 * base MAC were sending 0.
+ 	 */
+ 	w[8] = 0;                                                       /* pdev_id: single_pdev_only, see above */
+-	w[11] = (0x12u << 16);                                          /* ARRAY_STRUCT, no stream configs */
+-	w[12] = (0x12u << 16);                                          /* and the second array, empty */
+-	printf("SWEET WMI: vdev 0 create (station, MAC %02x:%02x:%02x:%02x:%02x:%02x)\n", g_htc.mac[0], g_htc.mac[1],
+-	    g_htc.mac[2], g_htc.mac[3], g_htc.mac[4], g_htc.mac[5]);
+-	htc_send(&g_ce3, g_htc.wmi_eid, (const uint8_t *)m, 4 * 13);
++	w[11] = (0x12u << 16) | 32u;                                    /* ARRAY_STRUCT: two stream configs */
++	for (uint32_t b = 0; b < 2; b++) {
++		uint32_t *s = w + 12 + b * 4;
++		s[0] = (0x19bu << 16) | 12u;                            /* WMI_TAG_VDEV_TXRX_STREAMS */
++		s[1] = b;                                               /* band: 0 is 2.4 GHz, 1 is 5 GHz */
++		s[2] = 2;                                               /* supported_tx_streams */
++		s[3] = 2;                                               /* supported_rx_streams */
++	}
++	w[20] = (0x12u << 16);                                          /* and the second array, empty */
++	printf("SWEET WMI: vdev 0 create (station, MAC %02x:%02x:%02x:%02x:%02x:%02x, 2 streams per band)\n",
++	    g_htc.mac[0], g_htc.mac[1], g_htc.mac[2], g_htc.mac[3], g_htc.mac[4], g_htc.mac[5]);
++	htc_send(&g_ce3, g_htc.wmi_eid, (const uint8_t *)m, 4 * 21);
+ }
+ 
+ /*
+@@ -2205,7 +2220,7 @@ wifi_vdev_start(uint32_t freq)
+ 	w[3] = 0;                                                       /* requestor_id */
+ 	w[4] = 100;                                                     /* beacon_interval, in TU */
+ 	w[5] = 0;                                                       /* dtim_period: the access point's business */
+-	w[6] = 0;                                                       /* flags: not a restart, not hidden */
++	w[6] = (1u << 3);                                               /* WMI_VDEV_START_LDPC_RX_ENABLED */
+ 	/* w[7] is ssid_len and w[8..15] the SSID: a station's own vdev does not carry one */
+ 	w[19] = 0;                                                      /* disable_hw_ack */
+ 	/*
+@@ -2220,7 +2235,13 @@ wifi_vdev_start(uint32_t freq)
+ 	c[1] = freq;                                                    /* mhz */
+ 	c[2] = freq;                                                    /* band_center_freq1, 20 MHz */
+ 	c[3] = 0;
+-	c[4] = 5u | (1u << 11);                                         /* MODE_11NG_HT20, HT allowed */
++	/*
++	 * MODE_11AX_HE20_2G, and nothing else in info. This is what ath11k puts in a vdev start for a 20 MHz
++	 * channel in the 2.4 GHz band — the phymode table has no entry for this chip that is not an HE mode —
++	 * and for a station it sets none of the allow_ht / allow_vht / allow_he bits, which belong to the
++	 * channel list rather than here. We had MODE_11NG_HT20 with ALLOW_HT, invented rather than copied.
++	 */
++	c[4] = 21u;
+ 	c[5] = (20u << 8) | (20u << 16);
+ 	c[6] = (20u << 8);
+ 	w[37] = (0x12u << 16);
