@@ -1,0 +1,183 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 3184d83..6c70ede 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -1782,7 +1782,14 @@ wifi_set_base_mac(const uint8_t *mac)
+ 	memcpy(&m[2], mac, 4);
+ 	memcpy(&m[3], mac + 4, 2);
+ 	m[3] = (m[3] & 0xffffu);                                        /* mac47to32, high half reserved */
+-	m[4] = 1;                                                       /* pdev_id, 1-based: see below */
++	/*
++	 * pdev_id 0 after all. The QCA6390 is single_pdev_only in ath11k: the firmware announces two phys in
++	 * the regulatory event (k98 shows 0x3a001 twice, phy 0 and phy 1, country CN, num_phy 2) and the host
++	 * is expected to fold them into one pdev numbered 0. k98 sent 1 everywhere and asserted in exactly
++	 * the same place as k97 with 0, so the pdev id was never the reason; put it back to 0 and stop
++	 * sending this command at all unless sweetbasemac asks for it.
++	 */
++	m[4] = 0;                                                       /* pdev_id */
+ 	printf("SWEET WMI: pdev base MAC %02x:%02x:%02x:%02x:%02x:%02x\n", mac[0], mac[1], mac[2], mac[3],
+ 	    mac[4], mac[5]);
+ 	htc_send(&g_ce3, g_htc.wmi_eid, (const uint8_t *)m, sizeof(m));
+@@ -1816,9 +1823,20 @@ wifi_vdev_create(void)
+ 		memcpy(g_htc.mac, madeup, 6);
+ 		printf("SWEET WMI: the firmware gave no MAC, using a locally administered one\n");
+ 	}
+-	wifi_set_base_mac(g_htc.mac);
+-	volatile int settled = 0;
+-	(void)wifi_wait(&settled, 100, "after the base MAC");
++	/*
++	 * The base MAC command is off by default from here on. It is what introduced the assert at
++	 * 0x16af2bc:630 — k95 created the vdev without complaint, k96 and k97 added this command and the
++	 * crash appeared, and k98 proved the pdev id was not the reason. ath11k never sends it: the address
++	 * belongs in the board data, and a firmware that has none is quite happy to take the vdev's own.
++	 * sweetbasemac=1 brings it back for the next time the question comes up.
++	 */
++	uint32_t basemac = 0;
++	(void)PE_parse_boot_argn("sweetbasemac", &basemac, sizeof(basemac));
++	if (basemac) {
++		wifi_set_base_mac(g_htc.mac);
++		volatile int settled = 0;
++		(void)wifi_wait(&settled, 100, "after the base MAC");
++	}
+ 	memcpy(&w[5], g_htc.mac, 4);
+ 	memcpy(&w[6], g_htc.mac + 4, 2);
+ 	/*
+@@ -1841,7 +1859,7 @@ wifi_vdev_create(void)
+ 	 * is 1 and 0 means "all pdevs", which is not something you can create a vdev on. Both this and the
+ 	 * base MAC were sending 0.
+ 	 */
+-	w[8] = 1;                                                       /* pdev_id */
++	w[8] = 0;                                                       /* pdev_id: single_pdev_only, see above */
+ 	w[11] = (0x12u << 16);                                          /* ARRAY_STRUCT, no stream configs */
+ 	w[12] = (0x12u << 16);                                          /* and the second array, empty */
+ 	printf("SWEET WMI: vdev 0 create (station, MAC %02x:%02x:%02x:%02x:%02x:%02x)\n", g_htc.mac[0], g_htc.mac[1],
+@@ -1849,13 +1867,66 @@ wifi_vdev_create(void)
+ 	htc_send(&g_ce3, g_htc.wmi_eid, (const uint8_t *)m, 4 * 13);
+ }
+ 
++/*
++ * The channel list, which we have never sent.
++ *
++ * This is the best answer yet to the question the last ten runs have been circling: why does a scan the
++ * firmware accepts start and complete inside one millisecond with nothing heard? Because the firmware has
++ * no channels. ath11k builds its channel list from the regulatory event and sends it back as
++ * WMI_SCAN_CHAN_LIST_CMDID before it ever scans (ath11k_reg_update_chan_list, called from the
++ * REG_CHAN_LIST_CC event handler). We take the regulatory event — k98 logs it twice, country CN — and
++ * throw it away. A start-scan naming 2412, 2437 and 2462 then asks for three frequencies the firmware
++ * knows nothing about, and the only honest thing it can do is finish at once.
++ *
++ * The firmware's own table, record 0x3003: 0x04f/16 then an array of 28-byte structures. 0x04f is
++ * wmi_scan_chan_list_cmd_fixed_param and 28 bytes is wmi_channel, tag 0x050 — which the table confirms
++ * from the other side, because record 0x5003 (vdev start) is 0x058/116 followed by exactly one 0x050/28.
++ * Three payload words in the fixed part: num_scan_chans, flags, pdev_id.
++ */
++static void
++wifi_scan_chan_list(void)
++{
++	static uint32_t m[2 + 3 + 1 + 13 * 7];
++	uint32_t *w = m;
++	memset(m, 0, sizeof(m));
++	w[0] = 0x3003;                                                  /* WMI_SCAN_CHAN_LIST_CMDID */
++	w[1] = (0x04fu << 16) | 12u;                                    /* WMI_TAG_SCAN_CHAN_LIST_CMD */
++	w[2] = 13;                                                      /* num_scan_chans */
++	w[3] = 0;                                                       /* flags: replace, do not append */
++	w[4] = 0;                                                       /* pdev_id: single_pdev_only */
++	w[5] = (0x12u << 16) | (13u * 28u);                             /* ARRAY_STRUCT of wmi_channel */
++	uint32_t *ch = w + 6;
++	for (uint32_t i = 0; i < 13; i++) {
++		uint32_t mhz = 2412u + 5u * i;
++		uint32_t *e = ch + i * 7;
++		e[0] = (0x050u << 16) | 24u;                            /* WMI_TAG_CHANNEL */
++		e[1] = mhz;                                             /* mhz */
++		e[2] = mhz;                                             /* band_center_freq1, 20 MHz */
++		e[3] = 0;                                               /* band_center_freq2 */
++		/*
++		 * info: phy mode in bits 5:0 and the capability flags above it. MODE_11NG_HT20 is 5 and
++		 * WMI_CHAN_INFO_ALLOW_HT is bit 11. Nothing here is passive or DFS: 2.4 GHz channels 1 to 13
++		 * are open everywhere, and whether we listen or talk is the scan's business, not the
++		 * channel's.
++		 */
++		e[4] = 5u | (1u << 11);
++		e[5] = (20u << 8) | (20u << 16);                        /* min 0, max 20 dBm, max reg 20 dBm */
++		e[6] = (20u << 8);                                      /* antenna max 0, max tx power 20 dBm */
++	}
++	printf("SWEET WMI: channel list, 13 channels 2412-2472\n");
++	htc_send(&g_ce3, g_htc.wmi_eid, (const uint8_t *)m, sizeof(m));
++	volatile int settled = 0;
++	(void)wifi_wait(&settled, 200, "after the channel list");
++}
++
+ static void
+ wifi_scan(void)
+ {
++	wifi_scan_chan_list();
+ 	wifi_vdev_create();
+ 	volatile int settle = 0;
+ 	(void)wifi_wait(&settle, 300, "after vdev create");
+-	static uint32_t m[1 + 40 + 14];
++	static uint32_t m[1 + 40 + 24];
+ 	uint32_t *w = m;
+ 	memset(m, 0, sizeof(m));
+ 	w[0] = 0x3001;                                                  /* WMI_START_SCAN_CMDID */
+@@ -1883,7 +1954,18 @@ wifi_scan(void)
+ 	c[9] = 500;                                                     /* max_rest_time */
+ 	c[13] = 20000;                                                  /* max_scan_time */
+ 	c[14] = 5;                                                      /* probe_delay */
+-	c[15] = 0x2 | 0x10;                                             /* bcast probe request, channel stats */
++	/*
++	 * Passive by default. An active scan puts a probe request on the air, and a probe request needs a
++	 * source address the firmware is willing to use — which is the one thing we have been unable to give
++	 * it, since the READY event hands us six zero bytes and the command that sets one crashes the
++	 * firmware. A passive scan asks for nothing: it parks on the channel and listens, and every access
++	 * point in the building announces itself every hundred milliseconds whether we talk or not. If the
++	 * channel list was the missing piece, this is the run that hears a beacon. sweetactive=1 goes back
++	 * to probing.
++	 */
++	uint32_t active = 0;
++	(void)PE_parse_boot_argn("sweetactive", &active, sizeof(active));
++	c[15] = active ? (0x2u | 0x10u) : (0x1u | 0x10u);               /* passive, or bcast probe request */
+ 	/*
+ 	 * And name the channels instead of asking for all of them. num_chan 0 leaves the firmware to use its
+ 	 * own list, which it builds from the regulatory domain — and nobody has given it one: ath11k sends
+@@ -1891,24 +1973,28 @@ wifi_scan(void)
+ 	 * the kind of thing a firmware refuses before it starts. Three 2.4 GHz channels are enough to tell
+ 	 * the two cases apart, and if this is it the regulatory domain is the next piece to build.
+ 	 */
+-	c[17] = 3;                                                      /* num_chan */
++	c[17] = 13;                                                     /* num_chan: the whole 2.4 GHz band */
+ 	c[18] = 1;                                                      /* num_bssid */
+ 	c[19] = 0;                                                      /* num_ssids */
+ 	c[36] = 0;                                                      /* dwell_time_active_2g */
+ 	c[37] = 40; c[38] = 30;                                         /* 6 GHz dwell times */
+ 	uint32_t *t = c + 40;
+-	t[0] = (0x10u << 16) | 12u;                                     /* ARRAY_UINT32: three channels */
+-	t[1] = 2412; t[2] = 2437; t[3] = 2462;
+-	t[4] = (0x13u << 16);                                           /* ARRAY_FIXED_STRUCT: no SSIDs */
+-	t[5] = (0x13u << 16) | 8u;                                      /* ARRAY_FIXED_STRUCT: one BSSID */
+-	t[6] = 0xffffffffu; t[7] = 0x0000ffffu;                         /* broadcast */
+-	t[8] = (0x11u << 16);                                           /* ARRAY_BYTE: no extra IEs */
+-	t[9] = (0x12u << 16);
+-	t[10] = (0x11u << 16);
+-	t[11] = (0x13u << 16);
+-	t[12] = (0x13u << 16);
+-	printf("SWEET WMI: scan start (all channels, broadcast probe)\n");
+-	htc_send(&g_ce3, g_htc.wmi_eid, (const uint8_t *)m, 4 * 54);
++	t[0] = (0x10u << 16) | (13u * 4u);                              /* ARRAY_UINT32: thirteen channels */
++	for (uint32_t i = 0; i < 13; i++) {
++		t[1 + i] = 2412u + 5u * i;
++	}
++	uint32_t *u = t + 14;
++	u[0] = (0x13u << 16);                                           /* ARRAY_FIXED_STRUCT: no SSIDs */
++	u[1] = (0x13u << 16) | 8u;                                      /* ARRAY_FIXED_STRUCT: one BSSID */
++	u[2] = 0xffffffffu; u[3] = 0x0000ffffu;                         /* broadcast */
++	u[4] = (0x11u << 16);                                           /* ARRAY_BYTE: no extra IEs */
++	u[5] = (0x12u << 16);
++	u[6] = (0x11u << 16);
++	u[7] = (0x13u << 16);
++	u[8] = (0x13u << 16);
++	printf("SWEET WMI: scan start (%s, 13 channels, %u ms per channel)\n", active ? "active" : "passive",
++	    active ? c[6] : c[7]);
++	htc_send(&g_ce3, g_htc.wmi_eid, (const uint8_t *)m, 4 * 64);
+ 	if (wifi_wait(&g_htc.scan_done, 25000, "scan") == 0) {
+ 		printf("SWEET WIFI: SCAN COMPLETE, %u frames from access points\n", g_htc.aps);
+ 	}

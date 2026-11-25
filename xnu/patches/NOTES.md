@@ -2744,3 +2744,33 @@ Prima di tirare a indovinare quale comando pdev mandare, 1250 stampa il contenut
 finora buttavamo via con la sola intestazione: `0x16005` e i due `0x3a001` arrivati subito dopo l'INIT.
 Uno dei due è molto probabilmente la lista dei canali che il firmware si è costruito, e leggerla vale
 più di qualunque supposizione sull'ordinamento dei gruppi WMI.
+
+## 1255 — la lista dei canali
+
+k98 ha risposto alla domanda sul pdev id: con 1 al posto di 0 il firmware è morto nello stesso identico
+punto, `Asserted in0x16af2bcs:630`, 76 ms dopo la creazione del vdev. Quindi il pdev id non c'entra, e
+anzi su QCA6390 ath11k è `single_pdev_only`: il firmware annuncia due phy nell'evento regolatorio
+(k98 lo riceve due volte, phy 0 e phy 1, paese CN, num_phy 2) e l'host li tratta come un pdev solo,
+numerato 0. Torna tutto a 0.
+
+Il comando che imposta il MAC di base esce di scena: è lui che ha introdotto l'assert. k95 creava il
+vdev senza una parola, k96 e k97 hanno aggiunto quel comando e l'assert è comparso. ath11k non lo manda
+mai — l'indirizzo sta nei board data — quindi da qui in poi lo manda solo `sweetbasemac=1`.
+
+La vera novità è il comando che non abbiamo mai mandato: **WMI_SCAN_CHAN_LIST_CMDID (0x3003)**. È la
+spiegazione migliore che abbiamo per una scansione che parte e finisce in un millisecondo senza sentire
+niente: il firmware non ha canali. ath11k costruisce la lista dall'evento regolatorio e gliela rimanda
+(`ath11k_reg_update_chan_list`) prima di qualunque scansione; noi l'evento lo leggiamo e lo buttiamo.
+Una start-scan che nomina 2412, 2437 e 2462 chiede tre frequenze di cui il firmware non sa nulla, e
+l'unica cosa onesta che può fare è finire subito.
+
+La tabella interna del firmware, record 0x3003: `0x04f/16` più un array di strutture da 28 byte. 0x04f è
+`wmi_scan_chan_list_cmd_fixed_param` e 28 byte è `wmi_channel`, tag `0x050` — confermato dall'altro lato,
+perché il record 0x5003 (vdev start) è `0x058/116` seguito da esattamente un `0x050/28`. Tre parole nella
+parte fissa: num_scan_chans, flags, pdev_id. Mandiamo i 13 canali 2.4 GHz, 2412-2472, modo
+MODE_11NG_HT20 con ALLOW_HT, 20 dBm.
+
+Terza modifica: la scansione è **passiva** per default (`sweetactive=1` per tornare a sondare). Una
+scansione attiva mette in aria una probe request, e una probe request vuole un indirizzo sorgente che il
+firmware accetti — l'unica cosa che non siamo riusciti a dargli. Una scansione passiva non chiede niente:
+si ferma sul canale e ascolta, e ogni access point del palazzo si annuncia ogni cento millisecondi.
