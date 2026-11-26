@@ -1,0 +1,84 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 7277f3f..dba36cc 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2016,6 +2016,12 @@ wifi_vdev_create(void)
+ 	printf("SWEET WMI: vdev 0 create (station, MAC %02x:%02x:%02x:%02x:%02x:%02x, 2 streams per band)\n",
+ 	    g_htc.mac[0], g_htc.mac[1], g_htc.mac[2], g_htc.mac[3], g_htc.mac[4], g_htc.mac[5]);
+ 	htc_send(&g_ce3, g_htc.wmi_eid, (const uint8_t *)m, 4 * 21);
++	volatile int created = 0;
++	(void)wifi_wait(&created, 100, "after vdev create");
++	printf("SWEET WMI: vdev parameters (native wifi both ways, 2 spatial streams)\n");
++	wifi_vdev_param(0x30, 1);                                       /* TX_ENCAP_TYPE: native wifi */
++	wifi_vdev_param(0x5b, 1);                                       /* RX_DECAP_TYPE: native wifi */
++	wifi_vdev_param(0x22, 2);                                       /* NSS: two chains */
+ }
+ 
+ /*
+@@ -2034,6 +2040,58 @@ wifi_vdev_create(void)
+  * from the other side, because record 0x5003 (vdev start) is 0x058/116 followed by exactly one 0x050/28.
+  * Three payload words in the fixed part: num_scan_chans, flags, pdev_id.
+  */
++/*
++ * The parameters ath11k sets before it ever touches a vdev, and the ones it sets on a fresh vdev.
++ *
++ * k109 handed the peer its default routing and seventeen reorder queues and the vdev start still came
++ * back 5 — the same 5, eight times. So it is not the peer's receive path either. What is left, going
++ * back through ath11k's own order of operations, is everything ath11k_mac_op_start does when a radio
++ * comes up and everything ath11k_mac_op_add_interface does right after creating a vdev. We have never
++ * sent a single one of them: the pdev has its defaults and the vdev has never been told how many spatial
++ * streams it may use or how frames are wrapped on the way in and out.
++ *
++ * WMI_VDEV_PARAM_NSS is the one to watch. ath11k sets it from the chain mask the moment the vdev exists,
++ * and a vdev that still believes it has zero spatial streams is not a vdev anything can start.
++ */
++static void
++wifi_pdev_param(uint32_t id, uint32_t value)
++{
++	static uint32_t m[5];
++	memset(m, 0, sizeof(m));
++	m[0] = 0x4003;                                                  /* WMI_PDEV_SET_PARAM_CMDID */
++	m[1] = (0x052u << 16) | 12u;                                    /* WMI_TAG_PDEV_SET_PARAM_CMD */
++	m[2] = 0;                                                       /* pdev_id: single_pdev_only */
++	m[3] = id;
++	m[4] = value;
++	htc_send(&g_ce3, g_htc.wmi_eid, (const uint8_t *)m, sizeof(m));
++}
++
++static void
++wifi_vdev_param(uint32_t id, uint32_t value)
++{
++	static uint32_t m[5];
++	memset(m, 0, sizeof(m));
++	m[0] = 0x5008;                                                  /* WMI_VDEV_SET_PARAM_CMDID */
++	m[1] = (0x05fu << 16) | 12u;                                    /* WMI_TAG_VDEV_SET_PARAM_CMD */
++	m[2] = 0;                                                       /* vdev_id */
++	m[3] = id;
++	m[4] = value;
++	htc_send(&g_ce3, g_htc.wmi_eid, (const uint8_t *)m, sizeof(m));
++}
++
++static void
++wifi_pdev_setup(void)
++{
++	printf("SWEET WMI: pdev parameters\n");
++	wifi_pdev_param(0x22, 1);                                       /* PMF_QOS */
++	wifi_pdev_param(0x0a, 1);                                       /* DYNAMIC_BW */
++	wifi_pdev_param(0x23, 0);                                       /* ARP_AC_OVERRIDE */
++	wifi_pdev_param(0x8f, 1);                                       /* MESH_MCAST_ENABLE */
++	wifi_pdev_param(0x2c, 1);                                       /* IDLE_PS_CONFIG */
++	volatile int settled = 0;
++	(void)wifi_wait(&settled, 200, "after the pdev parameters");
++}
++
+ static void
+ wifi_scan_chan_list(void)
+ {
+@@ -2073,6 +2131,7 @@ wifi_scan_chan_list(void)
+ static void
+ wifi_scan(void)
+ {
++	wifi_pdev_setup();
+ 	wifi_scan_chan_list();
+ 	wifi_vdev_create();
+ 	volatile int settle = 0;

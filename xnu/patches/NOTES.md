@@ -2999,3 +2999,20 @@ Nota a margine, utile per dopo: lo scarto di 6 regge su tutto il gruppo 6 della 
 (0x061 peer create, 0x062 delete, 0x063 flush tids, 0x064 set param, 0x065 assoc, 0x09b add wds entry,
 0x0ad mcast group, 0x106 estimated linkspeed, 0x1cb smart antenna, 0x225 reorder queue setup, 0x226
 reorder queue remove, 0x22c set rx blocksize). Non è una coincidenza su otto voci: è la mappa completa.
+
+## 1266 — i parametri che non abbiamo mai impostato
+
+k109 ha consegnato al peer l'instradamento predefinito e diciassette code di riordino, e il vdev start è
+tornato 5. Lo stesso 5, otto volte. Quindi non è nemmeno il percorso di ricezione del peer.
+
+Ripercorrendo l'ordine di ath11k, quello che resta è tutto ciò che fa `ath11k_mac_op_start` quando una
+radio si accende e tutto ciò che fa `ath11k_mac_op_add_interface` subito dopo aver creato un vdev. Non
+ne abbiamo mai mandato nemmeno uno: il pdev sta ai suoi valori predefiniti e al vdev non abbiamo mai
+detto quanti flussi spaziali può usare né come sono incapsulati i frame in entrata e in uscita.
+
+Pdev: PMF_QOS, DYNAMIC_BW, ARP_AC_OVERRIDE, MESH_MCAST_ENABLE, IDLE_PS_CONFIG.
+Vdev, subito dopo la creazione: TX_ENCAP_TYPE e RX_DECAP_TYPE a native wifi, e **NSS a 2**.
+
+`WMI_VDEV_PARAM_NSS` è quello da guardare. ath11k lo imposta dalla maschera delle catene nell'istante in
+cui il vdev esiste, e un vdev che crede ancora di avere zero flussi spaziali non è un vdev che si possa
+avviare.
