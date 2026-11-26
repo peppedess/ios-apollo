@@ -3016,3 +3016,18 @@ Vdev, subito dopo la creazione: TX_ENCAP_TYPE e RX_DECAP_TYPE a native wifi, e *
 `WMI_VDEV_PARAM_NSS` è quello da guardare. ath11k lo imposta dalla maschera delle catene nell'istante in
 cui il vdev esiste, e un vdev che crede ancora di avere zero flussi spaziali non è un vdev che si possa
 avviare.
+
+## 1267 — mille descrittori di link, non trentaduemila
+
+k110: con i cinque parametri di pdev e i tre di vdev — NSS compreso — il vdev start resta 5. Otto volte.
+Quindi non sono nemmeno i parametri.
+
+A questo punto l'elenco di quello che abbiamo escluso è lungo: il contenuto del comando (otto varianti),
+l'esistenza del peer (che ha spostato −1 a 5), l'instradamento e le code di riordino del peer, i
+parametri di pdev e vdev. Resta il percorso dati, che è anche l'unica cosa grossa che ath11k costruisce
+e noi no: in `ath11k_dp_alloc`, **prima ancora dell'init WMI**.
+
+Il codice per gli anelli HAL c'è già, dietro `sweetdp=1`, e parte nel punto giusto. L'unico motivo per
+cui non lo accendiamo mai è che k64 ci è morto dentro: chiede 32768 descrittori di link, cioè quattro
+megabyte in un pezzo solo sopra due passate di segmenti firmware, due blocchi MHI e due copie di m3.
+Mille bastano per un'associazione e un filo di traffico, e `sweetdplinks` resta per cambiarli.

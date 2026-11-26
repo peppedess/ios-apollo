@@ -1,0 +1,18 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index a2f9878..d0e88df 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2735,7 +2735,12 @@ wifi_join(void)
+ #define HAL_TCL_BASE            0xa44000u
+ #define HAL_WBM_BASE            0xa34000u
+ #define DP_RING_BLOCK           0x300000u
+-#define DP_LINK_DESCS           32768u
++/*
++ * 1024 link descriptors, not 32768. ath11k asks for 32768 — four megabytes in one piece on top of two
++ * passes of firmware segments, two MHI blocks and two copies of m3 — and k64 died trying. A thousand is
++ * plenty for an association and a trickle of traffic, and sweetdplinks still overrides it.
++ */
++#define DP_LINK_DESCS           1024u
+ #define DP_LINK_DESC_SIZE       128u
+ #define DP_LINK_BLOCK           (DP_LINK_DESCS * DP_LINK_DESC_SIZE + DP_LINK_DESC_SIZE)
+ #define DP_ID_WBM_IDLE          104u
