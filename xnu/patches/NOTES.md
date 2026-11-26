@@ -2974,3 +2974,28 @@ contrario.
 
 Scambiato l'ordine: peer create, poi vdev start. Il giro di varianti resta, costa un decimo di secondo e
 adesso la prima dovrebbe bastare.
+
+## 1265 — quello che sta fra il peer e il vdev
+
+k108 ha scambiato l'ordine e il rifiuto è cambiato: `0xffffffff` è diventato **5**, lo stesso 5 per tutte
+e otto le varianti. Un numero diverso vuol dire che il firmware adesso arriva più avanti prima di
+arrendersi, e il peer era davvero la condizione che mancava.
+
+Quello che sta in quel buco, in ath11k, è `ath11k_dp_peer_setup`: chiamata da `ath11k_mac_station_add`
+subito dopo la creazione del peer e subito prima dell'avvio ritardato del vdev. Fa due cose.
+
+**Dove instradare i frame di questo peer.** `WMI_PEER_SET_PARAM` con
+`WMI_PEER_SET_DEFAULT_ROUTING` (0x13) e valore `DP_RX_HASH_ENABLE | (reo_dest << 1)`, cioè 3 con una
+sola radio.
+
+**Una coda di riordino per ogni traffic identifier.** È un descrittore da 128 byte in memoria host di cui
+l'hardware REO è proprietario: intestazione con proprietario REO, tipo "queue descriptor" e il pattern di
+debug di ath11k nei bit riservati, coda marcata valida, classe di traffico derivata dal TID, finestra di
+uno. Diciassette, come fa ath11k, con tre estensioni ciascuna per i TID QoS. Il comando che le registra è
+0x6013, che la tabella del firmware dà come parametro fisso da 40 byte con tag 0x225 — cioè 0x22b nella
+numerazione di ath11k, `WMI_TAG_REORDER_QUEUE_SETUP_CMD`: gli stessi sei di scarto di tutto il resto.
+
+Nota a margine, utile per dopo: lo scarto di 6 regge su tutto il gruppo 6 della tabella, voce per voce
+(0x061 peer create, 0x062 delete, 0x063 flush tids, 0x064 set param, 0x065 assoc, 0x09b add wds entry,
+0x0ad mcast group, 0x106 estimated linkspeed, 0x1cb smart antenna, 0x225 reorder queue setup, 0x226
+reorder queue remove, 0x22c set rx blocksize). Non è una coincidenza su otto voci: è la mappa completa.

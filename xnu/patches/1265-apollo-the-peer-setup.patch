@@ -1,0 +1,127 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 283ac9d..7277f3f 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2340,6 +2340,114 @@ wifi_peer_create(const uint8_t *bssid)
+ 	(void)wifi_wait(&settled, 200, "after peer create");
+ }
+ 
++/*
++ * What ath11k does between creating the peer and starting the vdev, and we did not.
++ *
++ * k108 swapped the two and the refusal changed: 0xffffffff became 5, the same 5 for all eight variants.
++ * A different number means the firmware now gets further before giving up, and what sits in that gap in
++ * ath11k is ath11k_dp_peer_setup — called from ath11k_mac_station_add right after the peer is created and
++ * right before the delayed vdev start. It does two things: it tells the firmware where to route this
++ * peer's received frames, and it hands over a receive reorder queue for every traffic identifier.
++ *
++ * The reorder queue is a 128-byte descriptor in host memory that the REO hardware owns. We build one per
++ * TID — seventeen of them, as ath11k does — with the header the hardware expects (owner REO, type queue
++ * descriptor, and ath11k's debug magic in the reserved bits), the queue marked valid, the traffic class
++ * derived from the TID, and a window of one. The command that registers it is 0x6013, which the
++ * firmware's table gives as a 40-byte fixed parameter with tag 0x225: that is 0x22b in ath11k's
++ * numbering, WMI_TAG_REORDER_QUEUE_SETUP_CMD, the same six of difference as everything else.
++ */
++#define REO_QDESC_STRIDE        512u                            /* queue descriptor plus three extensions */
++#define REO_NUM_TIDS            17u                             /* 0 to 15, plus 16 for non-QoS */
++
++static uint64_t g_reo_pa;
++static vm_offset_t g_reo_va;
++
++static uint32_t
++reo_tid_ac(uint32_t tid)
++{
++	if (tid == 0 || tid == 3) {
++		return 0;                                       /* best effort */
++	}
++	if (tid == 1 || tid == 2) {
++		return 1;                                       /* background */
++	}
++	if (tid == 4 || tid == 5) {
++		return 2;                                       /* video */
++	}
++	return 3;                                               /* voice */
++}
++
++static void
++wifi_peer_setup(const uint8_t *bssid)
++{
++	/* first, where this peer's frames are to be routed: hash-based steering into REO destination 1 */
++	static uint32_t p[8];
++	memset(p, 0, sizeof(p));
++	p[0] = 0x6004;                                          /* WMI_PEER_SET_PARAM_CMDID */
++	p[1] = (0x064u << 16) | 20u;                            /* WMI_TAG_PEER_SET_PARAM_CMD */
++	p[2] = 0;                                               /* vdev_id */
++	memcpy(&p[3], bssid, 4);
++	memcpy(&p[4], bssid + 4, 2);
++	p[4] &= 0xffffu;
++	p[5] = 0x13;                                            /* WMI_PEER_SET_DEFAULT_ROUTING */
++	p[6] = 1u | (1u << 1);                                  /* hash steering on, REO destination 1 */
++	printf("SWEET WMI: peer default routing\n");
++	htc_send(&g_ce3, g_htc.wmi_eid, (const uint8_t *)p, 4 * 7);
++
++	if (!g_reo_va) {
++		uint32_t need = REO_NUM_TIDS * REO_QDESC_STRIDE;
++		if (sweet_gpu_pool_alloc(need, &g_reo_pa) != 0 || g_reo_pa + need > 0x100000000ull) {
++			printf("SWEET WMI: no pool for the reorder queues\n");
++			return;
++		}
++		if (!(g_reo_va = ml_io_map((vm_offset_t)g_reo_pa, need))) {
++			printf("SWEET WMI: the reorder queues would not map\n");
++			return;
++		}
++		printf("SWEET WMI: reorder queues at %#llx (%u bytes)\n", g_reo_pa, need);
++	}
++	for (uint32_t tid = 0; tid < REO_NUM_TIDS; tid++) {
++		volatile uint32_t *q = (volatile uint32_t *)(g_reo_va + tid * REO_QDESC_STRIDE);
++		for (uint32_t i = 0; i < REO_QDESC_STRIDE / 4u; i++) {
++			q[i] = 0;
++		}
++		q[0] = 4u | (8u << 4) | (0xddbeefu << 8);       /* REO owned, queue descriptor, magic 0 */
++		q[1] = tid;                                     /* rx_queue_num */
++		uint32_t ba = (tid == 16u) ? 1u : 2u;           /* a QoS TID gets at least two */
++		q[2] = 1u                                       /* valid */
++		    | (1u << 1)                                 /* one associated link descriptor counter */
++		    | (reo_tid_ac(tid) << 5)
++		    | ((ba == 1u) ? (1u << 8) : 0u)             /* retry, when there is no window */
++		    | ((ba - 1u) << 11)
++		    | (1u << 25);                               /* ignore A-MPDU flag, as ath11k does */
++		if (tid != 16u) {
++			for (uint32_t e = 1; e <= 3; e++) {
++				volatile uint32_t *x = q + e * 32u;
++				x[0] = 4u | (9u << 4) | ((0xadbeefu + (e - 1u) * 0x100000u) << 8);
++			}
++		}
++		static uint32_t r[12];
++		memset(r, 0, sizeof(r));
++		r[0] = 0x6013;                                  /* WMI_PEER_REORDER_QUEUE_SETUP_CMDID */
++		r[1] = (0x225u << 16) | 36u;                    /* WMI_TAG_REORDER_QUEUE_SETUP_CMD */
++		r[2] = 0;                                       /* vdev_id */
++		memcpy(&r[3], bssid, 4);
++		memcpy(&r[4], bssid + 4, 2);
++		r[4] &= 0xffffu;
++		r[5] = tid;
++		uint64_t pa = g_reo_pa + tid * REO_QDESC_STRIDE;
++		r[6] = (uint32_t)pa;                            /* queue_ptr_lo */
++		r[7] = (uint32_t)(pa >> 32);                    /* queue_ptr_hi */
++		r[8] = tid;                                     /* queue_no */
++		r[9] = 1;                                       /* ba_window_size_valid */
++		r[10] = 1;                                      /* ba_window_size */
++		htc_send(&g_ce3, g_htc.wmi_eid, (const uint8_t *)r, 4 * 11);
++	}
++	printf("SWEET WMI: %u reorder queues handed over\n", REO_NUM_TIDS);
++	volatile int settled = 0;
++	(void)wifi_wait(&settled, 300, "after the peer setup");
++}
++
+ static void
+ wifi_mgmt_tx(const uint8_t *frame, uint32_t len, uint32_t freq)
+ {
+@@ -2433,6 +2541,7 @@ wifi_join(void)
+ 	 * point's peer exists. We had the two in the other order.
+ 	 */
+ 	wifi_peer_create(g_nets[best]);
++	wifi_peer_setup(g_nets[best]);
+ 	/*
+ 	 * And stop here if the start is still refused. k103 went on to send a management frame on a vdev that
+ 	 * had never started, and the firmware died 187 ms later — which told us nothing we did not already
