@@ -1,0 +1,39 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 074befe..283ac9d 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2419,17 +2419,29 @@ wifi_join(void)
+ 	 * event, while the firmware was still putting the scan away.
+ 	 */
+ 	volatile int quiet = 0;
+-	(void)wifi_wait(&quiet, 300, "before the vdev start");
++	(void)wifi_wait(&quiet, 300, "before the peer");
+ 	/*
+-	 * And stop here if it was refused. k103 went on to send a management frame on a vdev that had never
+-	 * started, and the firmware died 187 ms later — which told us nothing we did not already know from
+-	 * the status code, at the cost of a whole run.
++	 * The peer comes first. k107 put eight different vdev starts on the air — three phymodes, with and
++	 * without the LDPC flag, one stream and two, no beacon interval, a non-zero requestor — and every
++	 * one of them came back 0xffffffff within eleven milliseconds. Eight identical refusals to eight
++	 * different commands mean the command was never the problem.
++	 *
++	 * What is the problem is written in ath11k's own source, above the branch that handles this exact
++	 * chip: "for QCA6390 bss peer must be created before vdev_start". The QCA6390 entry in ath11k's
++	 * hardware table sets vdev_start_delay, and with it a station's vdev start is deliberately held back
++	 * when the channel is assigned and only issued later, from ath11k_mac_station_add, after the access
++	 * point's peer exists. We had the two in the other order.
++	 */
++	wifi_peer_create(g_nets[best]);
++	/*
++	 * And stop here if the start is still refused. k103 went on to send a management frame on a vdev that
++	 * had never started, and the firmware died 187 ms later — which told us nothing we did not already
++	 * know from the status code, at the cost of a whole run.
+ 	 */
+ 	if (wifi_vdev_start_sweep(freq) != 0) {
+ 		printf("SWEET WIFI: the vdev would not start, nothing more to try here\n");
+ 		return;
+ 	}
+-	wifi_peer_create(g_nets[best]);
+ 	/*
+ 	 * Open-system authentication: algorithm 0, sequence 1, status 0. WPA2 does its real work later, in the
+ 	 * four-way handshake, and the authentication frame itself is the same six bytes it has been since 1997.

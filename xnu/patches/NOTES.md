@@ -2952,3 +2952,25 @@ E per non spendere un altro run su un "probabilmente", il vdev start adesso prov
 seguito — phymode HE20_2G, 11NG_HT20 con ALLOW_HT, 11G, VHT20_2G, con e senza il flag LDPC, uno o due
 flussi, beacon interval 0, requestor 1 — e stampa lo stato di ognuna. Costa un decimo di secondo. La
 prima che il firmware accetta vince.
+
+## 1264 — il peer viene prima
+
+k107 ha chiuso la domanda. Otto vdev start diversi — tre phymode, con e senza il flag LDPC, uno e due
+flussi, beacon interval 0, requestor 1 — tutti rifiutati con `0xffffffff` entro undici millisecondi
+l'uno dall'altro. Otto rifiuti identici a otto comandi diversi: il comando non è mai stato il problema.
+
+La stretta di mano HTT invece è andata: `ep 2 event 0x35a00`, cioè `HTT_T2H_MSG_TYPE_VERSION_CONF` con
+versione **3.90**. Quindi anche quella strada è aperta, e non era lei a bloccare il vdev.
+
+La risposta sta scritta nel sorgente di ath11k, sopra il ramo che tratta esattamente questo chip:
+
+> /* for QCA6390 bss peer must be created before vdev_start */
+
+La voce QCA6390 nella tabella hardware di ath11k ha `vdev_start_delay = true` (e `single_pdev_only =
+true`, che conferma a posteriori il pdev_id 0 di k105). Con quel flag, l'avvio del vdev di una stazione
+viene deliberatamente trattenuto quando si assegna il canale, e parte dopo, da
+`ath11k_mac_station_add`, **quando il peer dell'access point esiste già**. Noi facevamo l'esatto
+contrario.
+
+Scambiato l'ordine: peer create, poi vdev start. Il giro di varianti resta, costa un decimo di secondo e
+adesso la prima dovrebbe bastare.
