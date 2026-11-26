@@ -1,0 +1,27 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index e5cb3ec..33d3ffb 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -1532,8 +1532,21 @@ ce_send(struct ce_src *c, const uint8_t *data, uint32_t len)
+ static void
+ htc_send(struct ce_src *c, uint32_t eid, const uint8_t *payload, uint32_t len)
+ {
+-	static uint8_t f[512];
++	/*
++	 * 2048 bytes, not 512. The HTC endpoints report a maximum message of 2040 and we had been scribbling
++	 * past the end of this buffer the moment one went over 504 — which the 21-channel list did, at 612.
++	 * k113 and k114 both stopped writing the log a few seconds later and never said why: the kernel was
++	 * alive and rebooted on schedule, but the UFS flush had started failing, because what follows this
++	 * buffer in memory had been overwritten. Four runs went into "the phone is hanging" before the log
++	 * turned out to be the victim rather than the witness. The length is checked now as well.
++	 */
++	static uint8_t f[2048];
+ 	static uint8_t seq[8];
++	if (len > sizeof(f) - 8u) {
++		printf("SWEET HTC: refusing a %u byte message on endpoint %u, the limit is %lu\n", len, eid,
++		    sizeof(f) - 8u);
++		return;
++	}
+ 	/*
+ 	 * ath11k_htc_prepare_tx_skb: endpoint 7:0, flags 15:8 (NEED_CREDIT_UPDATE on the credit-controlled WMI
+ 	 * endpoint, which is how the firmware knows to report credits back), payload length 31:16; the second

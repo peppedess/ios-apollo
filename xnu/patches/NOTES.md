@@ -3087,3 +3087,20 @@ start. Nessuna delle tre gira prima dei 72 secondi.
 
 Prossimo passo: bisezione in due immagini, una con le prime due modifiche e una con tutte e tre. Due
 compilazioni da un minuto l'una e si sa quale delle tre è.
+
+## 1269 — il buffer di htc_send era da 512 byte
+
+Eccolo. `htc_send` copia il payload in un buffer statico da 512 byte, otto byte dopo l'inizio
+dell'intestazione HTC. Tutto quello che abbiamo mandato finora ci stava: il comando di init è 368 byte,
+la scansione 256, la lista canali a 13 voci 388. La lista a **21 voci è 612**, e da lì in poi abbiamo
+scritto 620 byte in 512.
+
+È la spiegazione di k113 e k114. Il kernel non si piantava — si riavviava regolarmente a 240 secondi,
+come previsto — ma qualche secondo dopo il messaggio troppo lungo smetteva di riuscire a scrivere il log
+sulla partizione, perché quello che segue quel buffer in memoria era stato sovrascritto. E siccome su
+disco resta l'ultimo flush riuscito, il testo finiva sempre sulla stessa riga, prima ancora del punto
+dove il guasto avveniva davvero. Quattro run spesi a dire "il telefono si blocca", con il log nel ruolo
+di vittima e non di testimone.
+
+Adesso il buffer è 2048 byte — gli endpoint HTC dichiarano un massimo di 2040 — e la lunghezza viene
+controllata, con un rifiuto stampato invece di un silenzio.
