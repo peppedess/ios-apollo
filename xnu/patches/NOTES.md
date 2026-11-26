@@ -3057,3 +3057,17 @@ E la risposta al vdev start si stampa per intero, non solo lo stato: dopo vdev_i
 resp_type e status vengono chain_mask, smps_mode, mac_id, i flussi configurati in trasmissione e
 ricezione e la potenza massima consentita. Un firmware che rifiuta può aver comunque scritto cosa pensa
 che il vdev abbia.
+
+### k113 non ha risposto: tre avvii piantati
+
+Tre esecuzioni della stessa immagine, tre blocchi senza crash né panic: a 70,7 s sulla riga "settling
+200 ms before INIT", poi a 64,6 s su "SMMU setup next" nella seconda passata MHI, poi di nuovo a 70,6 s
+sulla stessa riga della prima. Punti diversi della stessa fase, e in quel codice k113 non cambia una
+riga rispetto a k111 e k112, che erano arrivati in fondo.
+
+Due punti diversi non sono un bug deterministico. Il sospetto è il telefono: una venticinquina di cicli
+di accensione nella stessa giornata, e lo stato PCIe/WLAN che a volte resta incastrato. Da provare con
+un telefono spento davvero per qualche minuto prima del prossimo tentativo.
+
+Le due domande di k113 restano aperte: il rifiuto del vdev start dipende dallo stato lasciato dalla
+scansione, e dipende dalla banda?
