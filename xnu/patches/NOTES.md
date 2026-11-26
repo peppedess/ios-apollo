@@ -3031,3 +3031,29 @@ Il codice per gli anelli HAL c'è già, dietro `sweetdp=1`, e parte nel punto gi
 cui non lo accendiamo mai è che k64 ci è morto dentro: chiede 32768 descrittori di link, cioè quattro
 megabyte in un pezzo solo sopra due passate di segmenti firmware, due blocchi MHI e due copie di m3.
 Mille bastano per un'associazione e un filo di traffico, e `sweetdplinks` resta per cambiarli.
+
+## 1268 — due domande a cui può rispondere solo il telefono
+
+k111: anelli HAL accesi — 15 anelli su, 2 MB di memoria, REO e TCL programmati — e il vdev start resta
+5. k112: il comando che dà alla radio un indirizzo MAC proprio **fa crashare il firmware**, con lo stesso
+`Asserted in0x16af2bcs:630` di novembre. Quindi quell'assert ha finalmente un colpevole certo —
+`WMI_PDEV_SET_BASE_MACADDR` su questo firmware non si può mandare — e la strada del MAC è chiusa.
+
+A forza di eliminare, le ipotesi plausibili sono finite. Due cose si possono però ancora chiedere al
+telefono invece che al codice di ath11k, e costano venti millisecondi in tutto:
+
+1. **Dipende dallo stato che lascia la scansione?** Un vdev start subito dopo la creazione del vdev,
+   prima che la scansione parta.
+2. **Dipende dalla banda?** Lo stesso, su 5180 MHz.
+
+Entrambi dovrebbero fallire, perché non c'è ancora un peer e senza peer k107 prendeva `0xffffffff`. Ma è
+il numero che conta: un 5 lì vorrebbe dire che il peer non c'entrava davvero, e un numero diverso sui
+5 GHz vorrebbe dire che c'entra la banda.
+
+Per questo la lista dei canali adesso porta anche otto canali a 5 GHz, quelli aperti ovunque e senza
+sorveglianza radar: un vdev start a 5180 deve avere un canale dove andare.
+
+E la risposta al vdev start si stampa per intero, non solo lo stato: dopo vdev_id, requestor_id,
+resp_type e status vengono chain_mask, smps_mode, mac_id, i flussi configurati in trasmissione e
+ricezione e la potenza massima consentita. Un firmware che rifiuta può aver comunque scritto cosa pensa
+che il vdev abbia.

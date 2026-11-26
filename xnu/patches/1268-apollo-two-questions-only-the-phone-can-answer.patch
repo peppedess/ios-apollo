@@ -1,0 +1,132 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index d0e88df..e5cb3ec 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -1655,11 +1655,22 @@ htc_rx(uint32_t pipe, const uint8_t *p, uint32_t n)
+ 		 * resp_type, status, chain_mask, smps_mode, mac_id, cfgd_tx_streams, cfgd_rx_streams.
+ 		 */
+ 		if (tag == 0x28u && n >= 16 + 16) {
+-			uint32_t f[4] = { 0 };
+-			memcpy(f, p + 16, 16);
++			uint32_t f[10] = { 0 };
++			uint32_t have = (n - 16u) / 4u;
++			if (have > 10u) {
++				have = 10u;
++			}
++			memcpy(f, p + 16, have * 4u);
+ 			g_htc.vdev_start_status = f[3];
+ 			g_htc.vdev_started = 1;
+-			printf("SWEET WMI: vdev %u start response: type %u status %u\n", f[0], f[2], f[3]);
++			/*
++			 * The whole event, not just the status. After vdev_id, requestor_id, resp_type and status
++			 * come chain_mask, smps_mode, mac_id, cfgd_tx_streams, cfgd_rx_streams and the maximum
++			 * allowed transmit power. A firmware that refuses to start a vdev may still have filled
++			 * in what it thinks the vdev has, and that is worth reading.
++			 */
++			printf("SWEET WMI: vdev %u start response: type %u status %u | chain %#x smps %u mac %u "
++			    "tx %u rx %u pwr %d\n", f[0], f[2], f[3], f[4], f[5], f[6], f[7], f[8], (int)f[9]);
+ 		}
+ 		/*
+ 		 * The event ids are this firmware's, not the ath11k build we copied them from — the same lesson
+@@ -1877,6 +1888,11 @@ ce_poll(void)
+ static int wifi_wait(volatile int *flag, int timeout_ms, const char *what);
+ static void wifi_join(void);
+ static void wifi_vdev_param(uint32_t id, uint32_t value);
++struct vdev_start_variant {
++	const char *what;
++	uint32_t mode, flags, bcn, streams, requestor;
++};
++static void wifi_vdev_start(uint32_t freq, const struct vdev_start_variant *v);
+ static void wifi_scan(void);
+ 
+ /*
+@@ -2023,6 +2039,25 @@ wifi_vdev_create(void)
+ 	wifi_vdev_param(0x30, 1);                                       /* TX_ENCAP_TYPE: native wifi */
+ 	wifi_vdev_param(0x5b, 1);                                       /* RX_DECAP_TYPE: native wifi */
+ 	wifi_vdev_param(0x22, 2);                                       /* NSS: two chains */
++	/*
++	 * Two questions asked here, before the scan has run and before any peer exists, because they can
++	 * only be answered from the phone. Does the refusal depend on the state the scan leaves behind? And
++	 * does it depend on the band? A vdev start on 2412 right now, and one on 5180, cost twenty
++	 * milliseconds between them and rule out two whole directions at once. Both are expected to fail —
++	 * there is no peer yet, and without one k107 got 0xffffffff — but it is the number that matters: a
++	 * 5 here would mean the peer never really mattered, and a different number on 5 GHz would mean the
++	 * band does.
++	 */
++	uint32_t early = 1;
++	(void)PE_parse_boot_argn("sweetearly", &early, sizeof(early));
++	if (early) {
++		static const struct vdev_start_variant probe = { "early, no peer", 21, 1u << 3, 100, 2, 0 };
++		wifi_vdev_start(2412, &probe);
++		printf("SWEET WMI:   [early 2412, no peer] -> status %u\n", g_htc.vdev_start_status);
++		static const struct vdev_start_variant probe5 = { "early 5 GHz, no peer", 4u, 1u << 3, 100, 2, 0 };
++		wifi_vdev_start(5180, &probe5);
++		printf("SWEET WMI:   [early 5180, no peer] -> status %u\n", g_htc.vdev_start_status);
++	}
+ }
+ 
+ /*
+@@ -2093,21 +2128,32 @@ wifi_pdev_setup(void)
+ 	(void)wifi_wait(&settled, 200, "after the pdev parameters");
+ }
+ 
++/*
++ * The channel list now carries 5 GHz as well. The eight channels below are the ones that are open
++ * everywhere and need no radar watch, and they are here so that a vdev start on 5 GHz has somewhere to
++ * go: if the refusal depends on the band, that is worth knowing, and it costs nothing to ask.
++ */
++#define CHAN_LIST_N     21u
++static const uint16_t chan_list_mhz[CHAN_LIST_N] = {
++	2412, 2417, 2422, 2427, 2432, 2437, 2442, 2447, 2452, 2457, 2462, 2467, 2472,
++	5180, 5200, 5220, 5240, 5745, 5765, 5785, 5805,
++};
++
+ static void
+ wifi_scan_chan_list(void)
+ {
+-	static uint32_t m[2 + 3 + 1 + 13 * 7];
++	static uint32_t m[2 + 3 + 1 + CHAN_LIST_N * 7];
+ 	uint32_t *w = m;
+ 	memset(m, 0, sizeof(m));
+ 	w[0] = 0x3003;                                                  /* WMI_SCAN_CHAN_LIST_CMDID */
+ 	w[1] = (0x04fu << 16) | 12u;                                    /* WMI_TAG_SCAN_CHAN_LIST_CMD */
+-	w[2] = 13;                                                      /* num_scan_chans */
++	w[2] = CHAN_LIST_N;                                             /* num_scan_chans */
+ 	w[3] = 0;                                                       /* flags: replace, do not append */
+ 	w[4] = 0;                                                       /* pdev_id: single_pdev_only */
+-	w[5] = (0x12u << 16) | (13u * 28u);                             /* ARRAY_STRUCT of wmi_channel */
++	w[5] = (0x12u << 16) | (CHAN_LIST_N * 28u);                     /* ARRAY_STRUCT of wmi_channel */
+ 	uint32_t *ch = w + 6;
+-	for (uint32_t i = 0; i < 13; i++) {
+-		uint32_t mhz = 2412u + 5u * i;
++	for (uint32_t i = 0; i < CHAN_LIST_N; i++) {
++		uint32_t mhz = chan_list_mhz[i];
+ 		uint32_t *e = ch + i * 7;
+ 		e[0] = (0x050u << 16) | 24u;                            /* WMI_TAG_CHANNEL */
+ 		e[1] = mhz;                                             /* mhz */
+@@ -2119,11 +2165,11 @@ wifi_scan_chan_list(void)
+ 		 * are open everywhere, and whether we listen or talk is the scan's business, not the
+ 		 * channel's.
+ 		 */
+-		e[4] = 5u | (1u << 11);
++		e[4] = (mhz < 3000u ? 5u : 4u) | (1u << 11);            /* 11NG_HT20 or 11NA_HT20, HT allowed */
+ 		e[5] = (20u << 8) | (20u << 16);                        /* min 0, max 20 dBm, max reg 20 dBm */
+ 		e[6] = (20u << 8);                                      /* antenna max 0, max tx power 20 dBm */
+ 	}
+-	printf("SWEET WMI: channel list, 13 channels 2412-2472\n");
++	printf("SWEET WMI: channel list, %u channels\n", CHAN_LIST_N);
+ 	htc_send(&g_ce3, g_htc.wmi_eid, (const uint8_t *)m, sizeof(m));
+ 	volatile int settled = 0;
+ 	(void)wifi_wait(&settled, 200, "after the channel list");
+@@ -2299,11 +2345,6 @@ wifi_htt_version(void)
+  * a whole sweep costs about a tenth of a second. Each variant goes out, waits for its answer, and prints
+  * it; the first one the firmware accepts wins and the rest are skipped.
+  */
+-struct vdev_start_variant {
+-	const char *what;
+-	uint32_t mode, flags, bcn, streams, requestor;
+-};
+-
+ static void
+ wifi_vdev_start(uint32_t freq, const struct vdev_start_variant *v)
+ {
