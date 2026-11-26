@@ -3058,7 +3058,7 @@ resp_type e status vengono chain_mask, smps_mode, mac_id, i flussi configurati i
 ricezione e la potenza massima consentita. Un firmware che rifiuta può aver comunque scritto cosa pensa
 che il vdev abbia.
 
-### k113 non ha risposto: tre avvii piantati
+### k113 non ha risposto: quattro avvii, sempre fermi nello stesso punto
 
 Tre esecuzioni della stessa immagine, tre blocchi senza crash né panic: a 70,7 s sulla riga "settling
 200 ms before INIT", poi a 64,6 s su "SMMU setup next" nella seconda passata MHI, poi di nuovo a 70,6 s
@@ -3071,3 +3071,19 @@ un telefono spento davvero per qualche minuto prima del prossimo tentativo.
 
 Le due domande di k113 restano aperte: il rifiuto del vdev start dipende dallo stato lasciato dalla
 scansione, e dipende dalla banda?
+
+Quarto tentativo, con il telefono spento davvero prima: stesso punto, 70,6 s, riga "settling 200 ms
+before INIT". Tre volte su quattro esattamente lì. Non è il telefono.
+
+E non è nemmeno un blocco: il kernel continua a girare e si riavvia regolarmente a 240 secondi, come
+previsto. **Smette solo di scrivere il log.** Nel buffer, subito dopo l'ultima riga, ci sono ventun byte
+a zero, e poi riprende il testo di k112 rimasto dal run precedente — che è anche il motivo per cui i
+primi log sembravano arrivare fino al crash del MAC di base: quella parte era vecchia.
+
+Fra la riga "settling" e la successiva ci sono solo il ciclo di attesa da 200 ms e `wmi_init()`, e k113
+non tocca né l'uno né l'altro. Le differenze rispetto a k112, che arrivava in fondo, sono tre: la lista
+canali a 21 voci, la stampa estesa della risposta al vdev start, e i due tentativi anticipati di vdev
+start. Nessuna delle tre gira prima dei 72 secondi.
+
+Prossimo passo: bisezione in due immagini, una con le prime due modifiche e una con tutte e tre. Due
+compilazioni da un minuto l'una e si sa quale delle tre è.
