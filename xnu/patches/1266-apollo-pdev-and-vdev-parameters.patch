@@ -1,8 +1,16 @@
 diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
-index 7277f3f..dba36cc 100644
+index 7277f3f..a2f9878 100644
 --- a/bsd/dev/apollo_pcie.c
 +++ b/bsd/dev/apollo_pcie.c
-@@ -2016,6 +2016,12 @@ wifi_vdev_create(void)
+@@ -1876,6 +1876,7 @@ ce_poll(void)
+  */
+ static int wifi_wait(volatile int *flag, int timeout_ms, const char *what);
+ static void wifi_join(void);
++static void wifi_vdev_param(uint32_t id, uint32_t value);
+ static void wifi_scan(void);
+ 
+ /*
+@@ -2016,6 +2017,12 @@ wifi_vdev_create(void)
  	printf("SWEET WMI: vdev 0 create (station, MAC %02x:%02x:%02x:%02x:%02x:%02x, 2 streams per band)\n",
  	    g_htc.mac[0], g_htc.mac[1], g_htc.mac[2], g_htc.mac[3], g_htc.mac[4], g_htc.mac[5]);
  	htc_send(&g_ce3, g_htc.wmi_eid, (const uint8_t *)m, 4 * 21);
@@ -15,7 +23,7 @@ index 7277f3f..dba36cc 100644
  }
  
  /*
-@@ -2034,6 +2040,58 @@ wifi_vdev_create(void)
+@@ -2034,6 +2041,58 @@ wifi_vdev_create(void)
   * from the other side, because record 0x5003 (vdev start) is 0x058/116 followed by exactly one 0x050/28.
   * Three payload words in the fixed part: num_scan_chans, flags, pdev_id.
   */
@@ -74,7 +82,7 @@ index 7277f3f..dba36cc 100644
  static void
  wifi_scan_chan_list(void)
  {
-@@ -2073,6 +2131,7 @@ wifi_scan_chan_list(void)
+@@ -2073,6 +2132,7 @@ wifi_scan_chan_list(void)
  static void
  wifi_scan(void)
  {
