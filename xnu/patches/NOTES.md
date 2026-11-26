@@ -3104,3 +3104,26 @@ di vittima e non di testimone.
 
 Adesso il buffer è 2048 byte — gli endpoint HTC dichiarano un massimo di 2040 — e la lunghezza viene
 controllata, con un rifiuto stampato invece di un silenzio.
+
+### k115 — le due domande hanno risposto
+
+Con il buffer corretto, k115 è arrivato in fondo e il log è completo.
+
+```
+[72.312] vdev 0 start, 2412 MHz, prima della scansione, senza peer  -> 4294967295
+[72.323] vdev 0 start, 5180 MHz, prima della scansione, senza peer  -> 4294967295
+[74.696] SCAN COMPLETE, 6 reti in 9 frame
+[75.024] peer 20:b0:01:de:9f:e9 create + routing + 17 code di riordino
+[75.579] vdev 0 start, otto varianti                                -> 5, tutte
+```
+
+Quindi: **lo stato lasciato dalla scansione non c'entra** (−1 anche prima che la scansione parta) e **la
+banda non c'entra** (5180 si comporta come 2412). L'unica cosa che sposta il numero resta il peer:
+senza, −1; con, 5. Confermato due volte in due punti diversi dello stesso avvio.
+
+E la risposta è vuota in ogni campo: chain 0, smps 0, mac 0, flussi configurati 0 e 0, potenza 0. Il
+firmware non scrive niente di quello che pensa che il vdev abbia.
+
+Resta un solo grande pezzo di ath11k che non abbiamo: la configurazione degli anelli di ricezione via
+HTT (`ath11k_dp_tx_htt_srng_setup` dentro `ath11k_dp_pdev_alloc`), cioè dire al firmware dove stanno gli
+anelli RXDMA dell'host. Gli anelli HAL li costruiamo già (k111), ma al firmware non lo diciamo.
