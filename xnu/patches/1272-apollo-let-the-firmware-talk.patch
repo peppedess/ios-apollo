@@ -1,0 +1,63 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index b95c52f..6fb7a61 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -712,6 +712,7 @@ bhie_load(uint32_t bhie, unsigned nseg)
+ static uint32_t g_chdb, g_cmd_wp = CMD_RING, g_er1_rp = ER1_RING, g_ch20_wp = CH20_RING, g_ch21_wp = CH21_RING;
+ static uint32_t g_ch4_wp = CH4_RING, g_ch5_wp = CH5_RING, g_diag_shown;
+ static uint32_t g_fwlog_shown, g_evdump_shown;
++static int g_fwlog_arm;
+ 
+ /*
+  * The networks heard during a scan. An access point beacons about ten times a second, so without this the
+@@ -1721,16 +1722,33 @@ htc_rx(uint32_t pipe, const uint8_t *p, uint32_t n)
+ 			(void)PE_parse_boot_argn("sweetfwlog", &v, sizeof(v));
+ 			fwlog_on = v ? 1 : 0;
+ 		}
+-		if (fwlog_on && m0 == 0x1d011u && n > 20 && g_fwlog_shown < 40u) {
+-			uint32_t k = n - 20 > 240u ? 240u : n - 20;
+-			char line[244];
+-			uint32_t o = 0;
+-			for (uint32_t i = 0; i < k; i++) {
+-				uint8_t c = p[20 + i];
+-				line[o++] = (c >= 0x20 && c < 0x7f) ? (char)c : '.';
++		/*
++		 * The firmware's own log, armed late and printed as words.
++		 *
++		 * Seventeen runs of eliminating things have not moved status 5, so stop guessing and read what
++		 * the firmware says to itself. Event 0x1d011 is its log, and it has always been there — switched
++		 * off because seven or eight records per scan channel filled the four megabytes we have long
++		 * before anything interesting happened. So arm it only once the scan has completed: the window
++		 * that matters is peer create to vdev start, about a second long, and twenty-four records of it
++		 * will fit comfortably.
++		 *
++		 * As words, not as characters. The records are binary — message ids and arguments, not text —
++		 * and the old printer turned all of it into dots. Sixty-four words of each is enough to see
++		 * which ids repeat around a command that works and which appear only around the one that fails.
++		 */
++		if (fwlog_on && g_fwlog_arm && m0 == 0x1d011u && n > 20 && g_fwlog_shown < 24u) {
++			uint32_t words = (n - 20u) / 4u;
++			if (words > 64u) {
++				words = 64u;
++			}
++			printf("SWEET FWLOG: %u bytes\n", n - 20);
++			for (uint32_t i = 0; i < words; i += 8) {
++				uint32_t v[8] = { 0 };
++				uint32_t k = words - i > 8u ? 8u : words - i;
++				memcpy(v, p + 20 + i * 4u, k * 4u);
++				printf("SWEET FWLOG:   +%03u: %08x %08x %08x %08x %08x %08x %08x %08x\n", i * 4u,
++				    v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]);
+ 			}
+-			line[o] = 0;
+-			printf("SWEET FWLOG: %u bytes: %s\n", n - 20, line);
+ 			g_fwlog_shown++;
+ 		}
+ 		if (m0 == 0x7001u && n >= 16 + 60) {                    /* WMI_MGMT_RX_EVENTID */
+@@ -2269,6 +2287,7 @@ wifi_scan(void)
+ 	htc_send(&g_ce3, g_htc.wmi_eid, (const uint8_t *)m, 4 * 64);
+ 	if (wifi_wait(&g_htc.scan_done, 25000, "scan") == 0) {
+ 		printf("SWEET WIFI: SCAN COMPLETE, %u networks in %u frames\n", g_nnets, g_htc.aps);
++		g_fwlog_arm = 1;
+ 		for (uint32_t i = 0; i < g_nnets; i++) {
+ 			printf("SWEET WIFI:   %02x:%02x:%02x:%02x:%02x:%02x  ch %-3u  %4d dBm  \"%s\"\n", g_nets[i][0],
+ 			    g_nets[i][1], g_nets[i][2], g_nets[i][3], g_nets[i][4], g_nets[i][5], g_net_chan[i],

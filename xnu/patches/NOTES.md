@@ -3165,3 +3165,23 @@ Il gradino sta dentro `sweetdp`, perche' la riga dei boot-args e' 592 byte e un 
 sta accanto al resto: `sweetdp=1` e' quello di sempre, i soli anelli UMAC; 2 alloca anche quelli LMAC,
 3 riempie anche il rifornimento di buffer, 4 li consegna anche al firmware. Ogni gradino si annuncia prima di agire, così
 l'ultima riga rimasta in piedi dice quale è stato.
+
+## 1272 — far parlare il firmware
+
+k117 è andato in fondo pulito: anelli LMAC allocati, rifornimento riempito con 128 buffer, tutti e tre i
+messaggi `HTT_H2T_MSG_TYPE_SRING_SETUP` consegnati, log completo, nessun crash. E il vdev start risponde
+**ancora 5**. Il percorso dati non era la risposta.
+
+Una cosa k117 l'ha però stabilita: al secondo 75,386, subito dopo il peer create, arriva un evento
+sull'endpoint 2 con payload `0x00020003` — `HTT_T2H_MSG_TYPE_PEER_MAP`, peer id 2 su vdev 0. Il peer
+esiste davvero e il firmware l'ha mappato, quindi lo status 5 non è "peer mancante".
+
+A questo punto l'elenco di quello che abbiamo escluso è lungo e le ipotesi plausibili sono finite. Il
+firmware però un log ce l'ha, l'evento 0x1d011, e non l'abbiamo mai letto: lo tenevamo spento perché
+sette o otto record per canale di scansione riempivano i quattro megabyte molto prima che succedesse
+qualcosa di interessante.
+
+Adesso si arma **dopo la fine della scansione**, così cattura esattamente la finestra che conta — peer
+create, configurazione del peer, otto vdev start — che dura poco più di un secondo. E si stampa a
+parole, non a caratteri: i record sono binari, id di messaggio e argomenti, e il vecchio stampatore li
+riduceva a una fila di punti. Sessantaquattro parole per record, ventiquattro record.
