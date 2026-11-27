@@ -1,0 +1,142 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 33d3ffb..01838c3 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -1906,6 +1906,8 @@ struct vdev_start_variant {
+ 	uint32_t mode, flags, bcn, streams, requestor;
+ };
+ static void wifi_vdev_start(uint32_t freq, const struct vdev_start_variant *v);
++static void dp_lmac_rings(void);
++static void wifi_htt_rings(void);
+ static void wifi_scan(void);
+ 
+ /*
+@@ -3015,6 +3017,120 @@ wifi_dp(void)
+ 	printf("SWEET DP: %u rings up, %u KiB used; REO gen %#x, TCL ctrl %#x, idle misc %#x base %#x\n",
+ 	    15, g_doff >> 10, win_rd(HAL_REO_BASE), win_rd(HAL_TCL_BASE + 0x14), win_rd(idle.r0 + 0x10),
+ 	    win_rd(idle.r0));
++	dp_lmac_rings();
++}
++
++/*
++ * The receive rings that belong to the LMAC, and the only part of ath11k's data path we have never built.
++ *
++ * Every ring above lives in the UMAC: the host writes its base address, its size and its pointers into
++ * hardware registers through the window, and that is that. The LMAC rings have no such registers. The
++ * host allocates them in its own memory and then *tells the firmware about them*, one HTT message each —
++ * ath11k_dp_tx_htt_srng_setup, called from ath11k_dp_pdev_alloc, which runs before a radio is registered
++ * and before any vdev could possibly be started. We build the rings here, next to the others, and send
++ * the messages once HTT has answered.
++ *
++ * For the QCA6390 there are three of them, because rx_mac_buf_ring and rxdma1_enable are both false in
++ * ath11k's hardware table: the refill ring the firmware takes empty buffers from, the destination ring it
++ * reports errors on, and the monitor status refill ring. Their pointers live in host memory too, two
++ * 32-bit words each, whose addresses travel in the same message.
++ */
++#define LMAC_NRINGS     3u
++#define LMAC_RX_BUFS    128u
++#define LMAC_RX_BUFSZ   2048u
++
++static struct lmac_ring {
++	const char *name;
++	uint32_t htt_id, htt_type, entries, esz;        /* esz in 32-bit words */
++	uint64_t pa, hp_pa, tp_pa;
++	vm_offset_t va, ptr_va;
++} g_lmac[LMAC_NRINGS] = {
++	/* HTT_RXDMA_HOST_BUF_RING, software to hardware: where the firmware takes empty buffers from */
++	{ "rx_refill",   0, 1, 512, 2, 0, 0, 0, 0, 0 },
++	/* HTT_RXDMA_NON_MONITOR_DEST_RING, hardware to software: where it reports what went wrong */
++	{ "rxdma_err",   7, 0, 128, 8, 0, 0, 0, 0, 0 },
++	/* HTT_RXDMA_MONITOR_STATUS_RING, software to hardware */
++	{ "mon_status",  1, 1, 128, 2, 0, 0, 0, 0, 0 },
++};
++static int g_lmac_ready;
++
++static void
++dp_lmac_rings(void)
++{
++	vm_offset_t ptr_va;
++	uint64_t ptr_pa;
++	if (dp_alloc(LMAC_NRINGS * 8u, 0x100, &ptr_va, &ptr_pa) != 0) {
++		return;
++	}
++	for (uint32_t i = 0; i < LMAC_NRINGS; i++) {
++		struct lmac_ring *r = &g_lmac[i];
++		if (dp_alloc(r->entries * r->esz * 4u, 0x100, &r->va, &r->pa) != 0) {
++			return;
++		}
++		r->ptr_va = ptr_va + i * 8u;
++		r->hp_pa = ptr_pa + i * 8u;
++		r->tp_pa = ptr_pa + i * 8u + 4u;
++		*(volatile uint32_t *)(r->ptr_va) = 0;
++		*(volatile uint32_t *)(r->ptr_va + 4u) = 0;
++	}
++	/*
++	 * Fill the refill ring. An entry is an address and a cookie: the low 32 bits of the buffer, then the
++	 * top bits of the address, the return buffer manager in bits 10:8 — 3, software bank 3, which is what
++	 * ath11k's hardware parameters give this chip — and our own cookie above that, which comes back to us
++	 * when the buffer is returned. One entry stays free, as always.
++	 */
++	vm_offset_t bva;
++	uint64_t bpa;
++	if (dp_alloc(LMAC_RX_BUFS * LMAC_RX_BUFSZ, 0x1000, &bva, &bpa) != 0) {
++		return;
++	}
++	(void)bva;
++	struct lmac_ring *rf = &g_lmac[0];
++	uint32_t filled = 0;
++	for (uint32_t i = 0; i < LMAC_RX_BUFS && i + 1 < rf->entries; i++) {
++		uint64_t b = bpa + (uint64_t)i * LMAC_RX_BUFSZ;
++		volatile uint32_t *e = (volatile uint32_t *)(rf->va + i * 8u);
++		e[0] = (uint32_t)b;
++		e[1] = (uint32_t)((b >> 32) & 0xffu) | (3u << 8) | (i << 11);
++		filled++;
++	}
++	__asm__ volatile ("dsb sy" ::: "memory");
++	*(volatile uint32_t *)(rf->ptr_va) = filled * rf->esz;          /* head, in words */
++	g_lmac_ready = 1;
++	printf("SWEET DP: LMAC rings at %#llx %#llx %#llx, pointers at %#llx, %u buffers of %u bytes\n",
++	    g_lmac[0].pa, g_lmac[1].pa, g_lmac[2].pa, ptr_pa, filled, LMAC_RX_BUFSZ);
++}
++
++/*
++ * And the messages themselves. HTT_H2T_MSG_TYPE_SRING_SETUP is 0xb, and the command is thirteen words:
++ * what and where, the ring's base address, its size and the size of one entry, the addresses of its two
++ * pointers, an MSI address and data we leave at zero because we poll, and two thresholds.
++ */
++static void
++wifi_htt_rings(void)
++{
++	if (!g_lmac_ready) {
++		printf("SWEET HTT: no LMAC rings to hand over (sweetdp is off)\n");
++		return;
++	}
++	for (uint32_t i = 0; i < LMAC_NRINGS; i++) {
++		struct lmac_ring *r = &g_lmac[i];
++		uint32_t m[13];
++		memset(m, 0, sizeof(m));
++		m[0] = 0xbu | (1u << 8) | (r->htt_id << 16) | (r->htt_type << 24);
++		m[1] = (uint32_t)r->pa;
++		m[2] = (uint32_t)(r->pa >> 32);
++		m[3] = (r->entries * r->esz) | (r->esz << 16) | (r->htt_type == 1u ? (1u << 25) : 0u);
++		m[4] = (uint32_t)r->hp_pa;
++		m[5] = (uint32_t)(r->hp_pa >> 32);
++		m[6] = (uint32_t)r->tp_pa;
++		m[7] = (uint32_t)(r->tp_pa >> 32);
++		printf("SWEET HTT: ring setup %s: id %u type %u base %#llx, %u entries of %u words\n", r->name,
++		    r->htt_id, r->htt_type, r->pa, r->entries, r->esz);
++		htc_send(&g_ce4, g_htc.htt_eid, (const uint8_t *)m, sizeof(m));
++		volatile int settled = 0;
++		(void)wifi_wait(&settled, 100, "after a ring setup");
++	}
+ }
+ 
+ /*
+@@ -4094,6 +4210,7 @@ wmi_init(void)
+ 	printf("SWEET WMI: FIRMWARE UP (WMI ready)\n");
+ 	if (g_step >= 15) {
+ 		wifi_htt_version();
++		wifi_htt_rings();
+ 		wifi_scan();
+ 	} else {
+ 		volatile int never = 0;

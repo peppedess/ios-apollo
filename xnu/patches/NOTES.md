@@ -3127,3 +3127,28 @@ firmware non scrive niente di quello che pensa che il vdev abbia.
 Resta un solo grande pezzo di ath11k che non abbiamo: la configurazione degli anelli di ricezione via
 HTT (`ath11k_dp_tx_htt_srng_setup` dentro `ath11k_dp_pdev_alloc`), cioè dire al firmware dove stanno gli
 anelli RXDMA dell'host. Gli anelli HAL li costruiamo già (k111), ma al firmware non lo diciamo.
+
+## 1270 — gli anelli di ricezione del LMAC
+
+L'ultimo pezzo di ath11k che non avevamo.
+
+Tutti gli anelli che costruiamo stanno nell'UMAC: l'host scrive indirizzo base, dimensione e puntatori
+nei registri hardware attraverso la finestra, e finisce lì. Gli anelli del LMAC non hanno registri.
+L'host se li alloca in memoria propria e poi **deve dirlo al firmware**, un messaggio HTT ciascuno —
+`ath11k_dp_tx_htt_srng_setup`, chiamata da `ath11k_dp_pdev_alloc`, che gira prima che una radio venga
+registrata e quindi molto prima che un vdev possa partire.
+
+Per il QCA6390 sono tre, perché nella tabella hardware di ath11k `rx_mac_buf_ring` e `rxdma1_enable`
+sono entrambi falsi: l'anello di rifornimento da cui il firmware prende i buffer vuoti
+(`HTT_RXDMA_HOST_BUF_RING`, software → hardware), l'anello di destinazione su cui segnala gli errori
+(`HTT_RXDMA_NON_MONITOR_DEST_RING`, hardware → software) e il rifornimento dello stato monitor
+(`HTT_RXDMA_MONITOR_STATUS_RING`). Anche i loro puntatori stanno in memoria host, due parole da 32 bit
+per anello, e i loro indirizzi viaggiano nello stesso messaggio.
+
+Il rifornimento parte con 128 buffer da 2048 byte. Una voce è un indirizzo più un cookie: i 32 bit bassi
+del buffer, poi i bit alti dell'indirizzo, il return buffer manager nei bit 10:8 — 3, banco software 3,
+che è quello che i parametri hardware di ath11k danno a questo chip — e sopra il nostro cookie, che ci
+torna indietro quando il buffer viene restituito.
+
+`HTT_H2T_MSG_TYPE_SRING_SETUP` è 0xb e il comando è tredici parole. Va dietro `sweetdp=1`, perché gli
+anelli si allocano insieme agli altri.
