@@ -1,8 +1,8 @@
 diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
-index 01838c3..6867dcc 100644
+index 01838c3..b95c52f 100644
 --- a/bsd/dev/apollo_pcie.c
 +++ b/bsd/dev/apollo_pcie.c
-@@ -3054,9 +3054,31 @@ static struct lmac_ring {
+@@ -3054,9 +3054,37 @@ static struct lmac_ring {
  };
  static int g_lmac_ready;
  
@@ -18,9 +18,15 @@ index 01838c3..6867dcc 100644
 +static uint32_t
 +lmac_step(void)
 +{
-+	uint32_t step = 3;
-+	(void)PE_parse_boot_argn("sweetlmac", &step, sizeof(step));
-+	return step;
++	/*
++	 * Folded into sweetdp rather than given an argument of its own, because the boot-args line is 592
++	 * bytes and a second name does not fit beside the rest. sweetdp=1 is what it has always been, the
++	 * UMAC rings alone; 2 also allocates the LMAC rings, 3 also fills the refill ring, 4 also hands them
++	 * to the firmware.
++	 */
++	uint32_t dp = 0;
++	(void)PE_parse_boot_argn("sweetdp", &dp, sizeof(dp));
++	return dp > 1u ? dp - 1u : 0u;
 +}
 +
  static void
@@ -34,7 +40,7 @@ index 01838c3..6867dcc 100644
  	vm_offset_t ptr_va;
  	uint64_t ptr_pa;
  	if (dp_alloc(LMAC_NRINGS * 8u, 0x100, &ptr_va, &ptr_pa) != 0) {
-@@ -3079,6 +3101,12 @@ dp_lmac_rings(void)
+@@ -3079,6 +3107,12 @@ dp_lmac_rings(void)
  	 * ath11k's hardware parameters give this chip — and our own cookie above that, which comes back to us
  	 * when the buffer is returned. One entry stays free, as always.
  	 */
@@ -47,7 +53,7 @@ index 01838c3..6867dcc 100644
  	vm_offset_t bva;
  	uint64_t bpa;
  	if (dp_alloc(LMAC_RX_BUFS * LMAC_RX_BUFSZ, 0x1000, &bva, &bpa) != 0) {
-@@ -3096,9 +3124,7 @@ dp_lmac_rings(void)
+@@ -3096,9 +3130,7 @@ dp_lmac_rings(void)
  	}
  	__asm__ volatile ("dsb sy" ::: "memory");
  	*(volatile uint32_t *)(rf->ptr_va) = filled * rf->esz;          /* head, in words */
@@ -58,7 +64,7 @@ index 01838c3..6867dcc 100644
  }
  
  /*
-@@ -3109,8 +3135,8 @@ dp_lmac_rings(void)
+@@ -3109,8 +3141,8 @@ dp_lmac_rings(void)
  static void
  wifi_htt_rings(void)
  {

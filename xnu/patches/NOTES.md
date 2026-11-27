@@ -3161,6 +3161,7 @@ dei run che sforavano il buffer HTC, dove il kernel restava vivo fino al riavvio
 flush del log moriva in silenzio. Ma k111 ha eseguito lo stesso `wifi_dp` con `sweetdp=1` e ha scritto
 tutto, quindi la differenza sta nel codice nuovo.
 
-`sweetlmac` la percorre a gradini: 0 non fa niente, 1 alloca gli anelli, 2 riempie anche il
-rifornimento di buffer, 3 li consegna anche al firmware. Ogni gradino si annuncia prima di agire, così
+Il gradino sta dentro `sweetdp`, perche' la riga dei boot-args e' 592 byte e un secondo nome non ci
+sta accanto al resto: `sweetdp=1` e' quello di sempre, i soli anelli UMAC; 2 alloca anche quelli LMAC,
+3 riempie anche il rifornimento di buffer, 4 li consegna anche al firmware. Ogni gradino si annuncia prima di agire, così
 l'ultima riga rimasta in piedi dice quale è stato.
