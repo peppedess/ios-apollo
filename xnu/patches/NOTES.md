@@ -3152,3 +3152,15 @@ torna indietro quando il buffer viene restituito.
 
 `HTT_H2T_MSG_TYPE_SRING_SETUP` è 0xb e il comando è tredici parole. Va dietro `sweetdp=1`, perché gli
 anelli si allocano insieme agli altri.
+
+## 1271 — una scala per gli anelli LMAC
+
+k116 non ha lasciato prove. Il log si ferma a 71,1 secondi, prima che `wifi_dp` abbia stampato anche solo
+la sua prima riga, e in tutto il file non c'è una sola riga `SWEET DP` o `SWEET HTT` — la stessa firma
+dei run che sforavano il buffer HTC, dove il kernel restava vivo fino al riavvio programmato mentre il
+flush del log moriva in silenzio. Ma k111 ha eseguito lo stesso `wifi_dp` con `sweetdp=1` e ha scritto
+tutto, quindi la differenza sta nel codice nuovo.
+
+`sweetlmac` la percorre a gradini: 0 non fa niente, 1 alloca gli anelli, 2 riempie anche il
+rifornimento di buffer, 3 li consegna anche al firmware. Ogni gradino si annuncia prima di agire, così
+l'ultima riga rimasta in piedi dice quale è stato.

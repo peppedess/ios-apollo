@@ -1,0 +1,71 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 01838c3..6867dcc 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -3054,9 +3054,31 @@ static struct lmac_ring {
+ };
+ static int g_lmac_ready;
+ 
++/*
++ * A staircase, because k116 left no evidence. Its log stops at 71.1 s, before wifi_dp has printed even
++ * its first line, and contains not one SWEET DP or SWEET HTT line — the same signature as the runs that
++ * overflowed the HTC buffer, where the kernel stayed alive to its scheduled reboot while the log flush
++ * quietly died. k111 ran the same wifi_dp with sweetdp=1 and logged all of it, so the difference is in
++ * here somewhere. sweetlmac walks it in steps: 0 skips everything, 1 allocates the rings, 2 also fills
++ * the refill ring with buffers, 3 also hands the rings to the firmware. Whichever step kills the log is
++ * the one to look at. Each step says so before it does anything, so the last line standing names it.
++ */
++static uint32_t
++lmac_step(void)
++{
++	uint32_t step = 3;
++	(void)PE_parse_boot_argn("sweetlmac", &step, sizeof(step));
++	return step;
++}
++
+ static void
+ dp_lmac_rings(void)
+ {
++	uint32_t step = lmac_step();
++	printf("SWEET DP: LMAC rings, step %u\n", step);
++	if (step == 0) {
++		return;
++	}
+ 	vm_offset_t ptr_va;
+ 	uint64_t ptr_pa;
+ 	if (dp_alloc(LMAC_NRINGS * 8u, 0x100, &ptr_va, &ptr_pa) != 0) {
+@@ -3079,6 +3101,12 @@ dp_lmac_rings(void)
+ 	 * ath11k's hardware parameters give this chip — and our own cookie above that, which comes back to us
+ 	 * when the buffer is returned. One entry stays free, as always.
+ 	 */
++	printf("SWEET DP: LMAC rings allocated at %#llx %#llx %#llx, pointers at %#llx\n", g_lmac[0].pa,
++	    g_lmac[1].pa, g_lmac[2].pa, ptr_pa);
++	g_lmac_ready = 1;
++	if (step < 2) {
++		return;
++	}
+ 	vm_offset_t bva;
+ 	uint64_t bpa;
+ 	if (dp_alloc(LMAC_RX_BUFS * LMAC_RX_BUFSZ, 0x1000, &bva, &bpa) != 0) {
+@@ -3096,9 +3124,7 @@ dp_lmac_rings(void)
+ 	}
+ 	__asm__ volatile ("dsb sy" ::: "memory");
+ 	*(volatile uint32_t *)(rf->ptr_va) = filled * rf->esz;          /* head, in words */
+-	g_lmac_ready = 1;
+-	printf("SWEET DP: LMAC rings at %#llx %#llx %#llx, pointers at %#llx, %u buffers of %u bytes\n",
+-	    g_lmac[0].pa, g_lmac[1].pa, g_lmac[2].pa, ptr_pa, filled, LMAC_RX_BUFSZ);
++	printf("SWEET DP: refill ring filled, %u buffers of %u bytes at %#llx\n", filled, LMAC_RX_BUFSZ, bpa);
+ }
+ 
+ /*
+@@ -3109,8 +3135,8 @@ dp_lmac_rings(void)
+ static void
+ wifi_htt_rings(void)
+ {
+-	if (!g_lmac_ready) {
+-		printf("SWEET HTT: no LMAC rings to hand over (sweetdp is off)\n");
++	if (!g_lmac_ready || lmac_step() < 3) {
++		printf("SWEET HTT: not handing over the LMAC rings\n");
+ 		return;
+ 	}
+ 	for (uint32_t i = 0; i < LMAC_NRINGS; i++) {
