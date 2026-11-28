@@ -114,3 +114,26 @@ ath11k su un chip `single_pdev_only` — QCA6390 lo è — quel TLV non lo manda
 `init_cmd_send` salta sia il modo hardware sia l'array band-to-mac che lo
 segue, lasciando 344 byte di payload invece di 364. Facciamo lo stesso.
 `sweethw=<n>` rimette il TLV con quell'indice.
+
+## k126, k127 — cosa hanno detto e cosa resta aperto
+
+**k126** (senza il TLV del modo hardware): la INIT è scesa a 348 byte, il MAC
+nell'evento READY è quello giusto, e il vdev start **dà ancora 5**. Quindi
+togliere la richiesta di modo singolo non basta: il modo di default del
+firmware, qualunque sia, continua a non contenere la banda che chiediamo.
+
+**k127** (patch 1281) sostituisce quattro delle otto varianti di forma — tutte
+identiche da sei run — con quattro varianti di **frequenza**: 5180 in VHT20,
+5180 in HE20_5G, 5745, e 2412 come controllo. È la domanda che non avevamo mai
+fatto davvero: ogni avvio con un peer in piedi è sempre stato sul canale
+dell'access point, in 2,4 GHz, e le due prove a 5 GHz di k122 giravano prima
+che il peer esistesse, quando ogni risposta era il −1 generico.
+
+Il risultato di k127 non è ancora stato letto: il ponte verso scheggia è
+caduto mentre il telefono aspettava l'autorizzazione adb.
+
+Se anche il 5 GHz dà 5, il prossimo passo è `sweethw=1` (DBS) e, se neanche
+quello, leggere davvero l'evento `WMI_SERVICE_READY_EXT` (0x4009, 1036 byte,
+di cui stampiamo solo i primi 64): lì dentro ci sono `num_hw_modes`, gli
+`hw_mode_id` disponibili e la mappa phy→banda, che dicono in modo definitivo
+quale modo chiedere.
