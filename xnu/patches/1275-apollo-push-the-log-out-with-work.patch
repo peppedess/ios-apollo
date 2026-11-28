@@ -1,0 +1,56 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index e2bf072..43d48cb 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2450,30 +2450,16 @@ wifi_vdev_start_sweep(uint32_t freq)
+ 	 * above it decided the 5.
+ 	 */
+ 	/*
+-	 * And turn the firmware's log all the way up first, because k119 waited a full minute after the
+-	 * sweep and not one record arrived: the firmware ships its log when its buffer fills, and eight
+-	 * refused commands do not fill 1.5 KiB. WMI_DBGLOG_CFG is 0x1d003 in the firmware's table — the same
+-	 * group 0x1d as the log event itself — with tag 0x0be, two words of fixed parameter and an array of
+-	 * module bits. Parameter 5 is the module enable bitmap, the value is the level to apply, 0 is
+-	 * verbose, and every bit set means every module. That makes the buffer fill in milliseconds, and the
+-	 * eight blocks we print will be the ones covering the sweep.
++	 * k120 tried turning the firmware's log up with WMI_DBGLOG_CFG (0x1d003, tag 0x0be, parameter 5, the
++	 * module enable bitmap, every bit set at level 0) and it did the opposite: after that command the
++	 * firmware never emitted another record. Whatever those fields mean here, they are not "verbose".
++	 *
++	 * So ask differently. k118 showed what makes the firmware ship its log: work. The seven blocks it
++	 * caught were all flushed by the burst of seventeen reorder-queue commands, because the buffer fills
++	 * and goes out. Eight refused vdev starts do not fill it — so after the sweep, send that same burst
++	 * again. It is harmless, the firmware has already accepted it once, and it pushes out whatever was
++	 * written in between, which is exactly the records we are after.
+ 	 */
+-	{
+-		static uint32_t d[2 + 2 + 1 + 16];
+-		memset(d, 0, sizeof(d));
+-		d[0] = 0x1d003;                                         /* WMI_DBGLOG_CFG_CMDID */
+-		d[1] = (0x0beu << 16) | 8u;                             /* WMI_TAG_DEBUG_LOG_CONFIG_CMD */
+-		d[2] = 5;                                               /* MOD_ENABLE_BITMAP */
+-		d[3] = 0;                                               /* verbose */
+-		d[4] = (0x10u << 16) | 64u;                             /* ARRAY_UINT32: sixteen words */
+-		for (uint32_t i = 0; i < 16; i++) {
+-			d[5 + i] = 0xffffffffu;
+-		}
+-		printf("SWEET WMI: firmware log to verbose, every module\n");
+-		htc_send(&g_ce3, g_htc.wmi_eid, (const uint8_t *)d, sizeof(d));
+-		volatile int settled = 0;
+-		(void)wifi_wait(&settled, 200, "after the log configuration");
+-	}
+ 	g_fwlog_arm = 1;
+ 	for (uint32_t i = 0; i < sizeof(vs) / sizeof(vs[0]); i++) {
+ 		wifi_vdev_start(freq, &vs[i]);
+@@ -2718,7 +2704,10 @@ wifi_join(void)
+ 	 * know from the status code, at the cost of a whole run.
+ 	 */
+ 	if (wifi_vdev_start_sweep(freq) != 0) {
+-		printf("SWEET WIFI: the vdev would not start, nothing more to try here\n");
++		printf("SWEET WIFI: the vdev would not start, pushing the firmware's log out\n");
++		wifi_peer_setup(g_nets[best]);
++		volatile int flushed = 0;
++		(void)wifi_wait(&flushed, 3000, "after the second peer setup");
+ 		return;
+ 	}
+ 	/*

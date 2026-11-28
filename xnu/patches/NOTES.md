@@ -3217,3 +3217,16 @@ stesso gruppo 0x1d dell'evento di log — con tag `0x0be`, due parole di paramet
 per modulo. Parametro 5 è la bitmap dei moduli abilitati, il valore è il livello da applicare, 0 è
 verboso, e tutti i bit a uno significa tutti i moduli. Così il buffer si riempie in millisecondi e gli
 otto blocchi che stampiamo sono quelli che coprono la raffica.
+
+## 1275 — spingere fuori il log dandogli lavoro
+
+k120 ha mandato `WMI_DBGLOG_CFG` e ha ottenuto l'opposto: **dopo quel comando il firmware non ha emesso
+un solo record**. L'ultimo blocco è del secondo 75,388, il comando è partito a 75,704, e da lì silenzio
+totale. Qualunque cosa significhino quei campi su questo firmware, non significano "verboso". Via.
+
+Il modo giusto l'aveva già mostrato k118: quello che fa uscire il log è **il lavoro**. I sette blocchi
+catturati erano tutti spinti fuori dalla raffica dei diciassette comandi per le code di riordino — il
+buffer si riempie e parte. Otto vdev start rifiutati non lo riempiono.
+
+Quindi, dopo il giro, si rimanda la stessa raffica. È innocua, il firmware l'ha già accettata una volta,
+e porta fuori quello che è stato scritto nel frattempo: esattamente i record che cerchiamo.
