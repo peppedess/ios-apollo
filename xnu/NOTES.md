@@ -37,3 +37,27 @@ otto avvii rifiutati e l'inizio della seconda raffica.
 La raffica è diventata `wifi_fwlog_churn()`, e `sweetfwlog` si legge da
 `fwlog_wanted()` così lo svuotamento e lo stampatore sono d'accordo su chi sta
 ascoltando.
+
+## 1278 — sessantaquattro blocchi, e un nome per il 5
+
+Due risultati da k123.
+
+**Il formato del log del firmware.** Un blocco si apre con dieci parole di
+intestazione, la nona è un timestamp assoluto; poi i record, separati dal
+marcatore `0x07000000`: timestamp relativo, un header il cui byte basso è il
+numero di argomenti per quattro, e gli argomenti. Diversi argomenti sono
+**puntatori alle tabelle di stringhe del firmware**, quindi i record si
+leggono: il primo risolto dice `WAL_PM_ARB_REQ_ID_WAL_CLIENT`. Il record
+`0x11defb08` è "comando WMI ricevuto" e porta l'id: `0x4003` per ogni
+scrittura di parametro della raffica, `0x5003` per il vdev start.
+Il decodificatore sta in `/tmp/claude-0/fwl.py`.
+
+**Il 5 ha un nome.** Non è l'enum pubblico degli stati di vdev start, che si
+ferma a quattro. È `A_STATUS` di Atheros (`athdefs.h`): `-1 = A_ERROR`, che è
+quello che tornavano le due prove iniziali senza peer, e **`5 = A_BAD_ADDRESS`,
+"address does not match descriptor"**. Con il peer creato il firmware smette di
+dare l'errore generico e dice che un indirizzo non torna.
+
+Restava un problema pratico: stampavamo otto blocchi e dopo lo sweep ne
+arrivano sessantatré, di cui i primi ventisette sono residuo dello
+svuotamento. Ora se ne stampano sessantaquattro.

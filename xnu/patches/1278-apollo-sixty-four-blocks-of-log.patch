@@ -1,0 +1,30 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 0d2d1f9..97fcf0a 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -1744,10 +1744,22 @@ htc_rx(uint32_t pipe, const uint8_t *p, uint32_t n)
+ 		 * will fit comfortably.
+ 		 *
+ 		 * As words, not as characters. The records are binary — message ids and arguments, not text —
+-		 * and the old printer turned all of it into dots. Sixty-four words of each is enough to see
+-		 * which ids repeat around a command that works and which appear only around the one that fails.
++		 * and the old printer turned all of it into dots.
++		 *
++		 * k123 cracked the format. A block opens with ten words of header, the ninth being an absolute
++		 * timestamp, and then holds records separated by the marker 0x07000000: a relative timestamp,
++		 * a header whose low byte is the argument count times four, and the arguments. Some of those
++		 * arguments are pointers into the firmware's own string tables, which makes the records
++		 * readable — the first one we resolved says WAL_PM_ARB_REQ_ID_WAL_CLIENT. The record
++		 * 0x11defb08 is "WMI command received" and carries the command id: 0x4003 for every parameter
++		 * write of the churn, and 0x5003 for the vdev start we are hunting.
++		 *
++		 * Sixty-four blocks, not eight. k123 showed sixty-three arriving after the sweep and the eight
++		 * we printed were all residue from the drain; the vdev starts were about twenty-seven blocks
++		 * further in. Printed whole, sixty-four blocks are roughly three hundred kilobytes of log,
++		 * which the four megabyte partition carries without complaint.
+ 		 */
+-		if (fwlog_on && g_fwlog_arm && m0 == 0x1d011u && n > 20 && g_fwlog_shown < 8u) {
++		if (fwlog_on && g_fwlog_arm && m0 == 0x1d011u && n > 20 && g_fwlog_shown < 64u) {
+ 			uint32_t words = (n - 20u) / 4u;
+ 			if (words > 384u) {
+ 				words = 384u;
