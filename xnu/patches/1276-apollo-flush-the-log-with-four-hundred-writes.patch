@@ -1,0 +1,35 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 43d48cb..294b949 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2704,10 +2704,28 @@ wifi_join(void)
+ 	 * know from the status code, at the cost of a whole run.
+ 	 */
+ 	if (wifi_vdev_start_sweep(freq) != 0) {
++		/*
++		 * Push the firmware's log out. k121 re-sent the reorder-queue burst and got nothing: the first
++		 * time it created state and wrote about it, the second time it was a no-op. So give it work
++		 * that is work every time. Four hundred pdev parameter writes are harmless — setting dynamic
++		 * bandwidth to the value it already has — and each one is a command the firmware parses,
++		 * dispatches and logs. That fills 1.5 KiB many times over, and everything written since the
++		 * vdev starts goes out in front of it.
++		 */
+ 		printf("SWEET WIFI: the vdev would not start, pushing the firmware's log out\n");
+-		wifi_peer_setup(g_nets[best]);
++		for (uint32_t i = 0; i < 400; i++) {
++			wifi_pdev_param(0x0a, 1);                       /* DYNAMIC_BW, the value it already has */
++			if ((i & 31u) == 31u) {
++				for (int ms = 0; ms < 20; ms += 10) {   /* let the credits come back */
++					(void)er0_poll();
++					(void)er1_poll();
++					ce_poll();
++					pc_msleep(10);
++				}
++			}
++		}
+ 		volatile int flushed = 0;
+-		(void)wifi_wait(&flushed, 3000, "after the second peer setup");
++		(void)wifi_wait(&flushed, 5000, "after four hundred parameter writes");
+ 		return;
+ 	}
+ 	/*
