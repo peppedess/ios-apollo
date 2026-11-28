@@ -1,0 +1,146 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 294b949..0d2d1f9 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -714,6 +714,22 @@ static uint32_t g_ch4_wp = CH4_RING, g_ch5_wp = CH5_RING, g_diag_shown;
+ static uint32_t g_fwlog_shown, g_evdump_shown;
+ static int g_fwlog_arm;
+ 
++/*
++ * Whether sweetfwlog asked for the firmware's log at all. Read once, where both the printer and the
++ * drain before the sweep can see it.
++ */
++static int
++fwlog_wanted(void)
++{
++	static int on = -1;
++	if (on < 0) {
++		uint32_t v = 0;
++		(void)PE_parse_boot_argn("sweetfwlog", &v, sizeof(v));
++		on = v ? 1 : 0;
++	}
++	return on;
++}
++
+ /*
+  * The networks heard during a scan. An access point beacons about ten times a second, so without this the
+  * log is the same four names over and over: k100 printed eight lines for five networks. Keep the addresses
+@@ -1716,12 +1732,7 @@ htc_rx(uint32_t pipe, const uint8_t *p, uint32_t n)
+ 		 * And off by default from here on: once the scan works, forty lumps of firmware log are forty
+ 		 * lumps of noise between us and the beacons. sweetfwlog=1 brings it back.
+ 		 */
+-		static int fwlog_on = -1;
+-		if (fwlog_on < 0) {
+-			uint32_t v = 0;
+-			(void)PE_parse_boot_argn("sweetfwlog", &v, sizeof(v));
+-			fwlog_on = v ? 1 : 0;
+-		}
++		int fwlog_on = fwlog_wanted();
+ 		/*
+ 		 * The firmware's own log, armed late and printed as words.
+ 		 *
+@@ -2426,6 +2437,26 @@ wifi_vdev_start(uint32_t freq, const struct vdev_start_variant *v)
+ 	}
+ }
+ 
++/*
++ * Harmless work, in quantity, to make the firmware ship its log. Each write sets the pdev's dynamic
++ * bandwidth to the value it already has; the firmware parses, dispatches and annotates every one of
++ * them, and the ring fills and goes out. The pause every thirty-two commands lets the HTC credits
++ * come back so none of them is dropped.
++ */
++static void
++wifi_fwlog_churn(uint32_t n)
++{
++	for (uint32_t i = 0; i < n; i++) {
++		wifi_pdev_param(0x0a, 1);
++		if ((i & 31u) == 31u) {
++			(void)er0_poll();
++			(void)er1_poll();
++			ce_poll();
++			pc_msleep(10);
++		}
++	}
++}
++
+ static int
+ wifi_vdev_start_sweep(uint32_t freq)
+ {
+@@ -2440,26 +2471,30 @@ wifi_vdev_start_sweep(uint32_t freq)
+ 		{ "11AC_VHT20_2G",              11, 1u << 3, 100, 2, 0 },
+ 	};
+ 	/*
+-	 * Arm the firmware's log here and not a moment earlier. k118 armed it at the end of the scan and
+-	 * caught seven blocks, all of them from the burst of reorder-queue commands at 75.23, and not one
+-	 * from the eight vdev starts three hundred milliseconds later: the firmware ships its log when its
+-	 * buffer fills, not when we would like to read it. So arm it at the sweep, print each block whole
+-	 * instead of its first sixty-four words, and then keep polling afterwards until the firmware pushes
+-	 * what it wrote. The anchor to look for is the record 0x11d8fb04, which carries the id of every WMI
+-	 * event the firmware sends: the one holding 0x5001 is the start response, and whatever sits just
+-	 * above it decided the 5.
+-	 */
+-	/*
+-	 * k120 tried turning the firmware's log up with WMI_DBGLOG_CFG (0x1d003, tag 0x0be, parameter 5, the
+-	 * module enable bitmap, every bit set at level 0) and it did the opposite: after that command the
+-	 * firmware never emitted another record. Whatever those fields mean here, they are not "verbose".
++	 * How the firmware's log actually works, learned the hard way over k118 to k122.
++	 *
++	 * The firmware writes records into a ring and ships a block only when the ring fills. It ships the
++	 * OLDEST block first, and there is a long backlog in there from boot. k122 proved both halves: four
++	 * hundred harmless WMI_PDEV_SET_PARAM writes after the sweep made it ship a hundred and fifteen
++	 * blocks, and the first eight — the only ones we printed — were records from firmware time 0x14a,
++	 * which is boot. The eight refused vdev starts were somewhere around block a hundred and ten.
+ 	 *
+-	 * So ask differently. k118 showed what makes the firmware ship its log: work. The seven blocks it
+-	 * caught were all flushed by the burst of seventeen reorder-queue commands, because the buffer fills
+-	 * and goes out. Eight refused vdev starts do not fill it — so after the sweep, send that same burst
+-	 * again. It is harmless, the firmware has already accepted it once, and it pushes out whatever was
+-	 * written in between, which is exactly the records we are after.
++	 * So drain first. Four hundred writes before the sweep, with the printer still disarmed, push the
++	 * whole backlog out and leave the ring nearly empty. Then arm, then sweep, then four hundred more:
++	 * the first block out now holds the residue, the eight vdev starts, and the beginning of the second
++	 * burst. The anchor to look for is the record 0x11d8fb04, which carries the id of every WMI event
++	 * the firmware sends: the one holding 0x5001 is the start response, and whatever sits just above it
++	 * decided the 5.
++	 *
++	 * (k120 tried the polite way, WMI_DBGLOG_CFG with every module bit set, and the firmware went silent
++	 * instead of verbose. Whatever those fields mean here, they are not "turn it up".)
+ 	 */
++	if (fwlog_wanted()) {
++		printf("SWEET WIFI: draining the firmware's log backlog before the sweep\n");
++		wifi_fwlog_churn(400);
++		volatile int drained = 0;
++		(void)wifi_wait(&drained, 2000, "while the backlog drained");
++	}
+ 	g_fwlog_arm = 1;
+ 	for (uint32_t i = 0; i < sizeof(vs) / sizeof(vs[0]); i++) {
+ 		wifi_vdev_start(freq, &vs[i]);
+@@ -2705,25 +2740,11 @@ wifi_join(void)
+ 	 */
+ 	if (wifi_vdev_start_sweep(freq) != 0) {
+ 		/*
+-		 * Push the firmware's log out. k121 re-sent the reorder-queue burst and got nothing: the first
+-		 * time it created state and wrote about it, the second time it was a no-op. So give it work
+-		 * that is work every time. Four hundred pdev parameter writes are harmless — setting dynamic
+-		 * bandwidth to the value it already has — and each one is a command the firmware parses,
+-		 * dispatches and logs. That fills 1.5 KiB many times over, and everything written since the
+-		 * vdev starts goes out in front of it.
++		 * And now push. The backlog went out before the sweep, so the first block the firmware ships
++		 * from here holds the residue, the eight refused starts, and the head of this burst.
+ 		 */
+ 		printf("SWEET WIFI: the vdev would not start, pushing the firmware's log out\n");
+-		for (uint32_t i = 0; i < 400; i++) {
+-			wifi_pdev_param(0x0a, 1);                       /* DYNAMIC_BW, the value it already has */
+-			if ((i & 31u) == 31u) {
+-				for (int ms = 0; ms < 20; ms += 10) {   /* let the credits come back */
+-					(void)er0_poll();
+-					(void)er1_poll();
+-					ce_poll();
+-					pc_msleep(10);
+-				}
+-			}
+-		}
++		wifi_fwlog_churn(400);
+ 		volatile int flushed = 0;
+ 		(void)wifi_wait(&flushed, 5000, "after four hundred parameter writes");
+ 		return;

@@ -19,3 +19,21 @@ quello che il firmware ha scritto mentre rifiutava di avviare il vdev.
 Nota di metodo: i sette blocchi di k121 contenevano il racconto del peer setup
 e sono stati buttati, perché lo stampatore si arma solo allo sweep. Va bene
 così: il budget di otto blocchi va speso su quello che esce **dopo** lo sweep.
+
+## 1277 — svuotare la coda *prima*, non dopo
+
+k122 ha risposto alla domanda su cui tre run si erano arenati: il firmware il
+log lo spedisce, e quattrocento scritture innocue gliene fanno spedire tanto —
+**centoquindici blocchi**. Ma spedisce prima il blocco **più vecchio**, e
+nell'anello c'è un arretrato lungo che parte dall'avvio. Gli otto blocchi che
+abbiamo stampato erano record del tempo firmware 0x14a. I vdev start stavano
+intorno al blocco centodieci: ricevuti e buttati.
+
+Quindi prima si svuota. Quattrocento scritture **prima** dello sweep, con lo
+stampatore ancora disarmato, vuotano l'anello; poi si arma, poi lo sweep, poi
+altre quattrocento. Il primo blocco che esce adesso contiene il residuo, gli
+otto avvii rifiutati e l'inizio della seconda raffica.
+
+La raffica è diventata `wifi_fwlog_churn()`, e `sweetfwlog` si legge da
+`fwlog_wanted()` così lo svuotamento e lo stampatore sono d'accordo su chi sta
+ascoltando.
