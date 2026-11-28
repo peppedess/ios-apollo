@@ -1,0 +1,53 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index f674d01..1886112 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -1945,6 +1945,7 @@ static void wifi_vdev_param(uint32_t id, uint32_t value);
+ struct vdev_start_variant {
+ 	const char *what;
+ 	uint32_t mode, flags, bcn, streams, requestor;
++	uint32_t freq;                                                  /* 0: whatever the scan found */
+ };
+ static void wifi_vdev_start(uint32_t freq, const struct vdev_start_variant *v);
+ static void dp_lmac_rings(void);
+@@ -2473,14 +2474,23 @@ static int
+ wifi_vdev_start_sweep(uint32_t freq)
+ {
+ 	static const struct vdev_start_variant vs[] = {
+-		{ "HE20_2G, LDPC, 2 streams",  21, 1u << 3, 100, 2, 0 },
+-		{ "11NG_HT20 + ALLOW_HT",       5u | (1u << 11), 0, 100, 2, 0 },
+-		{ "11G",                         1, 0, 100, 2, 0 },
+-		{ "HE20_2G, no flags",          21, 0, 100, 2, 0 },
+-		{ "HE20_2G, one stream",        21, 1u << 3, 100, 1, 0 },
+-		{ "HE20_2G, no beacon interval", 21, 1u << 3, 0, 2, 0 },
+-		{ "HE20_2G, requestor 1",       21, 1u << 3, 100, 2, 1 },
+-		{ "11AC_VHT20_2G",              11, 1u << 3, 100, 2, 0 },
++		{ "HE20_2G, LDPC, 2 streams",  21, 1u << 3, 100, 2, 0, 0 },
++		{ "11NG_HT20 + ALLOW_HT",       5u | (1u << 11), 0, 100, 2, 0, 0 },
++		{ "11G",                         1, 0, 100, 2, 0, 0 },
++		{ "HE20_2G, no flags",          21, 0, 100, 2, 0, 0 },
++		{ "11AC_VHT20_2G",              11, 1u << 3, 100, 2, 0, 0 },
++		/*
++		 * And the band itself, which is what status 5 says is wrong:
++		 * WMI_VDEV_START_RESPONSE_INVALID_BAND, "band unsupported by current hw mode". Every start
++		 * so far with a peer in place has been on the access point's own channel in the 2.4 GHz
++		 * band. The two 5 GHz attempts we ever made ran before the peer existed, when every answer
++		 * was the generic -1, so they proved nothing. Ask again now, on three 5 GHz channels and on
++		 * channel 1, and let the pattern say whether it is this band, the other band, or both.
++		 */
++		{ "5180 MHz, VHT20",            11, 1u << 3, 100, 2, 0, 5180 },
++		{ "5180 MHz, HE20_5G",          22, 1u << 3, 100, 2, 0, 5180 },
++		{ "5745 MHz, VHT20",            11, 1u << 3, 100, 2, 0, 5745 },
++		{ "2412 MHz, HE20_2G",          21, 1u << 3, 100, 2, 0, 2412 },
+ 	};
+ 	/*
+ 	 * How the firmware's log actually works, learned the hard way over k118 to k122.
+@@ -2509,7 +2519,7 @@ wifi_vdev_start_sweep(uint32_t freq)
+ 	}
+ 	g_fwlog_arm = 1;
+ 	for (uint32_t i = 0; i < sizeof(vs) / sizeof(vs[0]); i++) {
+-		wifi_vdev_start(freq, &vs[i]);
++		wifi_vdev_start(vs[i].freq ? vs[i].freq : freq, &vs[i]);
+ 		printf("SWEET WMI:   [%s] -> status %u\n", vs[i].what, g_htc.vdev_start_status);
+ 		if (g_htc.vdev_start_status == 0) {
+ 			printf("SWEET WMI: VDEV STARTED with [%s]\n", vs[i].what);
