@@ -1,0 +1,45 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 780cb02..e2bf072 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -2306,7 +2306,7 @@ wifi_scan(void)
+ 		wifi_join();
+ 	}
+ 	volatile int never = 0;
+-	(void)wifi_wait(&never, 60000, "after scan, waiting for the firmware to flush its log");
++	(void)wifi_wait(&never, 20000, "after scan, waiting for the firmware to flush its log");
+ }
+ 
+ /*
+@@ -2449,6 +2449,31 @@ wifi_vdev_start_sweep(uint32_t freq)
+ 	 * event the firmware sends: the one holding 0x5001 is the start response, and whatever sits just
+ 	 * above it decided the 5.
+ 	 */
++	/*
++	 * And turn the firmware's log all the way up first, because k119 waited a full minute after the
++	 * sweep and not one record arrived: the firmware ships its log when its buffer fills, and eight
++	 * refused commands do not fill 1.5 KiB. WMI_DBGLOG_CFG is 0x1d003 in the firmware's table — the same
++	 * group 0x1d as the log event itself — with tag 0x0be, two words of fixed parameter and an array of
++	 * module bits. Parameter 5 is the module enable bitmap, the value is the level to apply, 0 is
++	 * verbose, and every bit set means every module. That makes the buffer fill in milliseconds, and the
++	 * eight blocks we print will be the ones covering the sweep.
++	 */
++	{
++		static uint32_t d[2 + 2 + 1 + 16];
++		memset(d, 0, sizeof(d));
++		d[0] = 0x1d003;                                         /* WMI_DBGLOG_CFG_CMDID */
++		d[1] = (0x0beu << 16) | 8u;                             /* WMI_TAG_DEBUG_LOG_CONFIG_CMD */
++		d[2] = 5;                                               /* MOD_ENABLE_BITMAP */
++		d[3] = 0;                                               /* verbose */
++		d[4] = (0x10u << 16) | 64u;                             /* ARRAY_UINT32: sixteen words */
++		for (uint32_t i = 0; i < 16; i++) {
++			d[5 + i] = 0xffffffffu;
++		}
++		printf("SWEET WMI: firmware log to verbose, every module\n");
++		htc_send(&g_ce3, g_htc.wmi_eid, (const uint8_t *)d, sizeof(d));
++		volatile int settled = 0;
++		(void)wifi_wait(&settled, 200, "after the log configuration");
++	}
+ 	g_fwlog_arm = 1;
+ 	for (uint32_t i = 0; i < sizeof(vs) / sizeof(vs[0]); i++) {
+ 		wifi_vdev_start(freq, &vs[i]);

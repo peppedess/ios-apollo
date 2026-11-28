@@ -3205,3 +3205,15 @@ firmware spedisce il log quando il suo buffer si riempie, non quando farebbe com
 Tre correzioni: il log si arma all'inizio del giro di vdev start invece che alla fine della scansione,
 ogni blocco si stampa intero invece dei primi sessantaquattro word (otto blocchi, non ventiquattro), e
 dopo il giro si continua a interrogare le code per un minuto invece che per due secondi.
+
+## 1274 — alzare il volume del log del firmware
+
+k119 ha aspettato un minuto intero dopo il giro di vdev start e non è arrivato un solo record. L'ultimo
+blocco è del secondo 75,426, prima della raffica. Il motivo è semplice: il firmware spedisce il log
+quando il suo buffer si riempie, e otto comandi rifiutati non riempiono millecinquecento byte.
+
+Quindi prima del giro si alza il volume. **WMI_DBGLOG_CFG è 0x1d003** nella tabella del firmware — lo
+stesso gruppo 0x1d dell'evento di log — con tag `0x0be`, due parole di parametro fisso e un array di bit
+per modulo. Parametro 5 è la bitmap dei moduli abilitati, il valore è il livello da applicare, 0 è
+verboso, e tutti i bit a uno significa tutti i moduli. Così il buffer si riempie in millisecondi e gli
+otto blocchi che stampiamo sono quelli che coprono la raffica.
