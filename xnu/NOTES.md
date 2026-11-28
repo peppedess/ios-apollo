@@ -88,3 +88,29 @@ combaciare un indirizzo vero con un descrittore vero invece di fermarsi prima
 con l'`A_ERROR` generico.
 
 Un TLV opzionale, tipo 0x10, sei byte, come `wlfw_mac_addr_req_msg_v01`.
+
+## 1280 — il 5 era il modo hardware
+
+Il MAC via QMI (1279) funziona — l'evento READY ora dice
+`MAC 34:1c:f0:ce:0f:da` invece di tutti zeri — ma il vdev start continuava a
+dare 5. Quindi il 5 non era `A_BAD_ADDRESS`.
+
+**`WMI_VDEV_START_RESPONSE_INVALID_BAND = 0x5`**, "band unsupported by current
+hw mode in VDEV start". La copia dell'enum in ath11k si ferma a quattro;
+l'header del firmware (fw-api) ha un quinto valore.
+
+Torna tutto: rifiutate entrambe le bande, rifiutate identiche per tutte e otto
+le varianti, rifiutate **prima** di qualsiasi lavoro radio, e mai spostate da
+niente di quello che cambiavamo nel comando — perché il comando non c'entrava.
+
+La causa sta nella INIT, da quando abbiamo decodificato la tabella dei tag. Il
+tag `0x203` è `wmi_pdev_set_hw_mode_cmd_fixed_param`, e noi lo accodavamo
+**azzerato**: `hw_mode_index = 0`, cioè `WMI_HOST_HW_MODE_SINGLE`. Stavamo
+dicendo a una radio a due MAC di girarne una sola, e poi le chiedevamo di
+alzare un vdev in 2,4 GHz.
+
+ath11k su un chip `single_pdev_only` — QCA6390 lo è — quel TLV non lo manda:
+`ath11k_wmi_cmd_init` mette `hw_mode_id = WMI_HOST_HW_MODE_MAX` e
+`init_cmd_send` salta sia il modo hardware sia l'array band-to-mac che lo
+segue, lasciando 344 byte di payload invece di 364. Facciamo lo stesso.
+`sweethw=<n>` rimette il TLV con quell'indice.

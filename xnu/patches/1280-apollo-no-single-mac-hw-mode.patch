@@ -1,0 +1,53 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 2e11b9c..f674d01 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -3560,7 +3560,7 @@ wmi_init(void)
+ 	memset(msg, 0, sizeof(msg));
+ 	uint32_t oldtlv = 0;
+ 	(void)PE_parse_boot_argn("sweetoldtlv", &oldtlv, sizeof(oldtlv));
+-	uint32_t framelen = oldtlv ? 332u : (uint32_t)sizeof(msg);
++	uint32_t framelen = oldtlv ? 332u : (uint32_t)sizeof(msg);  /* the hw mode block may shorten it */
+ 	w[0] = 1;                                                       /* WMI_INIT_CMDID */
+ 	w[1] = oldtlv ? ((0x4eu << 16) | 28u) : ((0x4au << 16) | 28u);
+ 	w[8] = 0;                                                       /* num_host_mem_chunks */
+@@ -3679,9 +3679,36 @@ wmi_init(void)
+ 	if (oldtlv) {
+ 		cfg[73] = (0x12u << 16);                                /* ARRAY_STRUCT, no memory chunks */
+ 	} else {
+-		cfg[77] = (0x12u << 16);                                /* the 20-byte array, empty */
+-		cfg[78] = (0x203u << 16) | 12u;                         /* and whatever 0x203 is, zeroed */
+-		cfg[82] = (0x12u << 16);                                /* the host memory chunks, none */
++		cfg[77] = (0x12u << 16);                                /* the host memory chunks, none */
++		/*
++		 * Tag 0x203 is wmi_pdev_set_hw_mode_cmd_fixed_param, and the sixteen zeroed bytes we have
++		 * been appending since the tag table was decoded say hw_mode_index = 0, which is
++		 * WMI_HOST_HW_MODE_SINGLE. We have been telling a dual-MAC radio to run on one MAC, and
++		 * then asking it to bring a vdev up on 2.4 GHz.
++		 *
++		 * That is what status 5 is. Not A_BAD_ADDRESS: the firmware's own header has a fifth value
++		 * the ath11k copy does not, WMI_VDEV_START_RESPONSE_INVALID_BAND, "band unsupported by
++		 * current hw mode in VDEV start". It matches everything — both bands refused, refused
++		 * before any radio work, refused identically for all eight variants, and never affected by
++		 * anything we changed in the command itself.
++		 *
++		 * ath11k does not send this TLV at all on a single_pdev_only chip, which QCA6390 is:
++		 * ath11k_wmi_cmd_init sets hw_mode_id to WMI_HOST_HW_MODE_MAX and init_cmd_send then omits
++		 * both the hw mode and the band-to-mac array that follows it. So do the same by default.
++		 * sweethw=<n> puts the TLV back with that index, for when the question is which mode rather
++		 * than whether to ask for one.
++		 */
++		uint32_t hwmode = 6;                                    /* 6 = WMI_HOST_HW_MODE_MAX: omit */
++		(void)PE_parse_boot_argn("sweethw", &hwmode, sizeof(hwmode));
++		if (hwmode < 6) {
++			cfg[78] = (0x203u << 16) | 12u;                 /* wmi_pdev_set_hw_mode_cmd */
++			cfg[79] = 0;                                    /* pdev_id */
++			cfg[80] = hwmode;                               /* hw_mode_index */
++			cfg[81] = 0;                                    /* num_band_to_mac */
++			cfg[82] = (0x12u << 16);                        /* the band-to-mac array, empty */
++		} else {
++			framelen = 4 + 32 + 308 + 4;
++		}
+ 	}
+ 	static uint8_t padded[336];
+ 	uint32_t len = framelen;
