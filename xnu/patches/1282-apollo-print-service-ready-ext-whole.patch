@@ -1,0 +1,22 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 1886112..55a1e55 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -1627,7 +1627,16 @@ htc_rx(uint32_t pipe, const uint8_t *p, uint32_t n)
+ 		if (m0 != 0x1d011u && m0 != 0x7001u && m0 != 1u && m0 != 2u && m0 != 0x3001u &&
+ 		    g_evdump_shown < 12u) {
+ 			g_evdump_shown++;
+-			for (uint32_t i = 16; i + 16 <= n && i < 16 + 64; i += 16) {
++			/*
++			 * WMI_SERVICE_READY_EXT (0x4009) whole, not the first sixty-four bytes. It carries
++			 * wmi_soc_mac_phy_hw_mode_caps — num_hw_modes, then one wmi_hw_mode_capabilities per
++			 * mode with hw_mode_id, phy_id_map and hw_mode_config_type — and then the per-phy
++			 * capabilities with the frequency range each phy covers. That is the table that says
++			 * which band the firmware's current hw mode contains, which is what status 5 is
++			 * complaining about. Everything else stays at sixty-four bytes.
++			 */
++			uint32_t cap = (m0 == 0x4009u || m0 == 0x4022u) ? 1536u : 64u;
++			for (uint32_t i = 16; i + 16 <= n && i < 16 + cap; i += 16) {
+ 				printf("SWEET WMI: event %#x +%02u: %08x %08x %08x %08x\n", m0, i - 16,
+ 				    *(const uint32_t *)(const void *)(p + i),
+ 				    *(const uint32_t *)(const void *)(p + i + 4),
