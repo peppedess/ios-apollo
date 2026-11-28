@@ -3185,3 +3185,23 @@ Adesso si arma **dopo la fine della scansione**, così cattura esattamente la fi
 create, configurazione del peer, otto vdev start — che dura poco più di un secondo. E si stampa a
 parole, non a caratteri: i record sono binari, id di messaggio e argomenti, e il vecchio stampatore li
 riduceva a una fila di punti. Sessantaquattro parole per record, ventiquattro record.
+
+## 1273 — prendere lo svuotamento giusto
+
+k118 ha dimostrato che il log del firmware si legge, e come. I record sono separati dal marcatore
+`07000000`, seguito da un timestamp e da un'intestazione il cui byte basso è il numero di argomenti per
+quattro: `…fc00` zero argomenti, `…fc0c` tre, `…fc1c` sette, `…fd10` quattro. Verificato su una dozzina
+di record contando le parole fino al marcatore successivo.
+
+E c'è un'ancora preziosa: il record **`11d8fb04`** ha un solo argomento e nel log vale `0001d011` — il
+firmware registra l'id di ogni evento WMI che manda. Quindi nel blocco giusto ci sarà `…00005001`, la
+risposta al vdev start, e subito sopra i record che hanno deciso il 5.
+
+Il blocco giusto però non è arrivato. I sette catturati sono tutti del secondo 75,23, generati dalla
+raffica di comandi per le code di riordino, e nessuno dei vdev start trecento millisecondi dopo: il
+firmware spedisce il log quando il suo buffer si riempie, non quando farebbe comodo a noi. E dopo
+`wifi_join` nessuno interroga più le code, quindi quello che ha scritto dopo non lo vediamo mai.
+
+Tre correzioni: il log si arma all'inizio del giro di vdev start invece che alla fine della scansione,
+ogni blocco si stampa intero invece dei primi sessantaquattro word (otto blocchi, non ventiquattro), e
+dopo il giro si continua a interrogare le code per un minuto invece che per due secondi.

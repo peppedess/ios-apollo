@@ -1,0 +1,53 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 6fb7a61..780cb02 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -1736,10 +1736,10 @@ htc_rx(uint32_t pipe, const uint8_t *p, uint32_t n)
+ 		 * and the old printer turned all of it into dots. Sixty-four words of each is enough to see
+ 		 * which ids repeat around a command that works and which appear only around the one that fails.
+ 		 */
+-		if (fwlog_on && g_fwlog_arm && m0 == 0x1d011u && n > 20 && g_fwlog_shown < 24u) {
++		if (fwlog_on && g_fwlog_arm && m0 == 0x1d011u && n > 20 && g_fwlog_shown < 8u) {
+ 			uint32_t words = (n - 20u) / 4u;
+-			if (words > 64u) {
+-				words = 64u;
++			if (words > 384u) {
++				words = 384u;
+ 			}
+ 			printf("SWEET FWLOG: %u bytes\n", n - 20);
+ 			for (uint32_t i = 0; i < words; i += 8) {
+@@ -2287,7 +2287,6 @@ wifi_scan(void)
+ 	htc_send(&g_ce3, g_htc.wmi_eid, (const uint8_t *)m, 4 * 64);
+ 	if (wifi_wait(&g_htc.scan_done, 25000, "scan") == 0) {
+ 		printf("SWEET WIFI: SCAN COMPLETE, %u networks in %u frames\n", g_nnets, g_htc.aps);
+-		g_fwlog_arm = 1;
+ 		for (uint32_t i = 0; i < g_nnets; i++) {
+ 			printf("SWEET WIFI:   %02x:%02x:%02x:%02x:%02x:%02x  ch %-3u  %4d dBm  \"%s\"\n", g_nets[i][0],
+ 			    g_nets[i][1], g_nets[i][2], g_nets[i][3], g_nets[i][4], g_nets[i][5], g_net_chan[i],
+@@ -2307,7 +2306,7 @@ wifi_scan(void)
+ 		wifi_join();
+ 	}
+ 	volatile int never = 0;
+-	(void)wifi_wait(&never, 2000, "after scan");
++	(void)wifi_wait(&never, 60000, "after scan, waiting for the firmware to flush its log");
+ }
+ 
+ /*
+@@ -2440,6 +2439,17 @@ wifi_vdev_start_sweep(uint32_t freq)
+ 		{ "HE20_2G, requestor 1",       21, 1u << 3, 100, 2, 1 },
+ 		{ "11AC_VHT20_2G",              11, 1u << 3, 100, 2, 0 },
+ 	};
++	/*
++	 * Arm the firmware's log here and not a moment earlier. k118 armed it at the end of the scan and
++	 * caught seven blocks, all of them from the burst of reorder-queue commands at 75.23, and not one
++	 * from the eight vdev starts three hundred milliseconds later: the firmware ships its log when its
++	 * buffer fills, not when we would like to read it. So arm it at the sweep, print each block whole
++	 * instead of its first sixty-four words, and then keep polling afterwards until the firmware pushes
++	 * what it wrote. The anchor to look for is the record 0x11d8fb04, which carries the id of every WMI
++	 * event the firmware sends: the one holding 0x5001 is the start response, and whatever sits just
++	 * above it decided the 5.
++	 */
++	g_fwlog_arm = 1;
+ 	for (uint32_t i = 0; i < sizeof(vs) / sizeof(vs[0]); i++) {
+ 		wifi_vdev_start(freq, &vs[i]);
+ 		printf("SWEET WMI:   [%s] -> status %u\n", vs[i].what, g_htc.vdev_start_status);
