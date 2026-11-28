@@ -1,0 +1,38 @@
+diff --git a/bsd/dev/apollo_pcie.c b/bsd/dev/apollo_pcie.c
+index 97fcf0a..2e11b9c 100644
+--- a/bsd/dev/apollo_pcie.c
++++ b/bsd/dev/apollo_pcie.c
+@@ -4488,6 +4488,33 @@ wifi_start(void)
+ 	 * messages belong to the mission pass, which on this board is the *second* bring-up. We were
+ 	 * configuring a chip for mission and then asking it to calibrate.
+ 	 */
++	/*
++	 * The MAC address, handed over the way the stock driver hands it over.
++	 *
++	 * The READY event has been saying MAC 00:00:00:00:00:00 since the first bring-up, and we have been
++	 * papering over that by reading /mnt/vendor/persist/wlan_mac.bin ourselves and putting those six
++	 * bytes into the vdev create. The firmware itself was never told. That is not how it works here:
++	 * cnss2 sends the address over QMI as QMI_WLFW_MAC_ADDR_REQ (0x0033) before the mode request, and
++	 * the firmware programs it into the hardware's address slots. WMI_PDEV_SET_BASE_MACADDR is the
++	 * other road and it kills this firmware outright (k112, assert 630).
++	 *
++	 * This is almost certainly what status 5 has been about. A_BAD_ADDRESS, "address does not match
++	 * descriptor", is what a vdev start returns when the address it is asked to bring up is not one the
++	 * hardware knows; and the number only appeared once a peer existed, which is the point at which the
++	 * firmware has to match a real address against a real descriptor instead of failing earlier for the
++	 * generic A_ERROR.
++	 *
++	 * One optional TLV, type 0x10, six bytes.
++	 */
++	{
++		static const uint8_t persist_mac[6] = { 0x34, 0x1c, 0xf0, 0xce, 0x0f, 0xda };
++		uint8_t macreq[9] = { 0x10, 6, 0 };
++		memcpy(macreq + 3, persist_mac, 6);
++		printf("SWEET WLFW: handing the firmware its MAC %02x:%02x:%02x:%02x:%02x:%02x\n",
++		    persist_mac[0], persist_mac[1], persist_mac[2],
++		    persist_mac[3], persist_mac[4], persist_mac[5]);
++		(void)wlfw_req(0x33, macreq, sizeof(macreq), "mac_addr");
++	}
+ 	if (fwmode != 7) {
+ 		uint32_t ceearly = 0;
+ 		(void)PE_parse_boot_argn("sweetceearly", &ceearly, sizeof(ceearly));

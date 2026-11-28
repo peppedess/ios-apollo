@@ -61,3 +61,30 @@ dare l'errore generico e dice che un indirizzo non torna.
 Restava un problema pratico: stampavamo otto blocchi e dopo lo sweep ne
 arrivano sessantatré, di cui i primi ventisette sono residuo dello
 svuotamento. Ora se ne stampano sessantaquattro.
+
+## 1279 — il MAC si consegna via QMI
+
+Due cose da k124.
+
+**Il firmware non esegue il gestore del vdev start.** Nel suo log, fra
+`0x11defb` ("comando WMI ricevuto: 0x5003, 0x9c byte") e `0x11d8fb` ("evento
+0x5001 inviato") non c'è **una riga**. Per una scrittura di parametro
+(`0x4003`), venti microsecondi dopo parte una scia di record WAL. Qualunque
+cosa rifiuti l'avvio lo rifiuta prima che inizi il lavoro radio.
+
+**Il firmware non ha mai saputo il proprio indirizzo.** L'evento READY dice
+`MAC 00:00:00:00:00:00` dal primo bring-up. Noi ci giravamo intorno leggendo
+`/mnt/vendor/persist/wlan_mac.bin` e mettendo quei sei byte nella vdev create;
+al firmware non li ha dati nessuno. Non si fa così: cnss2 manda l'indirizzo
+via QMI con `QMI_WLFW_MAC_ADDR_REQ` (0x0033) **prima** del messaggio di modo, e
+il firmware lo programma negli slot indirizzo dell'hardware.
+`WMI_PDEV_SET_BASE_MACADDR` è l'altra strada e ammazza questo firmware (k112,
+assert 630).
+
+Torna tutto con `A_BAD_ADDRESS`: è quello che un vdev start risponde quando
+l'indirizzo da attivare non è uno che l'hardware conosce. E il 5 è comparso
+solo da quando esiste un peer, cioè dal punto in cui il firmware deve far
+combaciare un indirizzo vero con un descrittore vero invece di fermarsi prima
+con l'`A_ERROR` generico.
+
+Un TLV opzionale, tipo 0x10, sei byte, come `wlfw_mac_addr_req_msg_v01`.
